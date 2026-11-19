@@ -2,6 +2,7 @@
 name = "reylo-engine-sqlite"
 version.workspace = true
 edition = "2021"
+rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
 # SQLite is in the public domain, with its blessing in place of a license.

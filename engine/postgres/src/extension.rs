@@ -98,8 +98,8 @@ struct Remote {
     domains: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     notes: Vec<String>,
-    /// Where the server read a function's body: what that body reads, which the freshness check
-    /// watches, and which no parse of the statement as written gives.
+    /// Where the server read a function's body: what that body reads, which no parse of the
+    /// statement as written gives.
     #[serde(default)]
     tables: Option<reylo_engine_core::fresh::Tables>,
 }
@@ -124,11 +124,11 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Option<Analysis>> {
         ordered: remote.ordered,
         value: remote.value,
         rewritten: lex::rewrite(sql, &lexed, Target::Dollar),
+        sql_mode: None,
         style: lexed.style,
         diagnostics: remote.diagnostics,
         unresolved: remote.unresolved,
         structured: Vec::new(),
-        fresh: None,
         errors: None,
         capabilities: None,
         read_only: false,

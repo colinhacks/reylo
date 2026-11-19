@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { anyEngine, engine, MissingEngine, Unreachable } from "../src/engine.ts";
+import { anyEngine, DIAGNOSTIC, engine, MissingEngine, Unreachable } from "../src/engine.ts";
 import { nativeBinary, PLATFORM_PACKAGES, platformPackage } from "../src/native.ts";
 import { resolveProject } from "../src/project.ts";
 import { pgLive, postgresDatabase } from "./helpers.ts";
@@ -83,6 +83,23 @@ test("an executable that answers as another database's engine, or not at all, is
   writeFileSync(silent, "#!/bin/sh\nexec sleep 60\n");
   chmodSync(silent, 0o755);
   await withEngine(silent, () => assert.rejects(engine("postgres"), { message: `the engine ${silent} does not answer: it did not answer a ping in 10 s` }));
+});
+
+test("an answer that is not a whole answer to its request, or no answer at all, fails that request, saying what was asked and what came back", { skip: noShell }, async () => {
+  // It answers the ping as the engine does, `open` without the connection's number, and anything else with a line that is no JSON.
+  const path = join(mkdtempSync(join(tmpdir(), "reylo-engine-")), "reylo");
+  const ping = JSON.stringify({ status: "ok", version: VERSION, fingerprint: "0123456789abcdef", database: "postgres" }).slice(0, -1);
+  writeFileSync(path, `#!/bin/sh\nwhile read -r line; do\n  id=$(printf '%s' "$line" | sed -n 's/.*"id":\\([0-9]*\\).*/\\1/p')\n  case "$line" in\n    *'"op":"ping"'*) echo '${ping},"id":'"$id"'}' ;;\n    *'"op":"open"'*) echo '{"status":"opened","version":"18.1","id":'"$id"'}' ;;\n    *) echo 'thread main panicked at engine/native/src/lib.rs' ;;\n  esac\ndone\n`);
+  chmodSync(path, 0o755);
+  await withEngine(path, async () => {
+    const e = await engine("postgres");
+    await assert.rejects(e.open("app.db"), { message: `the engine answered open with ${JSON.stringify(JSON.stringify({ status: "opened", version: "18.1", id: 1 }))}` });
+    await assert.rejects(e.lexAsync("select 1", "postgres"), { message: `the engine wrote a line that is no answer: "thread main panicked at engine/native/src/lib.rs"` });
+  });
+});
+
+test("each diagnostic code keeps its number, which the type check shows as TS<code>", () => {
+  assert.deepEqual(DIAGNOSTIC, { unreadPlaceholders: 1, mixedPlaceholders: 2, repeatedParameter: 3, noDatabase: 4, unreachable: 5, refused: 6, noProject: 9, project: 11, untypedParameter: 12, columnList: 20, columnListTable: 21, dateStyle: 24, mapperOption: 104 });
 });
 
 test("each database's engine names its database, and refuses another database's statement by name", async () => {

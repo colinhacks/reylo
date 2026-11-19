@@ -1,0 +1,1 @@
+select array['a', 'b'] || case when t.id > 1 then '{x}' end as tagged, array_append(array[t.id], case when t.id > 1 then cardinality(array[t.id]) end) as appended, array_prepend(case when t.id > 1 then cardinality(array[t.id]) end, array[t.id]) as prepended, json_build_object('a', array['a'] || case when t.id > 1 then '{x}' end) as doc, array['a'] || '{b}' as literal from teams t

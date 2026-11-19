@@ -1,0 +1,1 @@
+select count(*) as e from t having e = :p

@@ -107,7 +107,6 @@ const KINDS: [string, RegExp][] = [
   ["TRIGGERS_QUERY", /AS skipping/],
   ["RELATION_TYPES_QUERY", /wanted AS/],
   ["TYPE_QUERY", /^SELECT t\.oid::pg_catalog\.int8.* WHERE t\.oid OPERATOR\(pg_catalog\.=\) ANY \(\$1/s],
-  ["fresh PG_QUERY", /fresh_table/],
   ["PG_TABLE_QUERY", /^SELECT a\.attname::pg_catalog\.text, b\.typname/],
   ["PROBE_QUERY", /pg_extension/],
   ["RELNAMES_QUERY", /^SELECT c\.oid::pg_catalog\.int8, c\.relname::pg_catalog\.text FROM pg_catalog\.pg_class c WHERE/],

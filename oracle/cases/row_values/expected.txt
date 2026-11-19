@@ -6,8 +6,10 @@ derived.sql: one () -> { rows: jsonb (public.docs{ id: int4, title: text(¬NUL),
 function.sql: one () -> { o: json { made: public.docs{ id: int4?, title: text(¬NUL)?, note: text(¬NUL)? }? } }
 held.sql: one () -> { held: jsonb (public.docs{ id: int4?, title: text(¬NUL)?, note: text(¬NUL)? }?)[]? }
 held_array.sql: one () -> { held_rows: (public.docs{ id: int4?, title: text(¬NUL)?, note: text(¬NUL)? }?)[], held_values: (public.docs{ id: int4?, title: text(¬NUL)?, note: text(¬NUL)? }?)[] }
+same_named_type.sql: many () -> { wr: other.wr{ a: int4? }?, x: other.wr6{ z: int4? }? }
 scalar.sql: one () -> { o: json { first: public.docs{ id: int4, title: text(¬NUL), note: text(¬NUL)? }? } }
 shadowed_name.sql: one () -> { o: json { x: public.docs{ id: int4?, title: text(¬NUL)?, note: text(¬NUL)? }? } }
 stored.sql: one () -> { stored: jsonb (public.docs{ id: int4, title: text(¬NUL), note: text(¬NUL)? })[]? }
 view.sql: one () -> { rows: jsonb (public.docs{ id: int4, title: text(¬NUL), note: text(¬NUL)? })[]? }
+whole_row_beside_union.sql: many () -> { d: public.docs{ id: int4, title: text(¬NUL), note: text(¬NUL)? } }
 with_query.sql: one () -> { rows: jsonb (public.docs{ id: int4, title: text(¬NUL), note: text(¬NUL)? })[]? }

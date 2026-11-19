@@ -11,6 +11,9 @@ where_chain.sql: many () -> { name: varchar(≤40), title: varchar(≤80), body:
 where_coalesce.sql: many () -> { name: varchar(≤40), title: varchar(≤80)?, published_at: datetime? }
 where_comparison.sql: many () -> { name: varchar(≤40), title: varchar(≤80), published_at: datetime? }
 where_is_null.sql: many () -> { name: varchar(≤40), title: varchar(≤80)? }
+where_measured_absorbs.sql: many () -> { name: varchar(≤40), title: varchar(≤80)?, published_at: datetime? }
+where_measured_greatest.sql: many () -> { name: varchar(≤40), title: varchar(≤80), published_at: datetime }
+where_measured_strict.sql: many () -> { name: varchar(≤40), title: varchar(≤80), published_at: datetime }
 where_nested_join.sql: many () -> { name: varchar(≤40), title: varchar(≤80), body: varchar(≤80) }
 where_not_in_subquery.sql: many () -> { name: varchar(≤40), title: varchar(≤80)? }
 where_null_safe.sql: many () -> { name: varchar(≤40), title: varchar(≤80)? }

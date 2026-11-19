@@ -5,8 +5,8 @@ aggregate_of_constant.sql: one () -> { total: int8? }
 aggregate_of_scalar.sql: one () -> { total: numeric? }
 alias_list.sql: many (p: int8) -> { a: int8, body: text(¬NUL) } key (a)
 anycompatible.sql: many () -> { a: numeric? }
-array_slice.sql: one () -> { s: int4?[]? }
-array_slice_to_argument.sql: one (n: int4) -> { s: int4?[]? }
+array_slice.sql: one () -> { s: int4[]? }
+array_slice_to_argument.sql: one (n: int4) -> { s: int4[]? }
 atomic_comments.sql: many (p: int8) -> { id: int8, body: text(¬NUL) } key (id)
 atomic_key.sql: at_most_one (x: int8) -> { id: int8, body: text(¬NUL) }
 atomic_own_path.sql: at_most_one (x: int8) -> { id: int8, body: text(¬NUL) }

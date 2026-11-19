@@ -7,3 +7,8 @@ create table accounts (id int primary key, status text not null check (status in
 insert into accounts values (99, 'active', null, null, 'zzz');
 alter table accounts add constraint legacy_check check (legacy in ('a', 'b')) not valid;
 create table pads (id int primary key, c char(3) check (c in ('a', 'b')));
+-- A CHECK that compares the column through a cast with a length compares what the cast cuts it
+-- to: 'ab'::varchar(1) is 'a', so 'ab' passes `in ('a', 'b')` and is stored.
+create table cut (id int primary key, code text check (code::varchar(1) in ('a', 'b')), codes text[] check (codes::varchar(1)[] <@ array['a', 'b']::varchar[]));
+insert into cut (id, code) values (1, 'ab');
+insert into cut (id, codes) values (2, '{ab}');

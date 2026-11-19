@@ -1,0 +1,9 @@
+array.sql: many () -> { o: json? }
+arrayagg.sql: one () -> { o: json json?[]? }
+arrayagg_object.sql: one () -> { o: json ({ id: int, payload: json? })[]? }
+derived.sql: many () -> { o: json { payload: json? } }
+nested.sql: many () -> { o: json { outer: { payload: json? } } }
+object.sql: many () -> { o: json { id: int, payload: json? } }
+schema_object.sql: many () -> { o: json { doc: json {"type":"object"} } }
+top.sql: many () -> { payload: json }
+view.sql: many () -> { o: json { payload: json? } }
