@@ -672,6 +672,16 @@ async fn owned_by_platform(target: &mut Db, admin: &tokio_postgres::Client, url:
     Ok(Owned { statements: vec![], extensions, role: None, note: Some(note) })
 }
 
+/// Gives a shadow's session the target's word on whether it is a platform's (`settings`, the target
+/// database's own, carry [`crate::catalog::PLATFORM_SCHEMAS_SETTING`]).
+#[cfg(feature = "cli")]
+pub(crate) async fn mark_platform_names(db: &mut Db, settings: &[String]) {
+    let key = format!("{}=", crate::catalog::PLATFORM_SCHEMAS_SETTING);
+    if let Some(value) = settings.iter().find_map(|s| s.strip_prefix(&key)) {
+        let _ = db.exec(&format!("select set_config({}, {}, false)", literal(crate::catalog::PLATFORM_SCHEMAS_SETTING), literal(value))).await;
+    }
+}
+
 /// The target's privileges on `schemas`, as the grants that make them, its owner's own left out.
 async fn schema_grants(target: &mut Db, schemas: &[String]) -> Result<Vec<String>, Error> {
     let mut out = Vec::new();
@@ -833,12 +843,17 @@ impl Server {
                     }
                     _ => String::new(),
                 };
-                let settings = target
+                let mut settings: Vec<String> = target
                     .rows("select unnest(setconfig) as s from pg_db_role_setting where setrole = 0 and setdatabase = (select oid from pg_database where datname = current_database())")
                     .await?
                     .iter()
                     .filter_map(|r| r.get("s").map(String::from))
                     .collect();
+                // Whether the target is a platform's, which every shadow takes from it.
+                let setting = crate::catalog::PLATFORM_SCHEMAS_SETTING;
+                let names = target.rows(&format!("select ({})::text as on", crate::catalog::platform_names())).await?.first().is_some_and(|r| r.text("on") == "true");
+                settings.retain(|s| !s.starts_with(&format!("{setting}=")));
+                settings.push(format!("{setting}={}", if names { "on" } else { "off" }));
                 let privileges = default_privileges(target).await?;
                 let extensions: Vec<(String, String)> = target
                     .rows("select e.extname as name, n.nspname as schema from pg_extension e join pg_namespace n on n.oid = e.extnamespace where e.extname <> 'plpgsql' order by 1")
@@ -965,6 +980,8 @@ impl Server {
             Err(e) => return Err(e),
         };
         let mut db = Db::Postgres(client);
+        // For the session too, where the database may not take the setting from the role connected.
+        mark_platform_names(&mut db, settings).await;
         if *copy_privileges && template.is_none() {
             // A role or schema the shadow's server lacks leaves that one out; the comparison says what follows.
             for statement in privileges.iter() {
