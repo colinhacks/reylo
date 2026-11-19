@@ -284,9 +284,10 @@ function usePlayer(script: Script, onEdit?: (edited: boolean) => void): Line[] {
   return lines;
 }
 
-/** A printed line's marks in their colours: ✓ and + green, ✗ red, !, · and ↺ yellow; a command it names bright. */
+/** A printed line's marks in their colours, as the CLI paints them: ✓ and + green, ✗ red, ! and ↺ yellow, a · note dim whole; a command it names bright. */
 function paint(line: string): ReactNode {
-  const m = line.match(/^(\s*)(✓|✗|!|·|\+|↺)(\s.*)?$/);
+  if (/^\s*· /.test(line)) return <span className="ml-mu">{line}</span>;
+  const m = line.match(/^(\s*)(✓|✗|!|\+|↺)(\s.*)?$/);
   if (m) {
     const cls = m[2] === '✓' || m[2] === '+' ? 'ml-ok' : m[2] === '✗' ? 'ml-er' : 'ml-wn';
     return (
@@ -357,7 +358,7 @@ const RENAMES: Script = [
 /** With no schema.sql: an empty migration, the DDL written into it (`#edit`, in the editor above), and the migration run. */
 const SCHEMALESS: Script = [
   '$ reylo migrate new add_bio',
-  "✓ Wrote reylo/migrations/20261104140347_add_bio.sql, empty: this database has nothing new, so it's for a change to data",
+  '✓ Wrote reylo/migrations/20261104140347_add_bio.sql, empty, to write by hand: this database has nothing new',
   '#edit',
   '$ reylo migrate dev',
   'Applying to postgres://localhost:5432/app',
@@ -409,7 +410,7 @@ const PUSH: Script = [
   'Pushing reylo/schema.sql to postgres://localhost:5432/app',
   '  + alter table users add column nick text;',
   '✓ This database matches reylo/schema.sql',
-  '! Not in a migration yet: reylo migrate new <name> writes it',
+  '· Not in a migration yet: reylo migrate new <name> writes it',
   '$ reylo migrate new add_nick',
   '✓ Wrote reylo/migrations/20261104150000_add_nick.sql',
 ];

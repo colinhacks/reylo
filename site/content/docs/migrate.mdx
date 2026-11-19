@@ -739,7 +739,7 @@ $ reylo db push
 Pushing reylo/schema.sql to postgres://localhost:5432/app
   + alter table users add column nick text;
 ✓ This database matches reylo/schema.sql
-! Not in a migration yet: reylo migrate new <name> writes it
+· Not in a migration yet: reylo migrate new <name> writes it
 ```
 
 Nothing is dropped until you name it, as with `reylo migrate new`. A push that drops a table or column, or changes a type so that values are lost, is refused:
