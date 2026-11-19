@@ -319,7 +319,7 @@ Set `options.decimalAsString` on the pool, and leave `options.useUTC` on, its de
 
 ## Migrations
 
-`reylo migrate` and `reylo db` work on SQL Server as on the other databases ([Migrations](/migrations)). A migration file is T-SQL batches, which `GO` lines part:
+`reylo migrate` and `reylo db` work on SQL Server as on the other databases ([Migrations](/migrate/docs)). A migration file is T-SQL batches, which `GO` lines part:
 
 ```sql title="migrations/20261020100000_orders_view.sql" dialect="sqlserver"
 alter table orders add status varchar(10) not null default 'open';

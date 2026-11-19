@@ -2,6 +2,12 @@ import { SHOW_RUST } from './languages.ts';
 
 export const githubUrl = 'https://github.com/reylosql/reylo';
 
+/** Reylo Migrate's docs: content/docs/migrate.mdx, at an address of its own under its landing page, /migrate (components/migrate-landing.tsx). */
+export const migrateDocsUrl = '/migrate/docs';
+
+/** A page's address: its file's name, but Reylo Migrate's docs, which sit under its landing page. */
+export const docsUrl = (url: string) => (url === '/migrate' ? migrateDocsUrl : url);
+
 /** The docs site's address: reylo.dev, which every other Reylo domain redirects to (wiki/docs-site.md). */
 export const siteUrl = 'https://reylo.dev';
 
@@ -41,11 +47,10 @@ export const pageGroups = [
     label: 'Docs',
     items: [
       { title: 'Intro', href: '/' },
-      { title: 'Usage with TypeScript', href: '/typescript' },
+      { title: SHOW_RUST ? 'Usage with TypeScript' : 'Usage', href: '/typescript' },
       ...(SHOW_RUST ? [{ title: 'Usage with Rust', href: '/rust' }] : []),
-      { title: 'Inference', href: '/inference' },
-      { title: 'CLI', href: '/cli' },
-      { title: 'Migrations', href: '/migrations' },
+      { title: 'Inference engine', href: '/inference' },
+      { title: 'Reylo Migrate', href: '/migrate', external: true },
       { title: 'Comparison', href: '/compare' },
       { title: 'FAQ', href: '/faq' },
     ],
@@ -55,6 +60,7 @@ export const pageGroups = [
     items: [
       { title: 'Cloudflare D1', href: '/d1' },
       { title: 'Durable Objects', href: '/durable-objects' },
+      { title: 'Cloudflare Hyperdrive', href: '/hyperdrive' },
       { title: 'Neon', href: '/neon' },
       { title: 'Supabase', href: '/supabase' },
       { title: 'PlanetScale', href: '/planetscale' },
@@ -67,7 +73,7 @@ export const pageGroups = [
     label: 'Reference',
     items: [
       { title: '.reylo.yaml', href: '/configuration', code: true },
-      { title: 'Type Defs', href: '/typedefs' },
+      { title: 'CLI', href: '/cli' },
       { title: 'Postgres', href: '/postgres' },
       { title: 'MySQL', href: '/mysql' },
       { title: 'SQLite', href: '/sqlite' },
