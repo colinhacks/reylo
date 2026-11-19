@@ -810,7 +810,14 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     // Owners: what a view, a security definer function and row-level security are checked as. An
     // object a migration made is its runner's, so only one owned by another role has a line, and
     // a database built by one role compares with shadows built by another, whoever reads it.
-    for r in db.rows(&format!("select format('owner %s is %I (%s)', o.identity, pg_get_userbyid(k.owner), o.type) as line from ({}) k, lateral pg_identify_object(k.classid, k.objid, 0) o where k.owner <> {}", owned_objects(&history), runner())).await? {
+    // `public` owned by the runner that owns the database is a new database's `public`, which
+    // `pg_database_owner` owns: Postgres 14 and older made it the bootstrap superuser's, and some
+    // platforms give it to the role they hand out.
+    let runner = runner();
+    let owner = format!(
+        "case when k.classid = 'pg_namespace'::regclass and o.identity = 'public' and k.owner = {runner} and k.owner = (select datdba from pg_database where datname = current_database()) then coalesce(to_regrole('pg_database_owner')::oid, k.owner) else k.owner end"
+    );
+    for r in db.rows(&format!("select format('owner %s is %I (%s)', o.identity, pg_get_userbyid({owner}), o.type) as line from ({}) k, lateral pg_identify_object(k.classid, k.objid, 0) o where {owner} <> {runner}", owned_objects(&history))).await? {
         lines.push(r.text("line").to_string());
     }
 

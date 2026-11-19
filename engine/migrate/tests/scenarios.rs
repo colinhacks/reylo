@@ -2663,6 +2663,7 @@ on!(
     a_platforms_schemas_and_extensions_are_in_every_shadow,
     a_role_that_is_no_superuser_runs_every_command,
     a_role_that_cannot_create_databases_is_told_of_shadow_url,
+    a_public_schema_its_role_owns_is_a_new_databases,
 );
 on!(Mysql, a_migration_that_names_a_database_is_refused);
 on!(
@@ -2810,6 +2811,29 @@ mod adversarial {
         p.file("20261027100000_users.sql", "create table users (id int primary key);");
         let e = reylo_migrate::dry_run(&opts, &mut |_: &str| {}).await.expect_err("no shadow database can be made");
         assert_has!(e.0, "shadow_url");
+    }
+
+    /// A database whose `public` its own role owns outright, not through `pg_database_owner`: one made
+    /// before Postgres 15 and upgraded, or one a platform hands out (Tiger Cloud's). Its shadows' `public`
+    /// is `pg_database_owner`'s, which is the same owner, so no command reports it.
+    pub async fn a_public_schema_its_role_owns_is_a_new_databases(mut p: P) {
+        p.exec("do $$ begin create role madv_owner login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec(&format!("alter database {} owner to madv_owner", p.name)).await;
+        p.exec("alter schema public owner to madv_owner").await;
+        p.url = as_role(&p.url, "madv_owner");
+        p.exec("create table users (id int primary key)").await;
+        let opts = p.opts();
+        let mut out = Vec::new();
+        let code = reylo_migrate::init(&opts, &[], &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("init: {e}"));
+        assert_eq!(code, 0, "{}", out.join("\n"));
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        p.schema(&format!("{}\ncreate table posts (id int primary key);\n", std::fs::read_to_string(p.dir.join("schema.sql")).unwrap()));
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "posts", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
     }
 
     pub async fn a_database_search_path_resolves_names_as_the_target_does(mut p: P) {
