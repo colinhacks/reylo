@@ -2675,14 +2675,7 @@ async fn lock_from_history_on(db: &mut Db, server: &mut Server, opts: &Options, 
     let _held = lock(db, opts).await?;
     let (files, _) = opts.migrations()?;
     let history = if has_history(db).await? { read_history(db).await? } else { vec![] };
-    let mut problems = Vec::new();
-    for r in history.iter().filter(|r| r.applied) {
-        match files.iter().find(|f| f.name == r.name) {
-            None => problems.push(missing_problem(&r.name, &r.sql, &shown(&opts.dir))),
-            Some(f) if !same_statements(&f.sql, &r.sql, d) => problems.push(edited_problem(&r.name, &r.sql, &f.sql)),
-            Some(_) => {}
-        }
-    }
+    let mut problems = applied_unlike(opts, &history, &files, d);
     if history.iter().any(|r| !r.applied) {
         problems.push(Problem::new("run-cut-off", "A run on this database was cut off before it finished").fix("Finish it first", &["reylo migrate dev"]));
     }
@@ -2908,9 +2901,17 @@ pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>)
     let files = run_order(opts, &files);
     // The plan starts from every migration file, drafts not yet applied anywhere included, and is
     // named after the newest of them. Its target is schema.sql, or in a project with none, the
-    // development database as it stands, written out as SQL (as `db introspect` prints it).
+    // development database as it stands, written out as SQL (as `db introspect` prints it). Either
+    // way, the development database must have run each migration it applied as it now reads: one
+    // edited or deleted since is `migrate dev`'s to settle first.
     let (target_sql, target_name) = match std::fs::read_to_string(&opts.schema) {
-        Ok(sql) => (sql, shown(&opts.schema)),
+        Ok(sql) => {
+            let problems = ran_as_written(opts, &files).await?;
+            if !problems.is_empty() {
+                return Ok(refuse(&problems, log));
+            }
+            (sql, shown(&opts.schema))
+        }
         Err(_) => match as_its_migrations_leave_it(opts, &files).await? {
             Ok(sql) => (sql, "this database".to_string()),
             Err(problems) => return Ok(refuse(&problems, log)),
@@ -2961,14 +2962,7 @@ async fn as_its_migrations_leave_it(opts: &Options, files: &[Migration]) -> Resu
     let result = async {
         let d = db.dialect();
         let history = if has_history(&mut db).await? { read_history(&mut db).await? } else { vec![] };
-        let mut problems = Vec::new();
-        for r in history.iter().filter(|r| r.applied) {
-            match files.iter().find(|f| f.name == r.name) {
-                None => problems.push(missing_problem(&r.name, &r.sql, &shown(&opts.dir))),
-                Some(f) if !same_statements(&f.sql, &r.sql, d) => problems.push(edited_problem(&r.name, &r.sql, &f.sql)),
-                Some(_) => {}
-            }
-        }
+        let mut problems = applied_unlike(opts, &history, files, d);
         let pending: Vec<&str> = files.iter().filter(|f| !history.iter().any(|r| r.applied && r.name == f.name)).map(|f| f.name.as_str()).collect();
         if !pending.is_empty() {
             let one = pending.len() == 1;
@@ -2987,6 +2981,34 @@ async fn as_its_migrations_leave_it(opts: &Options, files: &[Migration]) -> Resu
     .await;
     db.close().await;
     result
+}
+
+/// For `migrate new` with a schema.sql: what the development database applied that no longer reads as
+/// it ran, one query on a database the shadows are made beside. Nothing where it has no history.
+#[cfg(feature = "cli")]
+async fn ran_as_written(opts: &Options, files: &[Migration]) -> Result<Vec<Problem>, Error> {
+    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let result = async {
+        let history = if has_history(&mut db).await? { read_history(&mut db).await? } else { vec![] };
+        Ok(applied_unlike(opts, &history, files, db.dialect()))
+    }
+    .await;
+    db.close().await;
+    result
+}
+
+/// Each migration a database applied that isn't in the files, or whose statements changed since.
+#[cfg(feature = "cli")]
+fn applied_unlike(opts: &Options, history: &[HistoryRow], files: &[Migration], d: Dialect) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    for r in history.iter().filter(|r| r.applied) {
+        match files.iter().find(|f| f.name == r.name) {
+            None => problems.push(missing_problem(&r.name, &r.sql, &shown(&opts.dir))),
+            Some(f) if !same_statements(&f.sql, &r.sql, d) => problems.push(edited_problem(&r.name, &r.sql, &f.sql)),
+            Some(_) => {}
+        }
+    }
+    problems
 }
 
 /// The refusal of a target that doesn't replay: schema.sql, or the database's schema as SQL.

@@ -349,6 +349,7 @@ for_each_dialect!(
     db_push_refuses_a_schema_that_declares_nothing,
     a_merge_conflict_left_in_a_file_is_refused,
     new_without_schema_sql_writes_what_the_database_has,
+    new_refuses_a_migration_the_database_ran_differently,
     a_change_by_hand_before_dev_without_schema_sql_is_refused,
     applies_pending_migrations_once,
     refuses_migrations_that_do_not_add_up,
@@ -776,6 +777,38 @@ async fn new_without_schema_sql_writes_what_the_database_has(mut p: P) {
     // With nothing changed, the migration is empty, for a change of data.
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "backfill", &Default::default(), log).await).await, 0, "{}", p.peek());
     assert_has!(p.output(), r"empty: this database has nothing new");
+}
+
+async fn new_refuses_a_migration_the_database_ran_differently(mut p: P) {
+    let (id, int, text) = (p.t.id, p.t.int, p.t.text);
+    let users = format!("create table users (id {id}, name {text});");
+    let orders = format!("create table orders (id {int});");
+    p.schema(&format!("{users}\n{orders}\ncreate table tags (id {int});"));
+    p.file("20261027100000_users.sql", &users);
+    p.file("20261027110000_orders.sql", &orders);
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    // A comment changes no statement the database ran.
+    p.file("20261027100000_users.sql", &format!("-- the people\n{users}"));
+    // A migration this database ran, since edited: refused, with nothing written.
+    p.file("20261027110000_orders.sql", &format!("create table orders (id {int}, total {int});"));
+    p.output();
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "tags", &Default::default(), log).await).await, 1);
+    let out = p.output();
+    assert_has!(&out, r"✗ 20261027110000_orders\.sql changed after this database applied it[\s\S]*reylo migrate dev[\s\S]*Nothing was changed\.");
+    assert!(!out.contains("20261027100000_users.sql"), "{out}");
+    // One it ran, since deleted, as after a switch to another branch: refused too.
+    std::fs::remove_file(p.dir.join("migrations").join("20261027110000_orders.sql")).unwrap();
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "tags", &Default::default(), log).await).await, 1);
+    assert_has!(p.output(), r"✗ This database applied 20261027110000_orders\.sql, which isn't in [\s\S]*reylo migrate dev");
+    assert_eq!(p.files(), ["20261027100000_users.sql"]);
+    // dev undoes it, and new then writes the migration.
+    p.schema(&format!("{users}\ncreate table tags (id {int});"));
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "tags", &Default::default(), log).await).await, 0, "{}", p.peek());
+    // A migration written and not yet run is no disagreement: new runs again.
+    p.schema(&format!("{users}\ncreate table tags (id {int});\ncreate table notes (id {int});"));
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "notes", &Default::default(), log).await).await, 0, "{}", p.peek());
+    assert_eq!(p.files().len(), 3, "{:?}", p.files());
 }
 
 async fn a_change_by_hand_before_dev_without_schema_sql_is_refused(mut p: P) {
