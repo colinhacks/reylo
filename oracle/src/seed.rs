@@ -510,13 +510,24 @@ async fn bind(client: &Client, sql: &str, analysis: &Value, known: &mut HashMap<
     Ok(Ok(Bound { casts: types.into_iter().map(|t| t.ty).collect(), pools, described: Some(statement.columns().len()) }))
 }
 
-/// A statement's parameters, several assignments: each takes the next value of every pool.
-fn assignments(pools: &[Vec<String>]) -> Vec<Vec<String>> {
+/// A statement's parameters, several assignments: each takes the next value of every pool; then
+/// again with the n-th parameter's pool turned n places on, so that two parameters of one type,
+/// whose pools are the same, also hold different values. `null` stands in for a pool with no value.
+fn assignments<T: Clone + PartialEq>(pools: &[Vec<T>], null: &T) -> Vec<Vec<T>> {
     if pools.is_empty() {
         return vec![Vec::new()];
     }
     let width = pools.iter().map(Vec::len).max().unwrap_or(1);
-    (0..width).map(|r| pools.iter().map(|p| p[r % p.len().max(1)].clone()).collect()).collect()
+    let mut out: Vec<Vec<T>> = Vec::new();
+    for turned in [false, true] {
+        for r in 0..width {
+            let row: Vec<T> = pools.iter().enumerate().map(|(n, p)| p.get((r + if turned { n } else { 0 }) % p.len().max(1)).cloned().unwrap_or_else(|| null.clone())).collect();
+            if !out.contains(&row) {
+                out.push(row);
+            }
+        }
+    }
+    out
 }
 
 /// Whether the rows a run over the simple protocol returned are rows a driver gets. Every driver
@@ -623,7 +634,7 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                 // Where the capabilities name every table, each run is held to them: a table it
                 // writes rows of is one they say it writes, and a table it scans one they name.
                 let named = analysis["capabilities"]["tables"].as_object().cloned();
-                for values in assignments(&bound.pools) {
+                for values in assignments(&bound.pools, &"NULL".to_string()) {
                     let text = text_of(&values);
                     // The savepoint goes first on its own: a statement that does not parse fails
                     // the whole query text it is sent in, a savepoint written before it included.
@@ -1523,15 +1534,13 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                         values
                     })
                     .collect();
-                let width = pools.iter().map(Vec::len).max().unwrap_or(1).max(1);
                 let cardinality = analysis["cardinality"].as_str().unwrap_or("many");
                 let columns = analysis["columns"].as_array().cloned().unwrap_or_default();
                 // Each `?` is the n-th name of `order`, and the value is that parameter's.
                 let bind = |values: &[rusqlite::types::Value]| -> Vec<rusqlite::types::Value> {
                     order.iter().map(|name| params.iter().position(|p| p["name"].as_str() == Some(name)).and_then(|i| values.get(i).cloned()).unwrap_or(rusqlite::types::Value::Null)).collect()
                 };
-                for r in 0..width {
-                    let values: Vec<rusqlite::types::Value> = pools.iter().map(|p| p.get(r % p.len().max(1)).cloned().unwrap_or(rusqlite::types::Value::Null)).collect();
+                for values in assignments(&pools, &rusqlite::types::Value::Null) {
                     let bound = bind(&values);
                     let shown = bound.iter().map(|v| format!("{v:?}")).collect::<Vec<_>>().join(", ");
                     db.execute_batch("SAVEPOINT q").map_err(|e| e.to_string())?;
@@ -2190,8 +2199,13 @@ mod tests {
 
     #[test]
     fn an_assignment_takes_the_next_value_of_every_pool() {
-        assert_eq!(assignments(&[]), [Vec::<String>::new()]);
-        let pools = [vec!["1".to_string(), "2".to_string(), "3".to_string()], vec!["'a'".to_string()]];
-        assert_eq!(assignments(&pools), [["1", "'a'"], ["2", "'a'"], ["3", "'a'"]]);
+        let pool = |values: &[&str]| values.iter().map(|v| v.to_string()).collect::<Vec<String>>();
+        let null = "NULL".to_string();
+        assert_eq!(assignments(&[], &null), [Vec::<String>::new()]);
+        assert_eq!(assignments(&[pool(&["1", "2", "3"]), pool(&["'a'"])], &null), [["1", "'a'"], ["2", "'a'"], ["3", "'a'"]]);
+        // Two parameters of one type hold the same values, then different ones.
+        let int4 = pool(&["NULL", "1", "2", "3"]);
+        assert_eq!(assignments(&[int4.clone(), int4.clone()], &null), [["NULL", "NULL"], ["1", "1"], ["2", "2"], ["3", "3"], ["NULL", "1"], ["1", "2"], ["2", "3"], ["3", "NULL"]]);
+        assert_eq!(assignments(&[int4], &null), [["NULL"], ["1"], ["2"], ["3"]]);
     }
 }
