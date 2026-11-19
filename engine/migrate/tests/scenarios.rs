@@ -2810,7 +2810,7 @@ on!(
 on!(Mysql, a_recurring_event_is_in_the_dump);
 on!(Mysql, init_makes_a_function_before_the_view_that_calls_it);
 on!(Postgres, init_writes_the_foreign_servers_its_tables_use);
-on!(Postgres, init_keeps_a_publications_generated_columns);
+on!(Postgres, init_keeps_a_publications_generated_columns, init_makes_a_wrapper_after_the_functions_it_names);
 on!(Sqlite, a_virtual_tables_own_tables_are_not_in_the_dump);
 mod on_mysql {
     use super::*;
@@ -4080,6 +4080,21 @@ create trigger kids_note after insert on kids begin update parents set name = na
         p.url = q.url.clone();
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_eq!(q.rows("select pubgencols::text as g from pg_publication where pubname = 'stored_pub'").await[0].text("g"), "s");
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    /// A wrapper's validator is a function of the schema, which pg_dump writes with the others: init
+    /// makes the wrapper after it, and the wrapper's server before the foreign table made on it.
+    pub async fn init_makes_a_wrapper_after_the_functions_it_names(mut p: P) {
+        p.exec("create function validate_options(text[], oid) returns void language plpgsql as $$ begin return; end $$").await;
+        p.exec("create foreign data wrapper review_fdw validator validate_options; create server review_remote foreign data wrapper review_fdw").await;
+        p.exec("create foreign table remote_users (id int) server review_remote; create table t (id int)").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        let q = P::new(p.d).await.unwrap();
+        p.url = q.url.clone();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(q.history().await, ["init.sql"]);
+        assert_eq!(q.rows("select 1 from pg_foreign_data_wrapper where fdwname = 'review_fdw' and fdwvalidator = 'validate_options'::regproc").await.len(), 1);
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
 

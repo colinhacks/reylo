@@ -3943,7 +3943,10 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             }
             // Foreign data wrappers and servers, which are in no schema, so pg_dump writes them only for a
             // whole database: what the dumped schemas' foreign tables are made on, an extension's and the
-            // platform's own aside. User mappings stay out, since their options hold passwords.
+            // platform's own aside. User mappings stay out, since their options hold passwords. They are
+            // made after the functions a wrapper names as its handler or validator, and before the foreign
+            // tables made on a server, both of which pg_dump writes: where its first foreign table is.
+            let mut foreign: Vec<String> = Vec::new();
             let options = |column: &str| format!("coalesce(' OPTIONS (' || (select string_agg(format('%I %L', split_part(x, '=', 1), substr(x, strpos(x, '=') + 1)), ', ') from unnest({column}) x) || ')', '')");
             for r in db
                 .rows(&format!(
@@ -3964,7 +3967,7 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 ))
                 .await?
             {
-                kept.push(r.text("s").to_string());
+                foreign.push(r.text("s").to_string());
             }
             // What every new database has already: its public schema, as initdb makes it.
             const AS_MADE: [&str; 4] = ["CREATE SCHEMA public", "CREATE SCHEMA IF NOT EXISTS public", "ALTER SCHEMA public OWNER TO pg_database_owner", "COMMENT ON SCHEMA public IS 'standard public schema'"];
@@ -3974,11 +3977,15 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 if s.starts_with("SET ") || s.starts_with("SELECT pg_catalog.set_config") || (s.starts_with("ALTER ") && s.ends_with(&own)) || platform_default(s) || s.starts_with("CREATE EXTENSION ") || AS_MADE.contains(&s) {
                     continue;
                 }
+                if s.starts_with("CREATE FOREIGN TABLE ") {
+                    kept.append(&mut foreign);
+                }
                 kept.push(match s.strip_prefix("CREATE SCHEMA ") {
                     Some(rest) if !rest.starts_with("IF NOT EXISTS ") => format!("CREATE SCHEMA IF NOT EXISTS {rest}"),
                     _ => s.to_string(),
                 });
             }
+            kept.append(&mut foreign);
             // Event triggers and publications, which are in no schema, so pg_dump writes neither for a
             // schema (and publications not at all here): the project's, which are compared, after the
             // functions and tables they name, an extension's and the platform's own aside.
