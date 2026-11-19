@@ -43,8 +43,8 @@ export type { MysqlCode, MysqlErrorFields, MysqlNarrowing, MysqlQueryError, Post
  * It runs on Node and Bun, at build time or in a script, and the bundle of an app that does not call
  * it holds none of it.
  *
- * @preview Reylo Type Defs is at version 0.1.0, and until 1.0.0 a new version may change
- * anything in it. Each descriptor names its version in `$schema`.
+ * @preview Reylo Type Defs is a preview until 1.0.0, and a new release may change anything in
+ * it. Each descriptor names the format in `$schema`.
  */
 export async function analyze(input: AnalyzeInput): Promise<StatementDescriptor> {
   return buildTime().analyze(input);
