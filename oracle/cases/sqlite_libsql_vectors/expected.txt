@@ -1,0 +1,14 @@
+alter_column.sql: none () -> {  }
+column.sql: many () -> { emb: F32_BLOB(3)(int64 | float(11,52) | text(UTF-8, ill-formed) | bytes)? }
+constructors.sql: one (v: text(UTF-8, ill-formed), a: text(UTF-8, ill-formed), b: text(UTF-8, ill-formed), c: text(UTF-8, ill-formed), d: text(UTF-8, ill-formed), e: text(UTF-8, ill-formed), f: text(UTF-8, ill-formed)) -> { v: bytes, a: bytes, b: bytes, c: bytes, d: bytes, e: bytes, f: bytes }
+distance_cos.sql: many (q: text(UTF-8, ill-formed)) -> { id: INTEGER, d: float(11,52)? }
+distance_l2.sql: many () -> { id: INTEGER, d: float(11,52)? }
+extract.sql: many () -> { id: INTEGER, e: text(UTF-8, ill-formed) }
+insert.sql: one (title: text(UTF-8, ill-formed), v: text(UTF-8, ill-formed)) -> { id: INTEGER, emb: F32_BLOB(3)(int64 | float(11,52) | text(UTF-8, ill-formed) | bytes) }
+marker.sql: many () -> { marker: unknown? }
+plain.sql: at_most_one (id: int64) -> { id: INTEGER, title: TEXT(text(UTF-8, ill-formed) | bytes) }
+top_k.sql: many (q: text(UTF-8, ill-formed)) -> { id: int64 }
+top_k_joined.sql: many (q: text(UTF-8, ill-formed)) -> { id: INTEGER, title: TEXT(text(UTF-8, ill-formed) | bytes), distance: float(11,52)? }
+top_k_star.sql: many () -> { id: int64 }
+top_k_without_rowid.sql: many (q: text(UTF-8, ill-formed)) -> { id: text(UTF-8, ill-formed) }
+wide.sql: many (q: text(UTF-8, ill-formed)) -> { id: INTEGER, e: text(UTF-8, ill-formed), d: float(11,52)? }

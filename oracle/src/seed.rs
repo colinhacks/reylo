@@ -1392,26 +1392,94 @@ fn fts_content(sql: &str) -> Option<String> {
     })
 }
 
-/// The tables the seeding fills, in the order they were created: no shadow table of a virtual
-/// table, whose rows are the virtual table's to write.
-fn sqlite_tables(db: &rusqlite::Connection) -> Result<Vec<SqliteTable>, String> {
-    let listed: Vec<(String, String, String)> = {
-        let mut stmt = db
-            .prepare(
-                "select l.name, l.type, coalesce(s.sql, '') from pragma_table_list l left join sqlite_schema s on s.type = 'table' and s.name = l.name \
-                 where l.schema = 'main' and l.type in ('table', 'virtual') and l.name not like 'sqlite_%' order by s.rowid",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(|e| e.to_string())?;
-        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
-    };
-    let mut out = Vec::new();
-    for (name, kind, sql) in listed {
-        let columns: Vec<(String, String, bool, i64)> = {
-            let mut stmt = db.prepare(&format!("select name, type, hidden, pk from pragma_table_xinfo('{}')", name.replace('\'', "''"))).map_err(|e| e.to_string())?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0, r.get::<_, i64>(3)?))).map_err(|e| e.to_string())?;
-            rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+/// A SQLite connection as the seeding uses one: rusqlite's, or libSQL's engine for a libSQL case
+/// ([`crate::libsql`]), with rusqlite's values and errors.
+pub trait SqliteDb {
+    /// Runs every statement of `sql`.
+    fn run_batch(&self, sql: &str) -> Result<(), rusqlite::Error>;
+    /// Runs one statement with its parameters bound in order: the rows it changed.
+    fn run(&self, sql: &str, values: &[rusqlite::types::Value]) -> Result<usize, rusqlite::Error>;
+    /// Runs one statement with its parameters bound in order, each row handed to `each` as it comes.
+    fn each_row(&self, sql: &str, values: &[rusqlite::types::Value], each: &mut dyn FnMut(&[rusqlite::types::Value])) -> Result<(), rusqlite::Error>;
+    /// The names a statement's columns run under; `None` where it does not prepare.
+    fn column_names(&self, sql: &str) -> Option<Vec<String>>;
+    fn in_autocommit(&self) -> bool;
+    /// Interrupts every run once `at` has passed; `None` lifts it.
+    fn set_deadline(&self, at: Option<Instant>);
+}
+
+impl SqliteDb for rusqlite::Connection {
+    fn run_batch(&self, sql: &str) -> Result<(), rusqlite::Error> {
+        self.execute_batch(sql)
+    }
+
+    fn run(&self, sql: &str, values: &[rusqlite::types::Value]) -> Result<usize, rusqlite::Error> {
+        self.execute(sql, rusqlite::params_from_iter(values.iter()))
+    }
+
+    fn each_row(&self, sql: &str, values: &[rusqlite::types::Value], each: &mut dyn FnMut(&[rusqlite::types::Value])) -> Result<(), rusqlite::Error> {
+        let mut stmt = self.prepare(sql)?;
+        let width = stmt.column_count();
+        let mut rows = stmt.query(rusqlite::params_from_iter(values.iter()))?;
+        while let Some(row) = rows.next()? {
+            let row: Vec<rusqlite::types::Value> = (0..width).map(|i| row.get(i)).collect::<Result<_, _>>()?;
+            each(&row);
+        }
+        Ok(())
+    }
+
+    fn column_names(&self, sql: &str) -> Option<Vec<String>> {
+        Some(self.prepare(sql).ok()?.column_names().into_iter().map(String::from).collect())
+    }
+
+    fn in_autocommit(&self) -> bool {
+        self.is_autocommit()
+    }
+
+    fn set_deadline(&self, at: Option<Instant>) {
+        let _ = match at {
+            Some(at) => self.progress_handler(1000, Some(move || Instant::now() >= at)),
+            None => self.progress_handler(0, None::<fn() -> bool>),
         };
+    }
+}
+
+/// The rows of a statement that takes no parameters, or its error as text.
+fn sqlite_rows<D: SqliteDb + ?Sized>(db: &D, sql: &str) -> Result<Vec<Vec<rusqlite::types::Value>>, String> {
+    let mut rows = Vec::new();
+    db.each_row(sql, &[], &mut |row| rows.push(row.to_vec())).map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+fn value_text(v: &rusqlite::types::Value) -> String {
+    match v {
+        rusqlite::types::Value::Text(t) => t.clone(),
+        rusqlite::types::Value::Integer(n) => n.to_string(),
+        rusqlite::types::Value::Real(f) => f.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The tables the seeding fills, in the order they were created: no shadow table of a virtual
+/// table, whose rows are the virtual table's to write, and none of the tables libSQL keeps a vector
+/// index in, which are its own.
+fn sqlite_tables<D: SqliteDb + ?Sized>(db: &D) -> Result<Vec<SqliteTable>, String> {
+    let listed: Vec<(String, String, String)> = sqlite_rows(
+        db,
+        "select l.name, l.type, coalesce(s.sql, '') from pragma_table_list l left join sqlite_schema s on s.type = 'table' and s.name = l.name \
+         where l.schema = 'main' and l.type in ('table', 'virtual') and l.name not like 'sqlite_%' order by s.rowid",
+    )?
+    .iter()
+    .map(|r| (value_text(&r[0]), value_text(&r[1]), value_text(&r[2])))
+    .collect();
+    // libSQL's list of its vector indexes, each kept in a table named after it; none on SQLite.
+    let vector_tables: HashSet<String> = sqlite_rows(db, "select name || '_shadow' from libsql_vector_meta_shadow").unwrap_or_default().iter().map(|r| value_text(&r[0]).to_ascii_lowercase()).chain(["libsql_vector_meta_shadow".to_string()]).collect();
+    let mut out = Vec::new();
+    for (name, kind, sql) in listed.into_iter().filter(|(name, _, _)| !vector_tables.contains(&name.to_ascii_lowercase())) {
+        let columns: Vec<(String, String, bool, i64)> = sqlite_rows(db, &format!("select name, type, hidden, pk from pragma_table_xinfo('{}')", name.replace('\'', "''")))?
+            .iter()
+            .map(|r| (value_text(&r[0]), value_text(&r[1]), r[2] != rusqlite::types::Value::Integer(0), if let rusqlite::types::Value::Integer(pk) = r[3] { pk } else { 0 }))
+            .collect();
         let columns: Vec<(String, String, i64)> = columns.into_iter().filter(|(_, _, hidden, _)| !hidden).map(|(n, t, _, pk)| (n, t, pk)).collect();
         if columns.is_empty() {
             continue;
@@ -1428,11 +1496,10 @@ fn sqlite_tables(db: &rusqlite::Connection) -> Result<Vec<SqliteTable>, String> 
 }
 
 /// Run `run` with the connection interrupted once `ms` have passed.
-pub(crate) fn with_deadline<T>(db: &rusqlite::Connection, ms: u64, run: impl FnOnce() -> T) -> T {
-    let deadline = Instant::now() + Duration::from_millis(ms);
-    let _ = db.progress_handler(1000, Some(move || Instant::now() >= deadline));
+pub(crate) fn with_deadline<D: SqliteDb + ?Sized, T>(db: &D, ms: u64, run: impl FnOnce() -> T) -> T {
+    db.set_deadline(Some(Instant::now() + Duration::from_millis(ms)));
     let out = run();
-    let _ = db.progress_handler(0, None::<fn() -> bool>);
+    db.set_deadline(None);
     out
 }
 
@@ -1453,18 +1520,23 @@ fn interrupted(e: &rusqlite::Error) -> bool {
 /// assignment of its parameters, each bound as a value. SQLite itself rolls the whole transaction
 /// back on some errors (SQLITE_FULL on an INSERT of one row, an interrupted write): the state is
 /// then seeded again, so the runs after it see the same rows.
-pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Value)], timeout_ms: u64) -> Result<Report, String> {
+pub fn check_sqlite<D: SqliteDb + ?Sized>(db: &D, statements: &[(String, String, Value)], timeout_ms: u64) -> Result<Report, String> {
     let mut problems = Vec::new();
     let mut notes = Vec::new();
     let mut tallies: Vec<Tally> = statements.iter().map(|_| Tally::default()).collect();
     let tables = sqlite_tables(db)?;
+    // A vector libSQL reads from its text, of each size a vector column of the schema has, for a
+    // text parameter, which a vector function takes (`vector(:q)`).
+    let mut sizes: Vec<usize> = tables.iter().flat_map(|t| &t.columns).filter_map(|(_, declared)| vector_type(&declared.to_ascii_lowercase()).map(|(_, size)| size)).collect();
+    sizes.sort();
+    sizes.dedup();
+    let vector_texts: Vec<rusqlite::types::Value> = sizes.iter().flat_map(|n| ["1", "0"].map(|v| rusqlite::types::Value::Text(format!("[{}]", vec![v; *n].join(","))))).collect();
     // A driver's row holds each value under the name the statement it ran gives it, which is the key the type must declare.
     for (file, sql, analysis) in statements {
-        if let Ok(stmt) = db.prepare(analysis["rewritten"]["sql"].as_str().unwrap_or(sql)) {
-            let named: Vec<&str> = stmt.column_names();
+        if let Some(named) = db.column_names(analysis["rewritten"]["sql"].as_str().unwrap_or(sql)) {
             let declared: Vec<&str> = analysis["columns"].as_array().into_iter().flatten().map(|c| c["name"].as_str().unwrap_or("?")).collect();
             // A statement the analysis refused declares none.
-            if !declared.is_empty() && named != declared {
+            if !declared.is_empty() && named.iter().map(String::as_str).ne(declared.iter().copied()) {
                 problems.push(format!("{file}: columns are declared {declared:?} and run as {named:?}"));
             }
         }
@@ -1488,6 +1560,9 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                         let declared = sqlite_declared(&p["type"]);
                         let declared = declared.as_str();
                         let mut values = sqlite_pool(declared, Scenario::Edges, false);
+                        if declared == "text" {
+                            values.extend(vector_texts.iter().cloned());
+                        }
                         if !p["nullable"].as_bool().unwrap_or(false) {
                             values.retain(|v| *v != rusqlite::types::Value::Null);
                         }
@@ -1506,7 +1581,7 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                     let values: Vec<rusqlite::types::Value> = pools.iter().map(|p| p.get(r % p.len().max(1)).cloned().unwrap_or(rusqlite::types::Value::Null)).collect();
                     let bound = bind(&values);
                     let shown = bound.iter().map(|v| format!("{v:?}")).collect::<Vec<_>>().join(", ");
-                    db.execute_batch("SAVEPOINT q").map_err(|e| e.to_string())?;
+                    db.run_batch("SAVEPOINT q").map_err(|e| e.to_string())?;
                     // The rows are checked as they come, so a statement that returns rows without
                     // end holds none of them. A row returned before an error or the timeout was
                     // returned all the same, and a value in it that contradicts a type is reported.
@@ -1560,12 +1635,12 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                             }
                         }
                     });
-                    if db.is_autocommit() {
+                    if db.in_autocommit() {
                         // The error ended the transaction, and the seeded rows went with it.
                         begin_seeded(db, &tables, scenario, timeout_ms, &mut refused)?;
                         again += 1;
                     } else {
-                        db.execute_batch("ROLLBACK TO q; RELEASE q").map_err(|e| e.to_string())?;
+                        db.run_batch("ROLLBACK TO q; RELEASE q").map_err(|e| e.to_string())?;
                     }
                     found.sort();
                     found.dedup();
@@ -1609,13 +1684,13 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                                     other
                                 };
                                 let mut probe = |values: Vec<rusqlite::types::Value>| -> Result<Option<String>, String> {
-                                    db.execute_batch("SAVEPOINT q").map_err(|e| e.to_string())?;
+                                    db.run_batch("SAVEPOINT q").map_err(|e| e.to_string())?;
                                     let (_, outcome) = run_sqlite_statement(db, &text, &bind(&values), timeout_ms, |_| {});
-                                    if db.is_autocommit() {
+                                    if db.in_autocommit() {
                                         begin_seeded(db, &tables, scenario, timeout_ms, &mut refused)?;
                                         again += 1;
                                     } else {
-                                        db.execute_batch("ROLLBACK TO q; RELEASE q").map_err(|e| e.to_string())?;
+                                        db.run_batch("ROLLBACK TO q; RELEASE q").map_err(|e| e.to_string())?;
                                     }
                                     Ok(outcome.err().filter(sqlite_refuses_null).map(|e| e.to_string()))
                                 };
@@ -1634,8 +1709,8 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
             }
             Ok(())
         })();
-        if !db.is_autocommit() {
-            db.execute_batch("ROLLBACK").map_err(|e| e.to_string())?;
+        if !db.in_autocommit() {
+            db.run_batch("ROLLBACK").map_err(|e| e.to_string())?;
         }
         outcome?;
         if again > 0 {
@@ -1749,18 +1824,13 @@ fn built_value(ty: &Type, json: &Value, path: &str) -> Option<String> {
 
 /// Run one statement under the timeout, each row handed to `each` as it comes: the rows it
 /// returned, and its error if it failed.
-fn run_sqlite_statement(db: &rusqlite::Connection, sql: &str, values: &[rusqlite::types::Value], timeout_ms: u64, mut each: impl FnMut(&[rusqlite::types::Value])) -> (usize, Result<(), rusqlite::Error>) {
+fn run_sqlite_statement<D: SqliteDb + ?Sized>(db: &D, sql: &str, values: &[rusqlite::types::Value], timeout_ms: u64, mut each: impl FnMut(&[rusqlite::types::Value])) -> (usize, Result<(), rusqlite::Error>) {
     let mut returned = 0;
     let outcome = with_deadline(db, timeout_ms, || {
-        let mut stmt = db.prepare(sql)?;
-        let width = stmt.column_count();
-        let mut rows = stmt.query(rusqlite::params_from_iter(values.iter()))?;
-        while let Some(row) = rows.next()? {
-            let row: Vec<rusqlite::types::Value> = (0..width).map(|i| row.get(i)).collect::<Result<_, _>>()?;
+        db.each_row(sql, values, &mut |row| {
             returned += 1;
-            each(&row);
-        }
-        Ok(())
+            each(row);
+        })
     });
     (returned, outcome)
 }
@@ -1773,6 +1843,31 @@ fn sqlite_pool(declared: &str, scenario: Scenario, autoincrement: bool) -> Vec<r
     let text = || vec![Text("a".into()), Text("A".into()), Text(String::new()), Text("a ".into())];
     let edges = scenario == Scenario::Edges;
     let mut out = vec![Null];
+    // A libSQL vector column, whose vector index takes a vector of its own type and size alone, or
+    // NULL: a 32-bit one as its blob of little-endian floats or as its text, a 64-bit one as its
+    // blob of doubles with the type's byte after them. Ones, zeros (no direction, so no cosine
+    // distance), and at the edges infinities and NaNs.
+    if let Some((bits, size)) = vector_type(&t) {
+        let f32s = |v: f32| Blob((0..size).flat_map(|_| v.to_le_bytes()).collect());
+        let f64s = |v: f64| Blob((0..size).flat_map(|_| v.to_le_bytes()).chain([2]).collect());
+        let written = |v: &str| Text(format!("[{}]", vec![v; size].join(",")));
+        match bits {
+            32 => {
+                out.extend([f32s(1.0), f32s(0.0), written("1"), written("-1.5")]);
+                if edges {
+                    out.extend([f32s(f32::INFINITY), f32s(f32::NAN)]);
+                }
+            }
+            64 => {
+                out.extend([f64s(1.0), f64s(0.0)]);
+                if edges {
+                    out.push(f64s(f64::INFINITY));
+                }
+            }
+            _ => {}
+        }
+        return out;
+    }
     if t.contains("int") {
         out.extend([Integer(1), Integer(2), Integer(0), Integer(-1)]);
         if edges {
@@ -1795,6 +1890,20 @@ fn sqlite_pool(declared: &str, scenario: Scenario, autoincrement: bool) -> Vec<r
     out
 }
 
+/// A libSQL vector type, as a column declares it (`F32_BLOB(3)`, `FLOAT64(3)`): its float's width,
+/// 32 or 64, or 0 for the other widths, and its size.
+fn vector_type(declared: &str) -> Option<(u32, usize)> {
+    let (name, size) = declared.trim().split_once('(')?;
+    let size = size.strip_suffix(')')?.trim().parse::<usize>().ok().filter(|n| *n > 0)?;
+    let bits = match name.trim() {
+        "f32_blob" | "float32" => 32,
+        "f64_blob" | "float64" => 64,
+        "f16_blob" | "float16" | "fb16_blob" | "floatb16" | "f8_blob" | "float8" | "f1bit_blob" | "float1bit" => 0,
+        _ => return None,
+    };
+    Some((bits, size))
+}
+
 /// A value of a declared SQLite type no seeded row holds, the `n`th, by the affinity SQLite gives
 /// the name.
 fn sqlite_fresh(declared: &str, n: usize) -> rusqlite::types::Value {
@@ -1815,9 +1924,9 @@ fn sqlite_fresh(declared: &str, n: usize) -> rusqlite::types::Value {
 
 /// Open the transaction and seed it. When SQLite ends the transaction over a row's insert, the
 /// rows before it are gone too: the seeding starts again, without that row.
-fn begin_seeded(db: &rusqlite::Connection, tables: &[SqliteTable], scenario: Scenario, timeout_ms: u64, refused: &mut HashSet<(usize, usize)>) -> Result<String, String> {
+fn begin_seeded<D: SqliteDb + ?Sized>(db: &D, tables: &[SqliteTable], scenario: Scenario, timeout_ms: u64, refused: &mut HashSet<(usize, usize)>) -> Result<String, String> {
     loop {
-        db.execute_batch("BEGIN").map_err(|e| e.to_string())?;
+        db.run_batch("BEGIN").map_err(|e| e.to_string())?;
         if let Some(seeded) = seed_sqlite(db, tables, scenario, timeout_ms, refused)? {
             return Ok(seeded);
         }
@@ -1828,7 +1937,7 @@ fn begin_seeded(db: &rusqlite::Connection, tables: &[SqliteTable], scenario: Sce
 /// a unique key gets fresh values in the key's columns and is tried again. An FTS table that
 /// indexes another table's rows is rebuilt from them once they are in. What each table got, or
 /// `None` when a row's insert ended the transaction: the row is then in `refused`.
-fn seed_sqlite(db: &rusqlite::Connection, tables: &[SqliteTable], scenario: Scenario, timeout_ms: u64, refused: &mut HashSet<(usize, usize)>) -> Result<Option<String>, String> {
+fn seed_sqlite<D: SqliteDb + ?Sized>(db: &D, tables: &[SqliteTable], scenario: Scenario, timeout_ms: u64, refused: &mut HashSet<(usize, usize)>) -> Result<Option<String>, String> {
     let quoted = |name: &str| format!("\"{}\"", name.replace('"', "\"\""));
     let mut out = Vec::new();
     let mut fresh = 0i64;
@@ -1856,8 +1965,8 @@ fn seed_sqlite(db: &rusqlite::Connection, tables: &[SqliteTable], scenario: Scen
                 continue;
             }
             for _ in 0..4 {
-                let outcome = with_deadline(db, timeout_ms.max(SEEDING_TIMEOUT_MS), || db.execute(&sql, rusqlite::params_from_iter(row.iter())));
-                if db.is_autocommit() {
+                let outcome = with_deadline(db, timeout_ms.max(SEEDING_TIMEOUT_MS), || db.run(&sql, &row));
+                if db.in_autocommit() {
                     refused.insert((t, r));
                     return Ok(None);
                 }
@@ -1885,7 +1994,7 @@ fn seed_sqlite(db: &rusqlite::Connection, tables: &[SqliteTable], scenario: Scen
                 }
             }
         }
-        let empty = inserted == 0 && db.query_row(&format!("select not exists (select 1 from {})", quoted(&table.name)), [], |r| r.get::<_, bool>(0)).unwrap_or(false);
+        let empty = inserted == 0 && sqlite_rows(db, &format!("select not exists (select 1 from {})", quoted(&table.name))).is_ok_and(|rows| rows.first().and_then(|r| r.first()) == Some(&rusqlite::types::Value::Integer(1)));
         out.push(format!("{} {inserted}{}", table.name, if empty { EMPTY } else { "" }));
     }
     for table in tables {
@@ -1893,8 +2002,8 @@ fn seed_sqlite(db: &rusqlite::Connection, tables: &[SqliteTable], scenario: Scen
             Rows::Inserted => {}
             Rows::Left => out.push(format!("{} left empty (contentless)", table.name)),
             Rows::Rebuilt(content) => {
-                let outcome = with_deadline(db, timeout_ms.max(SEEDING_TIMEOUT_MS), || db.execute_batch(&format!("insert into {0} ({0}) values ('rebuild')", quoted(&table.name))));
-                if db.is_autocommit() {
+                let outcome = with_deadline(db, timeout_ms.max(SEEDING_TIMEOUT_MS), || db.run_batch(&format!("insert into {0} ({0}) values ('rebuild')", quoted(&table.name))));
+                if db.in_autocommit() {
                     return Err(format!("rebuilding {} from {content} ended the transaction: {}", table.name, outcome.err().map(|e| e.to_string()).unwrap_or_default()));
                 }
                 out.push(match outcome {

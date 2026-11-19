@@ -5,7 +5,8 @@
 //! no `expected.txt`, such as the parity check's statements, is checked for soundness alone. A Postgres case
 //! runs in a database of its own, created on the server `--url` names and dropped afterwards, so
 //! the server must be a throwaway one: cases create collations, operators and roles. A case whose
-//! `dialect` file says `sqlite` runs in a fresh SQLite file instead. A case whose `dialect` file
+//! `dialect` file says `sqlite` runs in a fresh SQLite file instead, on libSQL's engine (Turso's
+//! fork of SQLite, `libsql.rs`) where the case also has a `libsql` file. A case whose `dialect` file
 //! says `mysql` runs in a database of its own on the MySQL server `--mysql-url` (or
 //! `ORACLE_MYSQL_URL`) names, also a throwaway one, which it refuses on port 3306; how its host
 //! answers the engine and how its runs are isolated is in `mysql.rs`. A case with a `min_version`
@@ -56,6 +57,7 @@
 //! case.
 
 mod errors;
+mod libsql;
 mod mysql;
 mod replay;
 mod seed;
@@ -483,9 +485,20 @@ fn run_sqlite(case: &Path, timeout_ms: u64, given: &Map<String, Value>, dumped: 
     let name: String = case.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let file = std::env::temp_dir().join(format!("reylo-oracle-{name}.db"));
     let _ = fs::remove_file(&file);
-    let db = rusqlite::Connection::open(&file).map_err(|e| e.to_string())?;
     let setup = fs::read_to_string(case.join("setup.sql")).map_err(|e| e.to_string())?;
-    db.execute_batch(&setup).map_err(|e| format!("setup.sql: {e}"))?;
+    // A libSQL case's schema is made on libSQL, whose file the engine reads as the engine's program
+    // reads one, with rusqlite's SQLite, and its statements run on libSQL. Each connection is
+    // closed before the next is opened: two SQLite libraries in one process do not see each
+    // other's locks on a file.
+    let libsql = case.join("libsql").exists();
+    if libsql {
+        let lib = libsql::Connection::open(&file).map_err(|e| e.to_string())?;
+        seed::SqliteDb::run_batch(&lib, &setup).map_err(|e| format!("setup.sql on libSQL {}: {e}", libsql::version()))?;
+    }
+    let db = rusqlite::Connection::open(&file).map_err(|e| e.to_string())?;
+    if !libsql {
+        db.execute_batch(&setup).map_err(|e| format!("setup.sql: {e}"))?;
+    }
     let mut lines = Vec::new();
     let mut analyzed = Vec::new();
     for (file_name, sql) in statements(case) {
@@ -498,8 +511,15 @@ fn run_sqlite(case: &Path, timeout_ms: u64, given: &Map<String, Value>, dumped: 
         analyzed.push((file_name, sql, analysis));
     }
     // A value that contradicts a type is a failure whatever expected.txt says.
-    let report = seed::check_sqlite(&db, &analyzed, timeout_ms);
-    drop(db);
+    let report = if libsql {
+        drop(db);
+        let lib = libsql::Connection::open(&file).map_err(|e| e.to_string())?;
+        seed::check_sqlite(&lib, &analyzed, timeout_ms)
+    } else {
+        let report = seed::check_sqlite(&db, &analyzed, timeout_ms);
+        drop(db);
+        report
+    };
     let _ = fs::remove_file(&file);
     let unchecked = seeded(case, lines.len(), report.map_err(|e| format!("seeding: {e}"))?)?;
     Ok((lines, unchecked))
