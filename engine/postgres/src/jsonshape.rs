@@ -1650,6 +1650,12 @@ struct ResolveCtx<'a> {
     document: bool,
 }
 
+/// Whether a value of the type may be JSON's null: JSON the statement did not build, unless the
+/// JSON Schema a CHECK holds it to refuses null.
+fn may_be_json_null(ty: &Type) -> bool {
+    matches!(&ty.kind, Kind::Json(JsonType { content: None, .. })) && ty.schema().is_none_or(|schema| crate::schema_type::admits(&schema, &Value::Null))
+}
+
 /// `fields` with the last of each name, where the first of it stood.
 fn last_of_each_name(fields: Vec<Field>) -> Vec<Field> {
     let mut out: Vec<Field> = Vec::with_capacity(fields.len());
@@ -1760,7 +1766,13 @@ impl ResolveCtx<'_> {
                     }));
                     (content(built.ty.clone()), built.non_null && !col.nullable)
                 }
-                Some((col, None)) if col.type_oid != oid::UNKNOWN => (self.column(col), !col.nullable),
+                // A json or jsonb value may be JSON's null (`'null'::jsonb`), which a document holds
+                // as a null, whatever the column's NOT NULL says; at the top it is the column's value.
+                Some((col, None)) if col.type_oid != oid::UNKNOWN => {
+                    let ty = self.column(col);
+                    let json_null = self.document && !path.is_empty() && may_be_json_null(&ty);
+                    (ty, !col.nullable && !json_null)
+                }
                 _ => {
                     unresolved.push(display_path(path));
                     (Type::unknown(), false)
@@ -1786,9 +1798,11 @@ impl ResolveCtx<'_> {
                                 self.column(col)
                             };
                             // A field is as the read with the row there has it: the outer join that
-                            // nulls the object nulls none of a row that exists.
+                            // nulls the object nulls none of a row that exists. In a document, a json
+                            // or jsonb column's JSON null is a null too.
                             let present = outcome.present.as_ref().and_then(|p| p.get(i)).is_none_or(|nullable| *nullable);
-                            Field::new(col.name.clone(), ty, col.nullable && present)
+                            let json_null = self.document && may_be_json_null(&ty);
+                            Field::new(col.name.clone(), ty, (col.nullable && present) || json_null)
                         })
                         .collect();
                     let fields = if self.document { last_of_each_name(fields) } else { fields };
