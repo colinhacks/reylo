@@ -296,6 +296,8 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
     let mut largest = 0u64;
     // The span of the first named placeholder, whose prefix every later one repeats.
     let mut first_named: Option<(usize, usize)> = None;
+    // Where each `?` of a ClickHouse conditional that has not met its `:` ends.
+    let mut conditionals: Vec<usize> = Vec::new();
     let mut push = |name: String, start: usize, end: usize, params: &mut Vec<String>| {
         if !params.contains(&name) {
             params.push(name.clone());
@@ -401,6 +403,19 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                     last = Last::Operand;
                     continue;
                 }
+                // The `:` of a ClickHouse conditional, `c ? a : b`: the first after its `?` with
+                // an operand between them, which a parameter that is the operand has not
+                // (`c ? :a::UInt8 : 0`). A name and a cast may follow it, and are no parameter
+                // (`c ? a :b::String`).
+                if let Some(&after) = conditionals.last() {
+                    let comment = |at: usize| opaque.iter().any(|&(start, end)| start <= at && at < end && (sql[start..].starts_with("--") || sql[start..].starts_with("/*") || sql[start..].starts_with('#')));
+                    if (after..i).any(|at| !b[at].is_ascii_whitespace() && !comment(at)) {
+                        conditionals.pop();
+                        i += 1;
+                        last = Last::Other;
+                        continue;
+                    }
+                }
                 match b.get(i + 1) {
                     // A colon that opens a Postgres subscript is a slice with no lower bound
                     // (`tags[:n]` is `tags[1:n]`), since no expression starts with a colon there,
@@ -446,7 +461,8 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
             // whose error says what it expects.
             b'{' if clickhouse => {
                 let name_start = skip_spaces(b, i + 1);
-                let name_stop = if b.get(name_start).is_some_and(|&c| is_name_start(c)) { name_end(b, name_start) } else { name_start };
+                // A ClickHouse name may hold a `$` past its first character.
+                let name_stop = if b.get(name_start).is_some_and(|&c| is_name_start(c)) { (name_start..b.len()).find(|&at| !(is_name_char(b[at]) || b[at] == b'$')).unwrap_or(b.len()) } else { name_start };
                 let colon = skip_spaces(b, name_stop);
                 let close = if name_stop > name_start && b.get(colon) == Some(&b':') && b.get(colon + 1) != Some(&b':') { braces_end(b, colon + 1) } else { None };
                 match close {
@@ -463,7 +479,9 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 }
             }
             b'$' => {
-                if dialect == Dialect::Postgres || clickhouse {
+                // A `$` inside a ClickHouse name is the name's (`a$b$`), and opens no heredoc.
+                let named = clickhouse && (prev_is_name_char(b, i) || (i > 0 && b[i - 1] == b'$'));
+                if (dialect == Dialect::Postgres || clickhouse) && !named {
                     if let Some(tag_end) = dollar_tag_end(b, i) {
                         let tag = &b[i..tag_end];
                         match find_bytes(b, tag, tag_end) {
@@ -527,7 +545,12 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 }
             },
             // ClickHouse's `?` is its conditional operator (`c ? a : b`), and it binds by name alone.
-            b'?' if dialect != Dialect::Postgres && !clickhouse => {
+            b'?' if clickhouse => {
+                i += 1;
+                conditionals.push(i);
+                last = Last::Other;
+            }
+            b'?' if dialect != Dialect::Postgres => {
                 if b.get(i + 1).is_some_and(u8::is_ascii_digit) && dialect == Dialect::Mysql {
                     let end = digits_end(b, i + 1);
                     return Err(LexError { message: format!("MySQL has no numbered placeholder {}; write ? for each value, or :name", &sql[i..end]), offset: i });
@@ -909,6 +932,12 @@ mod tests {
         assert!(l("SELECT c ? a :b, doc.a.:Int64, m[:k], :bare FROM t").params.is_empty());
         // Its `?` is an operator, and a `{` that opens no placeholder is the server's to refuse.
         assert!(l("SELECT a ? 1 : 2, {x}, {1:UInt8}, {y:} FROM t").params.is_empty());
+        // The operator's `:` may stand before a name and a cast, which is no parameter; a
+        // parameter that is its operand has no operand before it.
+        assert!(l("SELECT c ? a :b::String, c ? 'x' /* or */ :d::String, c ? (d ? 1 :e::UInt8) :f::UInt8 FROM t").params.is_empty());
+        assert_eq!(l("SELECT c ? :a::UInt8 : 0, c ? 1 : :b::UInt8, :c::UInt8 FROM t").params, ["a", "b", "c"]);
+        // A `$` is a character of a name, a parameter's too, and opens a heredoc only where none stands before it.
+        assert_eq!(l("SELECT 1 AS a$b$, {p:UInt8} AS q, 2 AS c$b$, {x$y:UInt8}").params, ["p", "x$y"]);
         // Its text: a backslash escapes in a string and a quoted name, `#` comments before a space
         // or a `!`, block comments nest, and a heredoc quotes.
         assert!(l("SELECT 'it\\'s {a:UInt8}', `{b:UInt8}\\``, \"{c:UInt8}\\\"\" # {d:UInt8}\n #! {e:UInt8}\n /* {f:UInt8} /* {g:UInt8} */ {h:UInt8} */, $q${i:UInt8}$q$ -- {j:UInt8}").params.is_empty());

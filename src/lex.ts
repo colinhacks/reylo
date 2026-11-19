@@ -42,6 +42,8 @@ export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sq
   // What was read last, past whitespace and comments: an operand (a name other than `array`, a
   // number, a quoted name, a placeholder, `)` or `]`), the `[` of a subscript after one, or other.
   let last: "other" | "operand" | "subscript" = "other";
+  // Where each `?` of a ClickHouse conditional that has not met its `:` ends.
+  const conditionals: number[] = [];
   while (i < sql.length) {
     const ch = sql[i]!;
     const next = sql[i + 1];
@@ -63,17 +65,21 @@ export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sq
       continue;
     }
     if (ch === "/" && next === "*") { const end = sql.indexOf("*/", i + 2); i = end === -1 ? sql.length : end + 2; continue; }
-    if (clickhouse && ch === "$") {
-      // A heredoc, `$tag$…$tag$`.
+    if (clickhouse && ch === "$" && !(i > 0 && /[A-Za-z0-9_$]/.test(sql[i - 1]!))) {
+      // A heredoc, `$tag$…$tag$`: a `$` inside a name is the name's.
       const tag = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
       if (tag) { const end = sql.indexOf(tag[0], i + tag[0].length); i = end === -1 ? sql.length : end + tag[0].length; last = "other"; continue; }
     }
     if (clickhouse && ch === "{") {
       // `{name:Type}`, to the `}` that closes it, past the parentheses and strings of its type.
-      const head = /^\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*:(?!:)/.exec(sql.slice(i));
+      const head = /^\{\s*([A-Za-z_][A-Za-z0-9_$]*)\s*:(?!:)/.exec(sql.slice(i));
       const close = head ? bracesEnd(sql, i + head[0].length) : -1;
       if (head && close !== -1 && sql.slice(i + head[0].length, close).trim() !== "") { push(head[1]!, i, close + 1); i = close + 1; last = "operand"; continue; }
       i += 1; last = "other"; continue;
+    }
+    if (clickhouse && ch === ":" && next !== ":" && conditionals.length && !onlySpace(sql, conditionals[conditionals.length - 1]!, i)) {
+      // The `:` of a conditional, `c ? a : b`: the first after its `?` with an operand between them. A name and a cast may follow it.
+      conditionals.pop(); i += 1; last = "other"; continue;
     }
     if (clickhouse && ch === ":" && next !== ":") {
       // A `:name` is a parameter only where a cast types it, and never after a `.`, as a typed JSON path writes one.
@@ -105,7 +111,8 @@ export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sq
       push(position(m[0]), i, i + 1 + m[0].length); i += 1 + m[0].length; last = "operand"; continue;
     }
     // ClickHouse's `?` is its conditional operator.
-    if (ch === "?" && dialect !== "postgres" && !clickhouse) { largest += 1; push(String(largest), i, i + 1); i += 1; last = "operand"; continue; }
+    if (ch === "?" && clickhouse) { i += 1; conditionals.push(i); last = "other"; continue; }
+    if (ch === "?" && dialect !== "postgres") { largest += 1; push(String(largest), i, i + 1); i += 1; last = "operand"; continue; }
     if (/\s/.test(ch)) { i += 1; continue; }
     if (/[A-Za-z0-9_]/.test(ch)) {
       // A name or a number, whole: `array` opens a constructor, anything else is an operand.
@@ -123,6 +130,25 @@ export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sq
 /** Whether a parameter name is a position: a number, where a name starts with a letter or `_`. */
 export function isPositional(name: string): boolean {
   return /^\d+$/.test(name);
+}
+
+/** Whether a ClickHouse statement holds nothing but whitespace and comments from `from` up to `to`. */
+function onlySpace(sql: string, from: number, to: number): boolean {
+  let i = from;
+  while (i < to) {
+    const ch = sql[i]!;
+    const next = sql[i + 1];
+    if (/\s/.test(ch)) i += 1;
+    else if ((ch === "-" && next === "-") || (ch === "#" && (next === " " || next === "!"))) { const end = sql.indexOf("\n", i); i = end === -1 ? to : end; }
+    else if (ch === "/" && next === "*") {
+      let depth = 1;
+      i += 2;
+      while (i < to && depth > 0) {
+        if (sql.startsWith("/*", i)) { depth += 1; i += 2; } else if (sql.startsWith("*/", i)) { depth -= 1; i += 2; } else i += 1;
+      }
+    } else return false;
+  }
+  return true;
 }
 
 /** The index of the `}` that closes a ClickHouse placeholder whose type starts at `from`, or -1. */
