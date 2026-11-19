@@ -181,13 +181,14 @@ static int callsOrReadsGenerated(Table *pTab, Expr *p){
   return 0;
 }
 
-/* The provenance members of a column reference (the object is already open). */
+/* The provenance members of a column reference (the object is already open). One SQLite resolved
+** to no Table has a null "table" and no member after it. */
 static void columnRef(sqlite3_str *s, Expr *p, Select *pSel){
   Table *pTab = ExprUseYTab(p) ? p->y.pTab : 0;
   int iCol = p->iColumn;
   kv_int(s, "cursor", p->iTable);
   kv_int(s, "index", iCol);
-  if( pTab==0 ) return;
+  if( pTab==0 ){ kv_str(s, "table", 0); return; }
   tableSeen(pTab);
   kv_str(s, "table", pTab->zName);
   if( iCol<0 ) iCol = pTab->iPKey;
@@ -196,6 +197,8 @@ static void columnRef(sqlite3_str *s, Expr *p, Select *pSel){
     kv_str(s, "affinity", "integer");
     kv_bool(s, "notNull", 1);
     kv_bool(s, "rowid", 1);
+    kv_bool(s, "generated", 0);
+    kv_bool(s, "subtype", 0);
   }else{
     Column *pCol = &pTab->aCol[iCol];
     kv_str(s, "column", pCol->zCnName);
@@ -205,12 +208,12 @@ static void columnRef(sqlite3_str *s, Expr *p, Select *pSel){
     kv_str(s, "coll", sqlite3ColumnColl(pCol) ? sqlite3ColumnColl(pCol) : sqlite3StrBINARY);
     kv_bool(s, "notNull", pCol->notNull!=0);
     kv_bool(s, "rowid", p->iColumn<0 || iCol==pTab->iPKey);
-    if( pCol->colFlags & COLFLAG_GENERATED ) kv_bool(s, "generated", 1);
-    if( (pCol->colFlags & COLFLAG_VIRTUAL) && callsOrReadsGenerated(pTab, sqlite3ColumnExpr(pTab, pCol)) ) kv_bool(s, "subtype", 1);
+    kv_bool(s, "generated", (pCol->colFlags & COLFLAG_GENERATED)!=0);
+    kv_bool(s, "subtype", (pCol->colFlags & COLFLAG_VIRTUAL) && callsOrReadsGenerated(pTab, sqlite3ColumnExpr(pTab, pCol)));
   }
   kv_bool(s, "outer", ExprHasProperty(p, EP_CanBeNull) || (p->op==TK_COLUMN && outerCursor(pSel, p->iTable)));
-  if( pTab->tabFlags & TF_Strict ) kv_bool(s, "strict", 1);
-  if( IsView(pTab) ) kv_bool(s, "view", 1);
+  kv_bool(s, "strict", (pTab->tabFlags & TF_Strict)!=0);
+  kv_bool(s, "view", IsView(pTab));
 }
 
 /* A row assigned fewer values than it has columns (`SET (a, b, c) = (SELECT x, y)`) is SQLite's
@@ -230,15 +233,16 @@ static void expr(sqlite3_str *s, Expr *p, Select *pSel){
   kv_str(s, "aff", affName(missingField(p) ? SQLITE_AFF_NONE : sqlite3ExprAffinity(p)));
   /* SQLite moves every ON term into the WHERE; one from an outer join's ON says so, and names the
   ** cursor of the join's right side, which the term restricts without removing a row. */
-  if( ExprHasProperty(p, EP_OuterON) ){ kv_bool(s, "outerOn", 1); kv_int(s, "join", p->w.iJoin); }
+  kv_bool(s, "outerOn", ExprHasProperty(p, EP_OuterON));
+  if( ExprHasProperty(p, EP_OuterON) ) kv_int(s, "join", p->w.iJoin);
   /* One from an inner join's ON, which a RIGHT or FULL JOIN after it does not apply to the rows it
   ** null-extends. */
-  if( ExprHasProperty(p, EP_InnerON) ) kv_bool(s, "innerOn", 1);
+  kv_bool(s, "innerOn", ExprHasProperty(p, EP_InnerON));
   switch( op ){
     case TK_COLUMN: case TK_AGG_COLUMN: case TK_TRIGGER:
       columnRef(s, p, pSel);
       /* RETURNING reads the row the statement wrote from registers, not from a cursor. */
-      if( p->op==TK_REGISTER ) kv_bool(s, "register", 1);
+      kv_bool(s, "register", p->op==TK_REGISTER);
       break;
     case TK_VARIABLE:
       if( ExprHasProperty(p, EP_IntValue) ){ key(s, "name"); sqlite3_str_appendf(s, "\"?%d\",", p->iColumn); }
@@ -363,15 +367,13 @@ static void selectJson(sqlite3_str *s, Select *pTop){
     kv_bool(s, "right", (pItem->fg.jointype & JT_RIGHT)!=0);
     kv_bool(s, "leftOfRight", (pItem->fg.jointype & JT_LTORJ)!=0);
     kv_bool(s, "tabFunc", pItem->fg.isTabFunc);
-    if( pItem->fg.isTabFunc ){ key(s, "args"); exprList(s, pItem->u1.pFuncArg, p); sqlite3_str_appendchar(s, 1, ','); }
+    key(s, "args"); exprList(s, pItem->fg.isTabFunc ? pItem->u1.pFuncArg : 0, p); sqlite3_str_appendchar(s, 1, ',');
     kv_bool(s, "cte", pItem->fg.isCte);
     /* A recursive WITH query's read of itself, inside the query: it has no subquery of its own. */
     kv_bool(s, "recursive", pItem->fg.isRecursive);
-    if( pItem->pSTab ){
-      tableSeen(pItem->pSTab);
-      if( IsView(pItem->pSTab) ) kv_bool(s, "view", 1);
-      if( IsVirtual(pItem->pSTab) ) kv_bool(s, "virtual", 1);
-    }
+    if( pItem->pSTab ) tableSeen(pItem->pSTab);
+    kv_bool(s, "view", pItem->pSTab && IsView(pItem->pSTab));
+    kv_bool(s, "virtual", pItem->pSTab && IsVirtual(pItem->pSTab));
     key(s, "subquery");
     if( pItem->fg.isSubquery && pItem->u4.pSubq ) selectJson(s, pItem->u4.pSubq->pSelect); else sqlite3_str_appendall(s, "null");
     sqlite3_str_appendchar(s, 1, ',');
@@ -855,7 +857,8 @@ char *reylo_sqlite_analyze(
   closeArr(schemaErrors);
   sqlite3_str_appendchar(out, 1, '{');
   if( rc!=SQLITE_OK ){
-    key(out, "error"); sqlite3_str_appendall(out, "{\"message\":\"cannot open the schema replay\",\"offset\":-1}");
+    key(out, "error"); sqlite3_str_appendall(out, "{\"message\":\"cannot open the schema replay\",\"offset\":-1},");
+    key(out, "schemaErrors"); sqlite3_str_appendall(out, sqlite3_str_value(schemaErrors) ? sqlite3_str_value(schemaErrors) : "[]");
     closeObj(out);
     sqlite3_free(sqlite3_str_finish(schemaErrors));
     return sqlite3_str_finish(out);
