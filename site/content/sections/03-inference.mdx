@@ -2,8 +2,6 @@
 title: "Inference"
 ---
 
-Reylo lets you use the full power of SQL, on Postgres, MySQL, SQLite and SQL Server.
-
 ## How it works [#how-it-works]
 
 Your database does the typing.
@@ -240,9 +238,7 @@ For every rule and edge case of each database, from 64-bit integers to time zone
 
 ## Named parameters [#naming]
 
-For convenience, there is some Reylo-specific syntax that can be used inside your `.sql` files. This syntax is transpiled into the idiomatic form for your database's dialect.
-
-Name a parameter with a colon, and Reylo infers its type from where it's used. Where your database has a named form of its own, it works too, and the examples here use it: `@name` on SQL Server.
+Name a parameter with a colon, and Reylo infers its type from where it's used, and compiles it to your database's own placeholder:
 
 <InferenceCard>
 
@@ -308,8 +304,6 @@ select len(@text::text) as n
 </Details>
 
 ## Column types
-
-Each column comes back with its type:
 
 <InferenceCard>
 
@@ -410,7 +404,7 @@ order by
 
 ## Dynamic filtering
 
-To filter a list by a form's values, pass them as one [JSON parameter](#typed-json). Its schema says what each filter takes and what it defaults to, and Reylo checks it before the query runs:
+To filter a list by a form's values, pass them as one [JSON parameter](#typed-json), which Reylo checks against its schema before the query runs:
 
 <InferenceCard>
 
@@ -758,7 +752,7 @@ An expression with no `as` has no name of its own, only what your database makes
 
 ## Window functions
 
-Reylo types each window function: a row number is never null, while `lag()` is null on the first row:
+Reylo types each window function:
 
 <InferenceCard>
 
@@ -840,7 +834,7 @@ select
 
 </InferenceCard>
 
-A lateral join runs its subquery once per row, here each user's latest post, or null for a user with none:
+A lateral join runs its subquery once per row:
 
 <InferenceCard>
 
@@ -1453,12 +1447,12 @@ from input cross apply openjson(input.users) with (
 
 ## Nested inserts
 
-Users with their posts, in one parameter. The posts find their user by `email`, a unique key.
+Users with their posts, in one parameter.
 
 <DialectTabs>
 <Dialect value="Postgres">
 
-Postgres writes both tables in one statement: a `with` inserts the users, and the statement inserts the posts:
+Postgres writes both tables in one statement:
 
 <InferenceCard>
 

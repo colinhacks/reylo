@@ -1,5 +1,6 @@
 import { DocsLayout } from 'fumadocs-ui/layouts/docs';
 import { DocsBody, DocsPage, DocsTitle } from 'fumadocs-ui/layouts/docs/page';
+import Link from 'fumadocs-core/link';
 import type { TOCItemType } from 'fumadocs-core/toc';
 import type { ComponentProps, CSSProperties, ReactNode } from 'react';
 import { TocFooter, TocHeader, TopRow } from './chrome';
@@ -35,6 +36,47 @@ export function foldToc(toc: TOCItemType[], fold: readonly string[] = []): TOCIt
 }
 
 type Tree = ComponentProps<typeof DocsLayout>['tree'];
+
+/**
+ * The previous and next pages, as two large links at the foot of the page, in the order the page
+ * list gives them; pages that leave the docs (`external`) are passed over. A page the list doesn't
+ * hold, or the first or last, shows the one link it has.
+ */
+function Pager({ list }: { list: PageList }) {
+  const pages = list.groups.flatMap((g) => g.items).filter((p) => !p.external);
+  const at = pages.findIndex((p) => p.href === list.current);
+  if (at < 0) return null;
+  const prev = pages[at - 1];
+  const next = pages[at + 1];
+  if (!prev && !next) return null;
+  const name = (p: (typeof pages)[number]) => (p.code ? <code>{p.title}</code> : p.title);
+  return (
+    <nav className="dk-pager" aria-label="Previous and next pages">
+      {prev ? (
+        <Link href={prev.href} className="dk-pager-prev" rel="prev">
+          <span className="dk-pager-label">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M13.5 8h-11M7 3.5 2.5 8 7 12.5" />
+            </svg>
+            Previous
+          </span>
+          <span className="dk-pager-title">{name(prev)}</span>
+        </Link>
+      ) : null}
+      {next ? (
+        <Link href={next.href} className="dk-pager-next" rel="next">
+          <span className="dk-pager-label">
+            Next
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M2.5 8h11M9 3.5 13.5 8 9 12.5" />
+            </svg>
+          </span>
+          <span className="dk-pager-title">{name(next)}</span>
+        </Link>
+      ) : null}
+    </nav>
+  );
+}
 
 /**
  * The whole page: no bar stays above it; the brand, the repository and the theme switch sit in the
@@ -106,6 +148,7 @@ export function DocsShell({
         <DocsTitle>{title}</DocsTitle>
       )}
       <DocsBody>{children}</DocsBody>
+      {pages ? <Pager list={pages} /> : null}
       {footer ? <footer className="dk-footer">{footer}</footer> : null}
     </>
   );

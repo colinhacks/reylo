@@ -5,7 +5,7 @@ description: How to use Reylo with Neon. The connection string the type check re
 
 <p className="dk-subheader">Reylo on Neon's serverless Postgres</p>
 
-Reylo works with Neon. Neon is Postgres, so everything on the [Postgres](/postgres) page holds for it. This page covers what's specific to Neon: its two connection strings, its serverless driver and its branches.
+Neon is Postgres, so everything on the [Postgres](/postgres) page holds for it.
 
 | | |
 | --- | --- |
@@ -139,7 +139,7 @@ Each runs a transaction its own way: on a client checked out of the pool with `p
 
 ## Branches
 
-Each branch has connection strings of its own. Neon's CLI prints a branch's direct one:
+Neon's CLI prints a branch's direct connection string:
 
 ```sh title="Terminal"
 # add --pooled for the pooled one
