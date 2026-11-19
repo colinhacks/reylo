@@ -581,6 +581,124 @@ fn platform_ddl(url: &str, major: i64, schemas: &[String]) -> Result<Vec<String>
         .collect())
 }
 
+/// How the note opens that says what every shadow leaves out of the target.
+pub const LEFT_OUT: &str = "Shadow databases leave out";
+
+/// Runs `statements` in the new shadow `name` as `bare`, a role the connection may become, which may
+/// create schemas in it and has `privileges` on every schema for the while it makes them, given back
+/// after. A statement it can't run is left out.
+#[cfg(feature = "cli")]
+async fn make_as(admin: &tokio_postgres::Client, db: &mut Db, name: &str, bare: &str, statements: &[String], privileges: &[&str]) {
+    let role = ident(bare);
+    let _ = admin.batch_execute(&format!("grant create on database \"{name}\" to {role}")).await;
+    let lacking = |privilege: &str| {
+        format!(
+            "select format('grant {} on schema %I to %s', nspname, {}) as s from pg_namespace where nspname not like 'pg\\_%' and nspname <> 'information_schema' and not has_schema_privilege({}, oid, '{privilege}')",
+            privilege.to_lowercase(),
+            literal(&role),
+            literal(bare)
+        )
+    };
+    let mut grants: Vec<String> = Vec::new();
+    for privilege in privileges {
+        grants.extend(db.rows(&lacking(privilege)).await.unwrap_or_default().iter().map(|r| r.text("s").to_string()));
+    }
+    for g in &grants {
+        let _ = db.exec(g).await;
+    }
+    let _ = db.exec(&format!("set role {role}")).await;
+    let _ = db.exec("set check_function_bodies = off").await;
+    for statement in statements {
+        let _ = db.exec(statement).await;
+    }
+    let _ = db.exec("reset check_function_bodies").await;
+    let _ = db.exec("reset role").await;
+    for g in &grants {
+        let _ = db.exec(&format!("revoke{}", &g["grant".len()..]).replacen(" to ", " from ", 1)).await;
+    }
+    let _ = admin.batch_execute(&format!("revoke create on database \"{name}\" from {role}")).await;
+}
+
+/// What a superuser the target's role may not act as owns there that the shadows need beyond the
+/// name list's schemas, which is the platform's: a shadow makes it as a role every comparison
+/// leaves out, or leaves it out.
+#[cfg(feature = "cli")]
+#[derive(Default)]
+pub struct Owned {
+    /// Its schemas, whole, as pg_dump makes them, with the privileges the target gives on them, and
+    /// its routines in the project's schemas.
+    pub(crate) statements: Vec<String>,
+    /// Its extensions (Tiger Cloud's `timescaledb`, Azure's `pgaadauth`), each `(name, schema)`.
+    pub(crate) extensions: Vec<(String, String)>,
+    /// The role of the shadows' server that makes them, [`crate::catalog::SHADOW_PLATFORM_ROLE`],
+    /// where the connection may become it.
+    pub(crate) role: Option<String>,
+    pub(crate) note: Option<String>,
+}
+
+#[cfg(feature = "cli")]
+impl Owned {
+    /// What a replay cache's key takes of it beside its statements.
+    pub(crate) fn key(&self) -> String {
+        let extensions: Vec<String> = self.extensions.iter().map(|(e, s)| format!("{e} {s}")).collect();
+        format!("{} {}", self.role.as_deref().unwrap_or_default(), extensions.join(","))
+    }
+}
+
+/// What [`Owned`] the target has, with the role the shadows' server (`admin`'s) makes it as, where
+/// that server has it and the connection may become it; else the note that says it is left out.
+/// Reylo makes no role itself: a role is the whole server's, and outlives every run, so the shadows'
+/// server, often the target's own, is given one only by whoever runs it.
+#[cfg(feature = "cli")]
+async fn owned_by_platform(target: &mut Db, admin: &tokio_postgres::Client, url: &str, version: i64) -> Result<Owned, Error> {
+    use crate::catalog::{beyond_reach, in_project_schema, not_extension, not_platform_schema, PG_USER_NS, PLATFORM_ROLES, SHADOW_PLATFORM_ROLE};
+    let named = PLATFORM_ROLES.iter().map(|r| literal(r)).collect::<Vec<_>>().join(", ");
+    let theirs = |owner: &str| format!("{} and pg_get_userbyid({owner}) <> all (array[{named}])", beyond_reach(owner));
+    let rows = target
+        .rows(&format!(
+            "select 's' as k, n.nspname::text as a, null::text as b, pg_get_userbyid(n.nspowner)::text as owner, 0::int8 as o from pg_namespace n
+              where {} and n.nspname <> 'public' and n.nspname not like 'pg\\_%' and n.nspname <> 'information_schema' and {}
+            union all
+            select 'x', x.extname, n.nspname, pg_get_userbyid(x.extowner), 0 from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {}
+            union all
+            select 'f', pg_get_functiondef(p.oid), null, pg_get_userbyid(p.proowner), p.oid::int8 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+              where p.prokind in ('f', 'p') and {PG_USER_NS} and {} and {} and {}
+            order by 1, 5, 2",
+            theirs("n.nspowner"),
+            not_extension("pg_namespace", "n"),
+            // One in a schema of the project's is the project's, whoever owns it.
+            format!("{} and not {}", theirs("x.extowner"), in_project_schema("n")),
+            theirs("p.proowner"),
+            not_platform_schema("n"),
+            not_extension("pg_proc", "p")
+        ))
+        .await?;
+    if rows.is_empty() {
+        return Ok(Owned::default());
+    }
+    let of = |k: &'static str| rows.iter().filter(move |r| r.text("k") == k);
+    let schemas: Vec<String> = of("s").map(|r| r.text("a").to_string()).collect();
+    let mut owners: Vec<String> = rows.iter().map(|r| r.text("owner").to_string()).collect();
+    owners.sort();
+    owners.dedup();
+    let mut statements = if schemas.is_empty() { vec![] } else { platform_ddl(url, version / 10000, &schemas).unwrap_or_default() };
+    statements.extend(schema_grants(target, &schemas).await?);
+    statements.extend(of("f").map(|r| r.text("a").to_string()));
+    let extensions = of("x").map(|r| (r.text("a").to_string(), r.text("b").to_string())).collect();
+    let role = SHADOW_PLATFORM_ROLE;
+    let may = format!("select pg_has_role(current_user, oid, case when current_setting('server_version_num')::int >= 160000 then 'SET' else 'MEMBER' end)::text as may from pg_roles where rolname = {}", literal(role));
+    if pg_rows(admin, &may).await?.first().is_some_and(|r| r.text("may") == "true") {
+        return Ok(Owned { statements, extensions, role: Some(role.to_string()), note: None });
+    }
+    let user = pg_rows(admin, "select current_user as u").await?.first().map(|r| r.text("u").to_string()).unwrap_or_default();
+    let note = format!(
+        "· {LEFT_OUT} what {} {} here, the platform's, so a migration that uses it fails in them: a role {role} on their server that {user} may SET ROLE to lets them make it",
+        owners.join(", "),
+        if owners.len() == 1 { "owns" } else { "own" }
+    );
+    Ok(Owned { statements: vec![], extensions, role: None, note: Some(note) })
+}
+
 /// The target's privileges on `schemas`, as the grants that make them, its owner's own left out.
 async fn schema_grants(target: &mut Db, schemas: &[String]) -> Result<Vec<String>, Error> {
     let mut out = Vec::new();
@@ -641,6 +759,11 @@ pub enum Server {
         /// every comparison leaves them out there as it does on the target.
         environment: Vec<String>,
         environment_role: Option<String>,
+        /// What a superuser the target's role may not act as owns there beyond those schemas (Tiger
+        /// Cloud's `timescale_functions`, its functions in `public`, its extensions), the platform's
+        /// too: made in each shadow as a role every comparison leaves out there, as the superuser's
+        /// is on the target, and left out where the shadows' role may not become it.
+        owned: Owned,
         /// The target's privileges on the schemas a shadow has without the project making them
         /// (`public`, and those its extensions are in), as `grant` statements.
         schema_grants: Vec<String>,
@@ -770,7 +893,8 @@ impl Server {
                 let environment = if environment_role.is_some() { platform_ddl(url, version / 10000, &platform).unwrap_or_default() } else { vec![] };
                 let schemas: Vec<String> = std::iter::once("public".to_string()).chain(extensions.iter().map(|(_, s)| s.clone())).filter(|s| !platform.contains(s)).collect();
                 let schema_grants = schema_grants(target, &schemas).await?;
-                Ok(Server::Postgres { admin, url: server_url.to_string(), create, locale: unknown_locale, settings, privileges, copy_privileges: true, extensions, leave: vec![], environment, environment_role, schema_grants })
+                let owned = owned_by_platform(target, &admin, url, version).await?;
+                Ok(Server::Postgres { admin, url: server_url.to_string(), create, locale: unknown_locale, settings, privileges, copy_privileges: true, extensions, leave: vec![], environment, environment_role, owned, schema_grants })
             }
             Dialect::Mysql => {
                 let admin = crate::db::open_mysql(&with_database(server_url, "")).await?;
@@ -825,7 +949,7 @@ impl Server {
     /// privileges) but not its database settings, which a copy does not take. The lock named after
     /// it is held until it is dropped; a copy that fails releases it.
     pub(crate) async fn pg_shadow(&mut self, template: Option<&str>) -> Result<Shadow, Error> {
-        let Server::Postgres { admin, url, create, locale, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, schema_grants } = self else { return Err(Error("not a Postgres server".into())) };
+        let Server::Postgres { admin, url, create, locale, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, owned, schema_grants, .. } = self else { return Err(Error("not a Postgres server".into())) };
         let name = random_name();
         admin.batch_execute(&format!("select pg_advisory_lock(hashtextextended('{name}', 0))")).await.map_err(pg_error)?;
         let made = async {
@@ -886,45 +1010,55 @@ impl Server {
             // the replay, which says so.
             // The extensions in a schema of the project's first, which the platform's own may use;
             // those in a platform's schema after it is made, as the platform made it.
-            let copied: Vec<&(String, String)> = extensions.iter().filter(|(e, _)| !leave.contains(&e.to_lowercase())).collect();
-            let platform_schema = |schema: &str| environment.iter().any(|st| st.trim_start().to_ascii_lowercase().starts_with(&format!("create schema {}", schema.to_ascii_lowercase())));
+            let copied: Vec<&(String, String)> = extensions.iter().filter(|(e, _)| !leave.contains(&e.to_lowercase()) && !owned.extensions.iter().any(|(o, _)| o == e)).collect();
+            let platform_schema = |schema: &str| environment.iter().chain(owned.statements.iter()).any(|st| st.trim_start().to_ascii_lowercase().starts_with(&format!("create schema {}", schema.to_ascii_lowercase())));
             for (extension, schema) in copied.iter().filter(|(_, s)| !platform_schema(s)) {
                 let _ = db.exec(&format!("create schema if not exists {}", ident(schema))).await;
                 let _ = db.exec(&format!("create extension if not exists {} with schema {}", ident(extension), ident(schema))).await;
             }
+            for (_, schema) in owned.extensions.iter().filter(|(e, s)| owned.role.is_some() && !leave.contains(&e.to_lowercase()) && !platform_schema(s) && s != "pg_catalog") {
+                let _ = db.exec(&format!("create schema if not exists {}", ident(schema))).await;
+            }
             for statement in schema_grants.iter() {
                 let _ = db.exec(statement).await;
             }
-            if let (Some(bare), false) = (environment_role.as_deref(), environment.is_empty()) {
-                let role = ident(bare);
-                let _ = admin.batch_execute(&format!("grant create on database \"{name}\" to {role}")).await;
-                // For the while it makes them, the schemas it may not use yet, given back after.
-                let usage = format!(
-                    "select format('grant usage on schema %I to %s', nspname, {}) as s from pg_namespace where nspname not like 'pg\\_%' and nspname <> 'information_schema' and not has_schema_privilege({}, oid, 'USAGE')",
-                    literal(&role),
-                    literal(bare)
-                );
-                let grants: Vec<String> = db.rows(&usage).await.unwrap_or_default().iter().map(|r| r.text("s").to_string()).collect();
-                for g in &grants {
-                    let _ = db.exec(g).await;
+            if let (Some(role), false) = (environment_role.as_deref(), environment.is_empty()) {
+                make_as(admin, &mut db, &name, role, environment, &["USAGE"]).await;
+            }
+            let owned_extensions: Vec<&(String, String)> = owned.extensions.iter().filter(|(e, _)| !leave.contains(&e.to_lowercase())).collect();
+            if let Some(role) = owned.role.as_deref() {
+                // Its extensions after its schemas, which they may be in, and before its routines,
+                // which may use them; one no role but a superuser may make, made by a superuser
+                // connected and given to the role.
+                let routines = owned.statements.iter().position(|st| st.starts_with("CREATE OR REPLACE ")).unwrap_or(owned.statements.len());
+                let mut statements = owned.statements[..routines].to_vec();
+                statements.extend(owned_extensions.iter().map(|(e, s)| format!("create extension if not exists {} with schema {}", ident(e), ident(s))));
+                statements.extend(owned.statements[routines..].iter().cloned());
+                make_as(admin, &mut db, &name, role, &statements, &["USAGE", "CREATE"]).await;
+                let superuser = db.rows("select rolsuper::text as s from pg_roles where rolname = current_user").await.ok().is_some_and(|r| r.first().is_some_and(|r| r.text("s") == "true"));
+                for (extension, schema) in owned_extensions.iter().filter(|_| superuser) {
+                    let missing = db.rows(&format!("select 1 from pg_extension where extname = {}", literal(extension))).await.is_ok_and(|r| r.is_empty());
+                    if missing && db.exec(&format!("create extension if not exists {} with schema {}", ident(extension), ident(schema))).await.is_ok() {
+                        let given = format!("update pg_catalog.pg_extension set extowner = {}::regrole where extname = {}", literal(&ident(role)), literal(extension));
+                        if db.exec(&given).await.is_err() {
+                            let _ = db.exec(&format!("drop extension if exists {}", ident(extension))).await;
+                        }
+                    }
                 }
-                let _ = db.exec(&format!("set role {role}")).await;
-                let _ = db.exec("set check_function_bodies = off").await;
-                for statement in environment.iter() {
-                    let _ = db.exec(statement).await;
-                }
-                let _ = db.exec("reset check_function_bodies").await;
-                let _ = db.exec("reset role").await;
-                for g in &grants {
-                    let _ = db.exec(&g.replacen("grant usage on", "revoke usage on", 1).replacen(" to ", " from ", 1)).await;
-                }
-                let _ = admin.batch_execute(&format!("revoke create on database \"{name}\" from {role}")).await;
             }
             for (extension, schema) in copied.iter().filter(|(_, s)| platform_schema(s)) {
                 let _ = db.exec(&format!("create extension if not exists {} with schema {}", ident(extension), ident(schema))).await;
             }
         }
         Ok(Shadow { db, name })
+    }
+
+    /// What every shadow leaves out of the target, and why, for the command to say once.
+    pub fn note(&self) -> Option<&str> {
+        match self {
+            Server::Postgres { owned, .. } => owned.note.as_deref(),
+            _ => None,
+        }
     }
 
     pub async fn drop_shadow(&mut self, shadow: Shadow) {

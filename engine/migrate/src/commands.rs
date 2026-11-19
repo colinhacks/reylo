@@ -1860,9 +1860,20 @@ fn unmodeled_note(heading: &str, objects: &[String], log: Log<'_>) {
     }
 }
 
-fn swept_note(swept: usize, log: Log<'_>) {
+/// What opening the shadows' server found: the shadows a run left behind, and what every shadow
+/// leaves out of the target.
+#[cfg(feature = "cli")]
+fn swept_note(server: &Server, swept: usize, log: Log<'_>) {
     if swept > 0 {
         log(&paint("dim", &format!("· Dropped {swept} shadow database{} a run left behind", if swept == 1 { "" } else { "s" })));
+    }
+    left_out_note(server, log);
+}
+
+#[cfg(feature = "cli")]
+fn left_out_note(server: &Server, log: Log<'_>) {
+    if let Some(note) = server.note() {
+        log(&paint("dim", note));
     }
 }
 
@@ -1969,7 +1980,7 @@ pub async fn dry_run(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
 #[cfg(feature = "cli")]
 async fn dry_run_on(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     let (mut db, mut server, swept) = open(opts).await?;
-    swept_note(swept, log);
+    swept_note(&server, swept, log);
     let unmodeled = crate::catalog::unmodeled(&mut db).await;
     let result = check(&mut db, Some(&mut server), opts).await;
     let result = match result {
@@ -2196,7 +2207,7 @@ async fn history_push_as(opts: &Options, init: bool, log: Log<'_>) -> Result<i32
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
     let (mut db, mut server, swept) = open(opts).await?;
-    swept_note(swept, log);
+    swept_note(&server, swept, log);
     let result = history_push_on(&mut db, &mut server, opts, init, log).await;
     db.close().await;
     server.close().await;
@@ -2403,7 +2414,7 @@ pub async fn history_pull(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
     let (mut db, mut server, swept) = open(opts).await?;
-    swept_note(swept, log);
+    swept_note(&server, swept, log);
     let result = history_as_it_stands(&mut db, &mut server, opts).await;
     db.close().await;
     server.close().await;
@@ -2700,7 +2711,7 @@ pub async fn lock_from_history(opts: &Options, log: Log<'_>) -> Result<i32, Erro
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
     let (mut db, mut server, swept) = open(opts).await?;
-    swept_note(swept, log);
+    swept_note(&server, swept, log);
     let result = lock_from_history_on(&mut db, &mut server, opts, log).await;
     db.close().await;
     server.close().await;
@@ -2758,7 +2769,7 @@ pub async fn db_reset(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, 
         return Ok(refused_in_ci("reylo db reset", log));
     }
     let (mut db, mut server, swept) = open(opts).await?;
-    swept_note(swept, log);
+    swept_note(&server, swept, log);
     let result = reset_on(&mut db, &mut server, opts, log).await;
     db.close().await;
     server.close().await;
@@ -3663,6 +3674,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
     let mut server = Server::open(&mut db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
     server.leave_extensions(created_extensions(opts));
+    left_out_note(&server, log);
     db.close().await;
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain([schema_sql]).collect();
     let mut shadows = Shadows::new(&mut server, &opts.url, &opts.root, &opts.cache, &texts).await;
@@ -3908,6 +3920,23 @@ fn without_platform_column_options(statement: &str) -> Option<String> {
     }
 }
 
+/// pg_dump's text without the entries `owners` own: each entry is what follows the comment pg_dump
+/// heads it with, `-- Name: …; Type: …; Schema: …; Owner: <role>`, up to the next one, so an object
+/// goes with its owner, privileges and comment, and a default privilege with the role it is for.
+fn without_entries_of(text: &str, owners: &[String]) -> String {
+    static HEADER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^--\n-- (?:Data for )?Name: [^\n]*; Type: [^\n]*; Schema: [^\n]*; Owner: ([^;\n]*)(?:; Tablespace: [^\n]*)?\n--\n").expect("a valid pattern"));
+    let heads: Vec<(usize, bool)> = HEADER.captures_iter(text).map(|c| (c.get(0).map_or(0, |m| m.start()), owners.iter().any(|o| o == &c[1]))).collect();
+    let Some(&(first, _)) = heads.first() else { return text.to_string() };
+    let mut out = text[..first].to_string();
+    for (k, &(start, theirs)) in heads.iter().enumerate() {
+        let end = heads.get(k + 1).map_or(text.len(), |h| h.0);
+        if !theirs {
+            out.push_str(&text[start..end]);
+        }
+    }
+    out
+}
+
 async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<String, Error> {
     match db.dialect() {
         Dialect::Postgres => {
@@ -3921,7 +3950,11 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 args.push("--schema".into());
                 args.push(s.clone());
             }
-            let text = crate::db::pg_dump(&opts.url, version / 10000, &args)?;
+            // What the platform's roles own in a dumped schema is the platform's, which every
+            // comparison leaves out (Tiger Cloud's functions in `public`, its superuser's default
+            // privileges), so no file makes it.
+            let owners = crate::catalog::platform_owners(db).await?;
+            let text = without_entries_of(&crate::db::pg_dump(&opts.url, version / 10000, &args)?, &owners);
             // psql's meta-commands, which pg_dump writes on lines of their own around the file.
             static META: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\\(un)?restrict\b.*$").expect("a valid pattern"));
             let text = META.replace_all(&text, "");
@@ -3931,51 +3964,93 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             let own = format!(" OWNER TO {runner}");
             // A platform's default privileges are its own, which only its roles may set, and which
             // every shadow is given as they are.
-            let platform_default = |s: &str| crate::catalog::PLATFORM_ROLES.iter().any(|r| s.starts_with(&format!("ALTER DEFAULT PRIVILEGES FOR ROLE {r} ")));
+            let platform_default = |s: &str| owners.iter().any(|r| s.starts_with(&format!("ALTER DEFAULT PRIVILEGES FOR ROLE {r} ")) || s.starts_with(&format!("ALTER DEFAULT PRIVILEGES FOR ROLE {} ", crate::db::ident(r))));
             let mut kept: Vec<String> = Vec::new();
             // The extensions the dumped schemas use, which pg_dump writes only for the schema it
             // dumps them in: the platform's own aside, made where they are, if they aren't already.
-            // One in `pg_catalog` is the server's (`plpgsql`, Azure's `pgaadauth`): only a superuser
-            // may put one there, and no `create schema` may name it.
+            // `plpgsql` is every database's, and one the platform's owner has in its own schema or in
+            // `pg_catalog` is the platform's (Azure's `pgaadauth`); one the project put in `pg_catalog`
+            // is its own, made there, and no `create schema` names `pg_catalog`; one in a schema of the
+            // project's is its own, whoever owns it.
             for r in db
                 .rows(&format!(
-                    "select quote_ident(x.extname) as name, quote_ident(n.nspname) as schema, n.nspname as raw from pg_extension x join pg_namespace n on n.oid = x.extnamespace where n.nspname <> 'pg_catalog' and {}",
-                    crate::catalog::not_platform("x.extowner")
+                    "select quote_ident(x.extname) as name, quote_ident(n.nspname) as schema, n.nspname as raw from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {}",
+                    crate::catalog::project_extension("x", "n")
                 ))
                 .await?
             {
                 // Its schema first, dumped or not, once for the extensions that share it: pg_dump's own
                 // `create schema`, later, then finds it there.
                 let schema = format!("CREATE SCHEMA IF NOT EXISTS {}", r.text("schema"));
-                if r.text("raw") != "public" && !kept.contains(&schema) {
+                if !matches!(r.text("raw"), "public" | "pg_catalog") && !kept.contains(&schema) {
                     kept.push(schema);
+                    // With its owner, where it isn't the runner, and the privileges on it, which are
+                    // compared: pg_dump writes them only for a schema it dumps.
+                    if !named_schemas.iter().any(|s| s == r.text("raw")) {
+                        let name = crate::db::literal(r.text("raw"));
+                        for g in db
+                            .rows(&format!(
+                                "select 0 as k, format('ALTER SCHEMA %I OWNER TO %I', n.nspname, pg_get_userbyid(n.nspowner)) as s from pg_namespace n
+                                  where n.nspname = {name} and n.nspowner <> (select oid from pg_roles where rolname = current_user) and {}
+                                union all
+                                select 1, format('GRANT %s ON SCHEMA %I TO %s%s', x.privilege_type, n.nspname, case when x.grantee = 0 then 'PUBLIC' else quote_ident(pg_get_userbyid(x.grantee)) end, case when x.is_grantable then ' WITH GRANT OPTION' else '' end)
+                                  from pg_namespace n, aclexplode(n.nspacl) x where n.nspname = {name} and x.grantee <> n.nspowner and {}
+                                order by k, s",
+                                crate::catalog::in_project_schema("n"),
+                                crate::catalog::in_project_schema("n")
+                            ))
+                            .await?
+                        {
+                            kept.push(g.text("s").to_string());
+                        }
+                    }
                 }
                 kept.push(format!("CREATE EXTENSION IF NOT EXISTS {} WITH SCHEMA {}", r.text("name"), r.text("schema")));
             }
             // Foreign data wrappers and servers, which are in no schema, so pg_dump writes them only for a
             // whole database: what the dumped schemas' foreign tables are made on, an extension's and the
-            // platform's own aside. User mappings stay out, since their options hold passwords.
+            // platform's own aside, each with its grants, an owner that isn't the runner, and its comment.
+            // User mappings stay out, since their options hold passwords. They are made after the
+            // functions a wrapper names as its handler or validator, and before the foreign tables made
+            // on a server, both of which pg_dump writes: where its first foreign table is.
+            let me = "(select oid from pg_roles where rolname = current_user)";
             let options = |column: &str| format!("coalesce(' OPTIONS (' || (select string_agg(format('%I %L', split_part(x, '=', 1), substr(x, strpos(x, '=') + 1)), ', ') from unnest({column}) x) || ')', '')");
+            // Granted before the owner is set, which then grants them as the owner.
+            let grants = |acl: &str, owner: &str, on: &str, name: &str| {
+                format!(
+                    "coalesce((select array_agg(format('GRANT %s ON {on} %I TO %s%s', x.privilege_type, {name}, case when x.grantee = 0 then 'PUBLIC' else quote_ident(pg_get_userbyid(x.grantee)) end,
+                        case when x.is_grantable then ' WITH GRANT OPTION' else '' end) order by x.grantee, x.privilege_type) from aclexplode({acl}) x where x.grantee <> {owner}), '{{}}')"
+                )
+            };
+            let mut foreign: Vec<String> = Vec::new();
             for r in db
                 .rows(&format!(
-                    "select 0 as k, w.oid as id, format('CREATE FOREIGN DATA WRAPPER %I', w.fdwname) || coalesce(' HANDLER ' || nullif(w.fdwhandler::oid, 0)::regproc::text, '')
-                        || coalesce(' VALIDATOR ' || nullif(w.fdwvalidator::oid, 0)::regproc::text, '') || {} as s
+                    "select o.k, o.id, u.s from (
+                      select 0 as k, w.oid as id, array[format('CREATE FOREIGN DATA WRAPPER %I', w.fdwname) || coalesce(' HANDLER ' || nullif(w.fdwhandler::oid, 0)::regproc::text, '')
+                        || coalesce(' VALIDATOR ' || nullif(w.fdwvalidator::oid, 0)::regproc::text, '') || {}] || {}
+                        || array[case when w.fdwowner <> {me} then format('ALTER FOREIGN DATA WRAPPER %I OWNER TO %I', w.fdwname, pg_get_userbyid(w.fdwowner)) end,
+                          case when obj_description(w.oid, 'pg_foreign_data_wrapper') is not null then format('COMMENT ON FOREIGN DATA WRAPPER %I IS %L', w.fdwname, obj_description(w.oid, 'pg_foreign_data_wrapper')) end] as ss
                       from pg_foreign_data_wrapper w where {} and {}
                     union all
-                    select 1, s.oid, format('CREATE SERVER %I', s.srvname) || coalesce(' TYPE ' || quote_literal(s.srvtype), '') || coalesce(' VERSION ' || quote_literal(s.srvversion), '')
-                        || format(' FOREIGN DATA WRAPPER %I', w.fdwname) || {}
-                      from pg_foreign_server s join pg_foreign_data_wrapper w on w.oid = s.srvfdw where {} and {}
-                    order by k, id",
+                      select 1, sv.oid, array[format('CREATE SERVER %I', sv.srvname) || coalesce(' TYPE ' || quote_literal(sv.srvtype), '') || coalesce(' VERSION ' || quote_literal(sv.srvversion), '')
+                        || format(' FOREIGN DATA WRAPPER %I', w.fdwname) || {}] || {}
+                        || array[case when sv.srvowner <> {me} then format('ALTER SERVER %I OWNER TO %I', sv.srvname, pg_get_userbyid(sv.srvowner)) end,
+                          case when obj_description(sv.oid, 'pg_foreign_server') is not null then format('COMMENT ON SERVER %I IS %L', sv.srvname, obj_description(sv.oid, 'pg_foreign_server')) end]
+                      from pg_foreign_server sv join pg_foreign_data_wrapper w on w.oid = sv.srvfdw where {} and {}
+                    ) o, unnest(o.ss) with ordinality u(s, n) where u.s is not null
+                    order by o.k, o.id, u.n",
                     options("w.fdwoptions"),
+                    grants("w.fdwacl", "w.fdwowner", "FOREIGN DATA WRAPPER", "w.fdwname"),
                     crate::catalog::not_extension("pg_foreign_data_wrapper", "w"),
                     crate::catalog::not_platform("w.fdwowner"),
-                    options("s.srvoptions"),
-                    crate::catalog::not_extension("pg_foreign_server", "s"),
-                    crate::catalog::not_platform("s.srvowner")
+                    options("sv.srvoptions"),
+                    grants("sv.srvacl", "sv.srvowner", "FOREIGN SERVER", "sv.srvname"),
+                    crate::catalog::not_extension("pg_foreign_server", "sv"),
+                    crate::catalog::not_platform("sv.srvowner")
                 ))
                 .await?
             {
-                kept.push(r.text("s").to_string());
+                foreign.push(r.text("s").to_string());
             }
             // What every new database has already: its public schema, as initdb makes it.
             const AS_MADE: [&str; 4] = ["CREATE SCHEMA public", "CREATE SCHEMA IF NOT EXISTS public", "ALTER SCHEMA public OWNER TO pg_database_owner", "COMMENT ON SCHEMA public IS 'standard public schema'"];
@@ -3985,15 +4060,18 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 if s.starts_with("SET ") || s.starts_with("SELECT pg_catalog.set_config") || (s.starts_with("ALTER ") && s.ends_with(&own)) || platform_default(s) || s.starts_with("CREATE EXTENSION ") || AS_MADE.contains(&s) {
                     continue;
                 }
+                if s.starts_with("CREATE FOREIGN TABLE ") {
+                    kept.append(&mut foreign);
+                }
                 kept.push(match s.strip_prefix("CREATE SCHEMA ") {
                     Some(rest) if !rest.starts_with("IF NOT EXISTS ") => format!("CREATE SCHEMA IF NOT EXISTS {rest}"),
                     _ => s.to_string(),
                 });
             }
+            kept.append(&mut foreign);
             // Event triggers and publications, which are in no schema, so pg_dump writes neither for a
             // schema (and publications not at all here): the project's, which are compared, after the
             // functions and tables they name, an extension's and the platform's own aside.
-            let me = "(select oid from pg_roles where rolname = current_user)";
             let (columns, schemas) = if version >= 150000 {
                 (
                     "coalesce(' (' || (select string_agg(format('%I', a.attname), ', ' order by a.attnum) from pg_attribute a where a.attrelid = c.oid and a.attnum = any(pr.prattrs::int2[])) || ')', '') || coalesce(' WHERE (' || pg_get_expr(pr.prqual, c.oid) || ')', '')",
@@ -4002,6 +4080,8 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             } else {
                 ("''", "null")
             };
+            // Whether a publication publishes its tables' stored generated columns is Postgres 18's.
+            let generated = if version >= 180000 { "case when p.pubgencols = 's' then ', publish_generated_columns = stored' else '' end" } else { "''" };
             for r in db
                 .rows(&format!(
                     "select 0 as k, et.evtname::text as name, format('CREATE EVENT TRIGGER %I ON %s', et.evtname, et.evtevent)
@@ -4018,8 +4098,8 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                           (select string_agg(format('TABLE %I.%I', n.nspname, c.relname) || {columns}, ', ' order by n.nspname, c.relname)
                             from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid),
                           {schemas}), '') end, '')
-                        || format(' WITH (publish = %L%s)', concat_ws(', ', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end,
-                          case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end), case when p.pubviaroot then ', publish_via_partition_root = true' else '' end),
+                        || format(' WITH (publish = %L%s%s)', concat_ws(', ', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end,
+                          case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end), case when p.pubviaroot then ', publish_via_partition_root = true' else '' end, {generated}),
                       null,
                       case when p.pubowner <> {me} then format('ALTER PUBLICATION %I OWNER TO %I', p.pubname, pg_get_userbyid(p.pubowner)) end,
                       case when obj_description(p.oid, 'pg_publication') is not null then format('COMMENT ON PUBLICATION %I IS %L', p.pubname, obj_description(p.oid, 'pg_publication')) end
@@ -4188,7 +4268,13 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
         }
     }
     let code = match recorded {
-        Ok(0) => 0,
+        Ok(0) => {
+            // What the shadows leave out of this database holds for every command after.
+            for line in said.iter().filter(|l| l.contains(crate::db::LEFT_OUT)) {
+                log(line);
+            }
+            0
+        }
         Ok(code) => {
             for line in &said {
                 log(line);
@@ -4414,7 +4500,7 @@ fn file_problems(opts: &Options, files: &[Migration], strays: &[String], schema_
 
 #[cfg(feature = "cli")]
 async fn dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, heading: &str, log: Log<'_>) -> Result<i32, Error> {
-    swept_note(swept, log);
+    swept_note(&server, swept, log);
     let _held = lock(db, opts).await?;
     let d = db.dialect();
     let (files, strays) = opts.migrations()?;
@@ -5136,7 +5222,7 @@ pub async fn db_push_watch(opts: &Options, in_ci: bool, push: &Push, runs: Optio
 
 #[cfg(feature = "cli")]
 async fn db_push_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, push: &Push, asked: &Asked, log: Log<'_>) -> Result<i32, Error> {
-    swept_note(swept, log);
+    swept_note(&server, swept, log);
     let _held = lock(db, opts).await?;
     let d = db.dialect();
     let (files, strays) = opts.migrations()?;
@@ -5411,6 +5497,17 @@ mod tests {
         assert_eq!(without_platform_column_options("ALTER TABLE ONLY public.users ALTER COLUMN id SET (n_distinct=-1, pg_attver=42164944)").as_deref(), Some("ALTER TABLE ONLY public.users ALTER COLUMN id SET (n_distinct=-1)"));
         assert_eq!(without_platform_column_options("ALTER TABLE ONLY public.users ALTER COLUMN id SET (n_distinct=-1)").as_deref(), Some("ALTER TABLE ONLY public.users ALTER COLUMN id SET (n_distinct=-1)"));
         assert_eq!(without_platform_column_options("ALTER TABLE ONLY public.users ALTER COLUMN email SET STATISTICS 500").as_deref(), Some("ALTER TABLE ONLY public.users ALTER COLUMN email SET STATISTICS 500"));
+    }
+
+    #[test]
+    fn a_dump_leaves_out_what_the_platform_owns() {
+        // As pg_dump writes a Tiger Cloud database's public schema: a function of the platform's
+        // superuser, with its privileges, and its default privileges, among the project's.
+        let dump = "SET check_function_bodies = false;\n\n--\n-- Name: create_playground(regclass, boolean); Type: FUNCTION; Schema: public; Owner: postgres\n--\n\nCREATE FUNCTION public.create_playground(src regclass, b boolean) RETURNS integer\n    LANGUAGE sql\n    AS $$select 1$$;\n\n\nALTER FUNCTION public.create_playground(src regclass, b boolean) OWNER TO postgres;\n\n--\n-- Name: users; Type: TABLE; Schema: public; Owner: tsdbadmin\n--\n\nCREATE TABLE public.users (\n    id integer NOT NULL\n);\n\n\nALTER TABLE public.users OWNER TO tsdbadmin;\n\n--\n-- Name: FUNCTION create_playground(src regclass, b boolean); Type: ACL; Schema: public; Owner: postgres\n--\n\nGRANT ALL ON FUNCTION public.create_playground(src regclass, b boolean) TO tsdbadmin;\n\n--\n-- Name: DEFAULT PRIVILEGES FOR SCHEMAS; Type: DEFAULT ACL; Schema: -; Owner: postgres\n--\n\nALTER DEFAULT PRIVILEGES FOR ROLE postgres GRANT USAGE ON SCHEMAS TO tsdbadmin;\n\n\n--\n-- PostgreSQL database dump complete\n--\n";
+        let kept = without_entries_of(dump, &["postgres".to_string()]);
+        assert_eq!(kept, "SET check_function_bodies = false;\n\n--\n-- Name: users; Type: TABLE; Schema: public; Owner: tsdbadmin\n--\n\nCREATE TABLE public.users (\n    id integer NOT NULL\n);\n\n\nALTER TABLE public.users OWNER TO tsdbadmin;\n\n");
+        // With no platform's role among the owners, the dump is as written.
+        assert_eq!(without_entries_of(dump, &["supabase_admin".to_string()]), dump);
     }
 
     #[test]

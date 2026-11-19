@@ -498,7 +498,7 @@ impl Cache {
 #[cfg(feature = "cli")]
 async fn server_state(server: &mut Server) -> Result<String, Error> {
     match server {
-        Server::Postgres { admin, create, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, schema_grants, .. } => {
+        Server::Postgres { admin, create, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, owned, schema_grants, .. } => {
             // The server and its settings as a session sees them, the roles a grant may name, the
             // extensions a migration may create, and template1, which a new shadow is a copy of: a
             // change to it moves its counters of rows written.
@@ -517,6 +517,7 @@ async fn server_state(server: &mut Server) -> Result<String, Error> {
             out.push_str(&format!("\n\x1fcreate {create}\n\x1fsettings {}\n\x1fprivileges {copy_privileges} {}", settings.join("\n"), privileges.join("\n")));
             let copied: Vec<String> = extensions.iter().filter(|(e, _)| !leave.contains(&e.to_lowercase())).map(|(e, s)| format!("{e} {s}")).collect();
             out.push_str(&format!("\n\x1fextensions {}\n\x1fschema grants {}\n\x1fenvironment {} {}", copied.join("\n"), schema_grants.join("\n"), environment_role.as_deref().unwrap_or_default(), environment.join("\n")));
+            out.push_str(&format!("\n\x1fowned {}\n{}", owned.key(), owned.statements.join("\n")));
             Ok(out)
         }
         Server::Mysql { admin, defaults, .. } => {
@@ -576,10 +577,16 @@ pub(crate) async fn snapshot(db: &mut Db) -> Result<String, Error> {
             let vars = db.rows("select variable_name as k, variable_value as v from performance_schema.session_variables").await?;
             let mut out: Vec<String> = vars.iter().filter(|r| !MOVING.contains(&r.text("k"))).map(|r| format!("{}={}", r.text("k"), r.text("v"))).collect();
             out.sort();
-            let rest = db.rows("select (select count(*) from performance_schema.user_variables_by_thread where thread_id = ps_current_thread_id()) as u, current_user() as who, database() as db").await?;
-            if let Some(r) = rest.first() {
-                out.push(format!("{} {} {}", r.text("u"), r.text("who"), r.text("db")));
-            }
+            let rest = db.rows("select @@performance_schema as ps, current_user() as who, database() as db").await?;
+            let Some(r) = rest.first() else { return Ok(out.join("\n")) };
+            // With performance_schema off, skipping user variables is safe: MySQL never copies a shadow, and they end with the session.
+            let users = if r.text("ps") == "0" {
+                "-".to_string()
+            } else {
+                let u = db.rows("select count(*) as u from performance_schema.user_variables_by_thread where thread_id = ps_current_thread_id()").await?;
+                u.first().map(|u| u.text("u").to_string()).unwrap_or_default()
+            };
+            out.push(format!("{users} {} {}", r.text("who"), r.text("db")));
             Ok(out.join("\n"))
         }
         Dialect::Sqlite => {
