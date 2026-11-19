@@ -3909,9 +3909,11 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 ))
                 .await?
             {
-                // Its schema first, dumped or not: pg_dump's own `create schema`, later, then finds it there.
-                if r.text("raw") != "public" {
-                    kept.push(format!("CREATE SCHEMA IF NOT EXISTS {}", r.text("schema")));
+                // Its schema first, dumped or not, once for the extensions that share it: pg_dump's own
+                // `create schema`, later, then finds it there.
+                let schema = format!("CREATE SCHEMA IF NOT EXISTS {}", r.text("schema"));
+                if r.text("raw") != "public" && !kept.contains(&schema) {
+                    kept.push(schema);
                 }
                 kept.push(format!("CREATE EXTENSION IF NOT EXISTS {} WITH SCHEMA {}", r.text("name"), r.text("schema")));
             }
@@ -3951,6 +3953,49 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                     Some(rest) if !rest.starts_with("IF NOT EXISTS ") => format!("CREATE SCHEMA IF NOT EXISTS {rest}"),
                     _ => s.to_string(),
                 });
+            }
+            // Event triggers and publications, which are in no schema, so pg_dump writes neither for a
+            // schema (and publications not at all here): the project's, which are compared, after the
+            // functions and tables they name, an extension's and the platform's own aside.
+            let me = "(select oid from pg_roles where rolname = current_user)";
+            let (columns, schemas) = if version >= 150000 {
+                (
+                    "coalesce(' (' || (select string_agg(format('%I', a.attname), ', ' order by a.attnum) from pg_attribute a where a.attrelid = c.oid and a.attnum = any(pr.prattrs::int2[])) || ')', '') || coalesce(' WHERE (' || pg_get_expr(pr.prqual, c.oid) || ')', '')",
+                    "(select string_agg(format('TABLES IN SCHEMA %I', n.nspname), ', ' order by n.nspname) from pg_publication_namespace pn join pg_namespace n on n.oid = pn.pnnspid where pn.pnpubid = p.oid)",
+                )
+            } else {
+                ("''", "null")
+            };
+            for r in db
+                .rows(&format!(
+                    "select 0 as k, et.evtname::text as name, format('CREATE EVENT TRIGGER %I ON %s', et.evtname, et.evtevent)
+                        || coalesce(' WHEN TAG IN (' || (select string_agg(quote_literal(t), ', ' order by t) from unnest(et.evttags) t) || ')', '')
+                        || format(' EXECUTE FUNCTION %I.%I()', fn.nspname, f.proname) as s,
+                      case et.evtenabled when 'D' then format('ALTER EVENT TRIGGER %I DISABLE', et.evtname) when 'R' then format('ALTER EVENT TRIGGER %I ENABLE REPLICA', et.evtname)
+                        when 'A' then format('ALTER EVENT TRIGGER %I ENABLE ALWAYS', et.evtname) end as enabled,
+                      case when et.evtowner <> {me} then format('ALTER EVENT TRIGGER %I OWNER TO %I', et.evtname, pg_get_userbyid(et.evtowner)) end as owner,
+                      case when obj_description(et.oid, 'pg_event_trigger') is not null then format('COMMENT ON EVENT TRIGGER %I IS %L', et.evtname, obj_description(et.oid, 'pg_event_trigger')) end as comment
+                    from pg_event_trigger et join pg_proc f on f.oid = et.evtfoid join pg_namespace fn on fn.oid = f.pronamespace where {} and {}
+                    union all
+                    select 1, p.pubname::text, format('CREATE PUBLICATION %I', p.pubname)
+                        || coalesce(' FOR ' || case when p.puballtables then 'ALL TABLES' else nullif(concat_ws(', ',
+                          (select string_agg(format('TABLE %I.%I', n.nspname, c.relname) || {columns}, ', ' order by n.nspname, c.relname)
+                            from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid),
+                          {schemas}), '') end, '')
+                        || format(' WITH (publish = %L%s)', concat_ws(', ', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end,
+                          case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end), case when p.pubviaroot then ', publish_via_partition_root = true' else '' end),
+                      null,
+                      case when p.pubowner <> {me} then format('ALTER PUBLICATION %I OWNER TO %I', p.pubname, pg_get_userbyid(p.pubowner)) end,
+                      case when obj_description(p.oid, 'pg_publication') is not null then format('COMMENT ON PUBLICATION %I IS %L', p.pubname, obj_description(p.oid, 'pg_publication')) end
+                    from pg_publication p where {}
+                    order by k, name",
+                    crate::catalog::not_extension("pg_event_trigger", "et"),
+                    crate::catalog::not_platform("et.evtowner"),
+                    crate::catalog::not_platform("p.pubowner")
+                ))
+                .await?
+            {
+                kept.extend(["s", "enabled", "owner", "comment"].iter().filter_map(|k| r.get(k).map(String::from)));
             }
             let mut joined = kept.iter().map(|s| format!("{s};")).collect::<Vec<_>>().join("\n\n");
             // What the project made on a platform's tables (Supabase's `auth.users`, `storage.objects`),

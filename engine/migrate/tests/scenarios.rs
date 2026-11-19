@@ -2791,6 +2791,7 @@ on!(
     a_servers_hint_is_in_its_error,
     init_refused_leaves_no_project_behind,
     a_hypertable_is_said_to_be_unread,
+    a_dump_makes_a_schema_its_extensions_share_once,
 );
 on!(Mysql, a_migration_that_names_a_database_is_refused);
 on!(
@@ -2799,6 +2800,8 @@ on!(
     an_extension_in_a_schema_of_its_own_is_dumped_after_it,
     a_partition_dropped_at_run_time_is_data,
     init_creates_the_extensions_its_schema_uses,
+    init_writes_the_event_triggers_it_compares,
+    init_writes_the_publications_it_compares,
     a_dump_keeps_a_function_body_as_written,
     a_history_that_does_not_replay_is_refused_before_anything_changes,
     without_a_lock_a_history_out_of_name_order_is_held_to_name_order,
@@ -2944,6 +2947,18 @@ mod adversarial {
         p.file("20261027100000_users.sql", "create table users (id int primary key);");
         let e = reylo_migrate::dry_run(&opts, &mut |_: &str| {}).await.expect_err("no shadow database can be made");
         assert_has!(e.0, "shadow_url");
+    }
+
+    /// Where no shadow can be made, the schema is the dump, which makes each extension's schema before
+    /// it: once, however many extensions share it (Supabase keeps three in `extensions`).
+    pub async fn a_dump_makes_a_schema_its_extensions_share_once(p: P) {
+        p.exec("create schema extensions; create extension citext with schema extensions; create extension pgcrypto with schema extensions; create table users (id int primary key)").await;
+        // A shadows' server that answers nothing leaves the dump, with no role made for it: a new
+        // role would change every replay cache's key on the server under the scenarios beside it.
+        let opts = Options { shadow_url: Some("postgres://postgres@127.0.0.1:1/none".into()), ..p.opts() };
+        let text = reylo_migrate::db_introspect(&opts, &[]).await.unwrap();
+        assert_eq!(text.matches("CREATE SCHEMA IF NOT EXISTS extensions").count(), 1, "{text}");
+        assert!(text.contains("CREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA extensions") && text.contains("CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions"), "{text}");
     }
 
     /// A database whose `public` its own role owns outright, not through `pg_database_owner`: one made
@@ -3906,6 +3921,41 @@ create trigger kids_note after insert on kids begin update parents set name = na
         p.url = q.url.clone();
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_eq!(q.history().await, ["init.sql"]);
+    }
+
+    /// An event trigger the project's role owns (Supabase's `ensure_rls`, which turns on row security
+    /// for each table made in `public`) is the project's: init writes it, so shadows make it too, and
+    /// a table a later migration makes has row security in both.
+    pub async fn init_writes_the_event_triggers_it_compares(mut p: P) {
+        p.exec("create function rls_auto_enable() returns event_trigger language plpgsql as $$ declare cmd record; begin for cmd in select * from pg_event_trigger_ddl_commands() where command_tag = 'CREATE TABLE' and schema_name = 'public' loop execute format('alter table %s enable row level security', cmd.object_identity); end loop; end $$").await;
+        p.exec("create event trigger ensure_rls on ddl_command_end when tag in ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO') execute function rls_auto_enable()").await;
+        p.exec("create table users (id int primary key)").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        assert_has!(std::fs::read_to_string(p.dir.join("migrations/init.sql")).unwrap(), r"(?i)create event trigger ensure_rls on ddl_command_end");
+        p.schema(&format!("{}\ncreate table posts (id int primary key);\n", std::fs::read_to_string(p.dir.join("schema.sql")).unwrap()));
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "posts", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select 1 from pg_class where relname = 'posts' and relrowsecurity").await.len(), 1, "the trigger turned on the new table's row security");
+        assert_eq!(p.status().await, 0, "the shadows made the trigger, so the new table's row security is no drift:\n{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    /// Publications the project's role owns (Supabase's empty `supabase_realtime`, and one naming a
+    /// table's columns and rows): init writes them, and a new database replays them.
+    pub async fn init_writes_the_publications_it_compares(mut p: P) {
+        p.exec("create table users (id int primary key, email text, active bool)").await;
+        p.exec("create publication supabase_realtime").await;
+        p.exec("create publication active_users for table users (id, email) where (id > 0) with (publish = 'insert, update')").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        let init = std::fs::read_to_string(p.dir.join("migrations/init.sql")).unwrap();
+        assert_has!(init.clone(), r"(?i)create publication supabase_realtime");
+        assert_has!(init, r"(?i)create publication active_users");
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        let q = P::new(p.d).await.unwrap();
+        p.url = q.url.clone();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        let made: Vec<String> = q.rows("select pubname::text as n from pg_publication order by 1").await.iter().map(|r| r.text("n").to_string()).collect();
+        assert_eq!(made, ["active_users", "supabase_realtime"]);
     }
 
     pub async fn a_dump_keeps_a_function_body_as_written(mut p: P) {
