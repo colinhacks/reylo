@@ -117,11 +117,27 @@ fn connect(url: &str) -> Result<(Server, String), Value> {
     match server.ask("SELECT version()") {
         Ok(Outcome::Rows(rows)) => {
             let version = rows.first().and_then(|row| row.first()).and_then(Value::as_str).unwrap_or_default().to_string();
-            Ok((server, version))
+            match too_old(&version) {
+                Some(message) => Err(json!({ "status": "error", "message": message })),
+                None => Ok((server, version)),
+            }
         }
         Ok(outcome) => Err(failure(&server, outcome)),
         Err(e) => Err(json!({ "status": "unreachable", "message": e })),
     }
+}
+
+/// The first release Reylo types statements on: since 25.11 the HTTP interface answers an error
+/// with the error alone, whatever format was asked for, and marks one that ends a result after
+/// its first rows, which the run time reads a result by (src/decode-clickhouse.ts).
+const OLDEST: (u32, u32) = (25, 11);
+
+/// Why a server of this `version()` is not typed, if it is older than [`OLDEST`]: a version that
+/// reads as none, as a fork's may, is taken as it is.
+fn too_old(version: &str) -> Option<String> {
+    let mut parts = version.split('.').map(|part| part.parse::<u32>().ok());
+    let (major, minor) = (parts.next()??, parts.next()??);
+    ((major, minor) < OLDEST).then(|| format!("this server is ClickHouse {version}, and Reylo types statements on ClickHouse {}.{} or later, the first whose HTTP interface marks an error that ends a result", OLDEST.0, OLDEST.1))
 }
 
 /// What an answer that is no rows means to the host: a refused login, or the server's error.
@@ -130,6 +146,20 @@ fn failure(server: &Server, outcome: Outcome) -> Value {
         Outcome::Refused { message, code, status } if status == 401 || status == 403 || code.as_deref().is_some_and(|c| REFUSED.contains(&c)) => json!({ "status": "refused", "message": message, "code": code }),
         Outcome::Refused { message, code, .. } => json!({ "status": "error", "message": message, "code": code }),
         Outcome::Foreign(what) => json!({ "status": "error", "message": format!("the server at {} answered with {what}, which ClickHouse's HTTP interface does not: the URL is the one an app gives @clickhouse/client, as http://localhost:8123", server.place()) }),
-        Outcome::Rows(_) => json!({ "status": "error", "message": "the server answered with rows where none were asked for" }),
+        Outcome::Rows(_) | Outcome::Typed(..) => json!({ "status": "error", "message": "the server answered with rows where none were asked for" }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_server_before_the_oldest_typed_release_is_refused_by_its_version() {
+        assert!(too_old("25.10.3.100").is_some_and(|m| m.contains("ClickHouse 25.10.3.100") && m.contains("25.11 or later")));
+        assert!(too_old("24.8.1.1").is_some());
+        for typed in ["25.11.1.558", "25.12.9.1", "26.8.40.7", "27.1.1.1", "v-next", ""] {
+            assert_eq!(too_old(typed), None, "{typed}");
+        }
     }
 }

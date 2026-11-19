@@ -349,8 +349,20 @@ fn tick(scale: u32) -> String {
     }
 }
 
-/// The slot a value of the type fills: its type descriptor, and whether it may be NULL.
+/// The slot a value of the type fills, as a statement returns one: its type descriptor, and whether
+/// it may be NULL.
 pub fn slot(t: &Named) -> Result<Slot, Unread> {
+    read(t, false)
+}
+
+/// The slot a parameter of the type fills. It differs from a returned value's in a decimal's
+/// precision alone: the server reads a parameter's text against the precision its type names.
+pub fn parameter(t: &Named) -> Result<Slot, Unread> {
+    read(t, true)
+}
+
+fn read(t: &Named, written: bool) -> Result<Slot, Unread> {
+    let slot = |t: &Named| read(t, written);
     let unread = || Unread(t.name.clone());
     let name = t.name.as_str();
     if let Some((bits, unsigned)) = integer(name) {
@@ -386,11 +398,11 @@ pub fn slot(t: &Named) -> Result<Slot, Unread> {
         "Float32" => float(8, 23),
         "Float64" => float(11, 52),
         "BFloat16" => float(8, 7),
-        "Decimal" => decimal(t.number(0).ok_or_else(unread)?, t.number(1).unwrap_or(0)),
-        "Decimal32" => decimal(9, t.number(0).ok_or_else(unread)?),
-        "Decimal64" => decimal(18, t.number(0).ok_or_else(unread)?),
-        "Decimal128" => decimal(38, t.number(0).ok_or_else(unread)?),
-        "Decimal256" => decimal(76, t.number(0).ok_or_else(unread)?),
+        "Decimal" => decimal(t.number(0).ok_or_else(unread)?, t.number(1).unwrap_or(0), written),
+        "Decimal32" => decimal(9, t.number(0).ok_or_else(unread)?, written),
+        "Decimal64" => decimal(18, t.number(0).ok_or_else(unread)?, written),
+        "Decimal128" => decimal(38, t.number(0).ok_or_else(unread)?, written),
+        "Decimal256" => decimal(76, t.number(0).ok_or_else(unread)?, written),
         "String" => text(None),
         "FixedString" => text(Some(Size { unit: Some(SizeUnit::Byte), exact: Some(u64::from(t.number(0).ok_or_else(unread)?)), ..Size::default() })),
         "UUID" => Type::uuid(),
@@ -408,9 +420,9 @@ pub fn slot(t: &Named) -> Result<Slot, Unread> {
             let [Arg::Type(element)] = t.args.as_slice() else { return Err(unread()) };
             return Ok(Slot::non_null(Type::array(slot(element)?)));
         }
-        "Tuple" => return Ok(Slot::non_null(tuple(t)?)),
+        "Tuple" => return Ok(Slot::non_null(tuple(t, written)?)),
         // A Nested column is an array of its members' tuples.
-        "Nested" => Type::array(Slot::non_null(tuple(t)?)),
+        "Nested" => Type::array(Slot::non_null(tuple(t, written)?)),
         // A map's keys may repeat, so it is its pairs in order.
         "Map" => {
             let [Arg::Type(key), Arg::Type(value)] = t.args.as_slice() else { return Err(unread()) };
@@ -422,12 +434,24 @@ pub fn slot(t: &Named) -> Result<Slot, Unread> {
     Ok(Slot::non_null(ty.named(name)))
 }
 
-fn decimal(precision: u32, scale: u32) -> Type {
-    Type::decimal(DecimalType { precision: Some(precision), min_scale: Some(scale as i32), max_scale: Some(scale as i32), ..DecimalType::default() })
+/// A decimal's type. A parameter's text is read against the precision its type names. A value a
+/// statement returns is bound by the integer it is stored in alone, which arithmetic is checked
+/// against: a Decimal(18, 6) holds 8999999999999.999991, of 19 digits, so its precision is the
+/// most digits that integer has (of 32, 64, 128 or 256 bits).
+fn decimal(precision: u32, scale: u32, written: bool) -> Type {
+    let digits = match precision {
+        _ if written => precision,
+        0..=9 => 10,
+        10..=18 => 19,
+        19..=38 => 39,
+        _ => 77,
+    };
+    Type::decimal(DecimalType { precision: Some(digits), min_scale: Some(scale as i32), max_scale: Some(scale as i32), ..DecimalType::default() })
 }
 
 /// A tuple's type: a struct where every element has a name, else a tuple of its elements in order.
-fn tuple(t: &Named) -> Result<Type, Unread> {
+fn tuple(t: &Named, written: bool) -> Result<Type, Unread> {
+    let slot = |t: &Named| read(t, written);
     let unread = || Unread(t.name.clone());
     if !t.args.is_empty() && t.args.iter().all(|a| matches!(a, Arg::Member(..))) {
         let fields = t.args.iter().map(|a| {
@@ -490,8 +514,16 @@ mod tests {
         assert_eq!(typed("Nullable(Int64)"), json!({"type": {"kind": "integer", "bits": 64, "label": "Int64"}, "nullable": true}));
         assert_eq!(typed("LowCardinality(Nullable(String))"), json!({"type": {"kind": "text", "encoding": "UTF-8", "ill_formed": true, "label": "String"}, "nullable": true}));
         assert_eq!(typed("FixedString(4)"), json!({"type": {"kind": "text", "encoding": "UTF-8", "ill_formed": true, "size": {"unit": "byte", "exact": 4}, "label": "FixedString"}}));
-        assert_eq!(typed("Decimal(18, 4)"), json!({"type": {"kind": "decimal", "precision": 18, "min_scale": 4, "max_scale": 4, "label": "Decimal"}}));
-        assert_eq!(typed("Decimal64(2)"), json!({"type": {"kind": "decimal", "precision": 18, "min_scale": 2, "max_scale": 2, "label": "Decimal64"}}));
+        // A returned decimal has the digits its storage holds, and a parameter those its type names.
+        assert_eq!(typed("Decimal(18, 4)"), json!({"type": {"kind": "decimal", "precision": 19, "min_scale": 4, "max_scale": 4, "label": "Decimal"}}));
+        assert_eq!(typed("Decimal64(2)"), json!({"type": {"kind": "decimal", "precision": 19, "min_scale": 2, "max_scale": 2, "label": "Decimal64"}}));
+        assert!(typed("Array(Decimal(9, 2))").to_string().contains("\"precision\":10"));
+        assert_eq!(typed("Decimal(38, 2)")["type"]["precision"], json!(39));
+        assert_eq!(typed("Decimal(76, 2)")["type"]["precision"], json!(77));
+        let written = |name: &str| serde_json::to_value(parameter(&parse(name).expect(name)).expect(name)).unwrap();
+        assert_eq!(written("Decimal(18, 4)")["type"]["precision"], json!(18));
+        let nested = written("Tuple(a Decimal32(2), b Array(Decimal(38, 2)))").to_string();
+        assert!(nested.contains("\"precision\":9") && nested.contains("\"precision\":38"), "{nested}");
         assert_eq!(typed("Float64"), json!({"type": {"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "infinity": true, "nan": true, "label": "Float64"}}));
         assert_eq!(typed("DateTime64(3, 'UTC')"), json!({"type": {"kind": "instant", "tick": "1/1000", "label": "DateTime64"}}));
         assert_eq!(typed("DateTime('Asia/Tokyo')"), json!({"type": {"kind": "instant", "tick": "1", "min": "1970-01-01T00:00:00Z", "max": "2106-02-07T06:28:15Z", "label": "DateTime"}}));

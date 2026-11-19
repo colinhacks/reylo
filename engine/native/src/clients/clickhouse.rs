@@ -41,6 +41,8 @@ pub struct Server {
 pub enum Outcome {
     /// The rows of the answer.
     Rows(Vec<Vec<Value>>),
+    /// The rows of the answer, with each column's name and type before them ([`Server::ask_typed`]).
+    Typed(Vec<(String, String)>, Vec<Vec<Value>>),
     /// The server's error, with the code it carries in `X-ClickHouse-Exception-Code`.
     Refused { message: String, code: Option<String>, status: u16 },
     /// An answer that is not one of ClickHouse's HTTP interface.
@@ -129,8 +131,18 @@ impl Server {
 
     /// One query's outcome, or why no answer came: the server cannot be reached, or went away.
     pub fn ask(&self, sql: &str) -> Result<Outcome, String> {
+        Ok(match self.ask_typed(sql, &[])? {
+            Outcome::Typed(_, rows) => Outcome::Rows(rows),
+            other => other,
+        })
+    }
+
+    /// One query's outcome with its columns' names and types, the request's URL carrying `fields`
+    /// beside the connection's own: a statement's parameters (`param_<name>`) and settings, as the
+    /// soundness oracle runs a statement.
+    pub fn ask_typed(&self, sql: &str, fields: &[(String, String)]) -> Result<Outcome, String> {
         let mut request = self.agent.post(self.endpoint.as_str()).query("default_format", "JSONCompact");
-        for (name, value) in &self.parameters {
+        for (name, value) in self.parameters.iter().chain(fields) {
             request = request.query(name.as_str(), value.as_str());
         }
         for (name, value) in &self.headers {
@@ -146,7 +158,7 @@ impl Server {
             return Ok(if ours { Outcome::Refused { message: body.trim().to_string(), code, status } } else { Outcome::Foreign(format!("HTTP {status}")) });
         }
         if body.trim().is_empty() {
-            return Ok(Outcome::Rows(Vec::new()));
+            return Ok(Outcome::Typed(Vec::new(), Vec::new()));
         }
         let answer: Value = match serde_json::from_str(&body) {
             Ok(answer) => answer,
@@ -157,8 +169,10 @@ impl Server {
         if let Some(exception) = answer.get("exception").and_then(Value::as_str) {
             return Ok(Outcome::Refused { message: exception.to_string(), code, status });
         }
+        let text = |column: &Value, key: &str| column.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+        let columns = answer.get("meta").and_then(Value::as_array).map(|meta| meta.iter().map(|column| (text(column, "name"), text(column, "type"))).collect()).unwrap_or_default();
         let rows = answer.get("data").and_then(Value::as_array).map(|rows| rows.iter().map(|row| row.as_array().cloned().unwrap_or_default()).collect());
-        Ok(rows.map_or_else(|| Outcome::Foreign("an answer with no rows in it".to_string()), Outcome::Rows))
+        Ok(rows.map_or_else(|| Outcome::Foreign("an answer with no rows in it".to_string()), |rows| Outcome::Typed(columns, rows)))
     }
 }
 
@@ -174,7 +188,7 @@ impl Answerer<Describe> for Answers<'_> {
 
     fn query(&mut self, sql: &str, _params: &[Value]) -> Result<Result<Vec<Vec<Value>>, DbError>, HostError> {
         match self.0.ask(sql) {
-            Ok(Outcome::Rows(rows)) => Ok(Ok(rows)),
+            Ok(Outcome::Rows(rows) | Outcome::Typed(_, rows)) => Ok(Ok(rows)),
             Ok(Outcome::Refused { message, code, .. }) => Ok(Err(DbError { message, code, position: None })),
             Ok(Outcome::Foreign(what)) => Err(HostError(format!("the server at {} answered with {what}, which ClickHouse's HTTP interface does not", self.0.place()))),
             Err(e) => Err(HostError(format!("the query did not reach the server: {e}"))),
