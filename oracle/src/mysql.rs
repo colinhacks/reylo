@@ -69,7 +69,7 @@
 //! changes nothing else; a problem found there says so.
 
 use reylo_engine_core::types::{BytesType, DateTimeType, DecimalType, DurationType, InstantType, JsonType, Kind, Size, SizeUnit, TextType, Type};
-use crate::seed::{decimal_contradiction, fact_contradiction, length_contradiction, literal_contradiction, report, tick_digits, Report, Scenario, Tally, EMPTY, SCENARIOS};
+use crate::seed::{beyond, decimal_contradiction, fact_contradiction, length_contradiction, literal_contradiction, report, tick_digits, Report, Scenario, Tally, EMPTY, SCENARIOS};
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, OptsBuilder, Statement, Value as My};
 use reylo_engine::clients::mysql_async::{message, quote};
@@ -983,7 +983,7 @@ async fn check(server: &mut Server, state: &mut State<'_>, statements: &[(String
                         _ if killed => tally.timed_out += 1,
                         Ok((returned, rows)) => {
                             tally.ran += 1;
-                            if (cardinality == "at_most_one" && rows > 1) || (cardinality == "one" && rows != 1) || (cardinality == "none" && rows > 0) {
+                            if beyond(cardinality, rows) {
                                 problems.push(format!("{file}: proven {cardinality}, returned {rows} rows with ({shown})"));
                             }
                             if returned.len() != columns.len() {

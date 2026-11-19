@@ -31,7 +31,8 @@
 //!
 //! - a column the engine typed non-null holds no NULL, an array it typed with non-null elements
 //!   holds no NULL element, and a JSON field it typed non-null is never null;
-//! - a statement proven `one` returns exactly one row, and one proven `at_most_one` at most one;
+//! - a statement proven `one` returns exactly one row, one proven `at_most_one` at most one, and
+//!   one proven `none` no row;
 //! - no two rows agree on every column of the result key, a NULL counting as equal to another;
 //! - where the order is total, no two rows in a row tie on every sort key: a sort key that is no
 //!   output column is read from a copy of the statement that also selects it.
@@ -122,6 +123,17 @@ pub(crate) fn report(statements: &[(String, String, Value)], tallies: &[Tally], 
     problems.sort();
     problems.dedup();
     Report { problems, notes, unchecked }
+}
+
+/// Whether a run's row count breaks its analysis's cardinality: `one` is exactly one row,
+/// `at_most_one` one at most, and `none` none at all.
+pub(crate) fn beyond(cardinality: &str, rows: usize) -> bool {
+    match cardinality {
+        "one" => rows != 1,
+        "at_most_one" => rows > 1,
+        "none" => rows > 0,
+        _ => false,
+    }
 }
 
 /// One table's columns, in attribute order.
@@ -431,6 +443,9 @@ struct Bound {
     casts: Vec<String>,
     /// The values of each parameter of the analysis, as literals of its type.
     pools: Vec<Vec<String>>,
+    /// How many columns the server's describe gives the statement's result, where it has
+    /// parameters.
+    described: Option<usize>,
 }
 
 /// Each statement's parameters, or why it cannot be run. The types are the server's own answer
@@ -459,7 +474,7 @@ async fn bind(client: &Client, sql: &str, analysis: &Value, known: &mut HashMap<
     let params = analysis["params"].as_array().cloned().unwrap_or_default();
     let order: Vec<&str> = analysis["rewritten"]["order"].as_array().map(|o| o.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     if params.is_empty() && order.is_empty() {
-        return Ok(Ok(Bound { casts: Vec::new(), pools: Vec::new() }));
+        return Ok(Ok(Bound { casts: Vec::new(), pools: Vec::new(), described: None }));
     }
     let rewritten = analysis["rewritten"]["sql"].as_str().unwrap_or(sql);
     client.batch_execute("SAVEPOINT p").await.map_err(|e| message(&e))?;
@@ -492,7 +507,7 @@ async fn bind(client: &Client, sql: &str, analysis: &Value, known: &mut HashMap<
         }
         pools.push(values);
     }
-    Ok(Ok(Bound { casts: types.into_iter().map(|t| t.ty).collect(), pools }))
+    Ok(Ok(Bound { casts: types.into_iter().map(|t| t.ty).collect(), pools, described: Some(statement.columns().len()) }))
 }
 
 /// A statement's parameters, several assignments: each takes the next value of every pool.
@@ -502,6 +517,14 @@ fn assignments(pools: &[Vec<String>]) -> Vec<Vec<String>> {
     }
     let width = pools.iter().map(Vec::len).max().unwrap_or(1);
     (0..width).map(|r| pools.iter().map(|p| p[r % p.len().max(1)].clone()).collect()).collect()
+}
+
+/// Whether the rows a run over the simple protocol returned are rows a driver gets. Every driver
+/// sends a statement with parameters over the extended protocol, where the server returns the rows
+/// of the result its describe gives, and none where that result has no columns: a write an
+/// INSTEAD rule rewrites returns the rule's RETURNING over the simple protocol alone.
+fn reaches_a_driver(described: Option<usize>) -> bool {
+    described != Some(0)
 }
 
 /// Whether the server refused a run with a NOT NULL or a CHECK violation, which a NULL bound to a
@@ -679,12 +702,16 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                     }
                     client.batch_execute("ROLLBACK TO SAVEPOINT q").await.map_err(|e| message(&e))?;
                     tally.ran += 1;
-                    let rows: Vec<&tokio_postgres::SimpleQueryRow> = messages.iter().filter_map(|m| match m {
-                        tokio_postgres::SimpleQueryMessage::Row(r) => Some(r),
-                        _ => None,
-                    }).collect();
+                    let rows: Vec<&tokio_postgres::SimpleQueryRow> = if reaches_a_driver(bound.described) {
+                        messages.iter().filter_map(|m| match m {
+                            tokio_postgres::SimpleQueryMessage::Row(r) => Some(r),
+                            _ => None,
+                        }).collect()
+                    } else {
+                        Vec::new()
+                    };
                     let cardinality = analysis["cardinality"].as_str().unwrap_or("many");
-                    if (cardinality == "at_most_one" && rows.len() > 1) || (cardinality == "one" && rows.len() != 1) {
+                    if beyond(cardinality, rows.len()) {
                         problems.push(format!("{file}: proven {cardinality}, returned {} rows with ({})", rows.len(), values.join(", ")));
                     }
                     let columns = analysis["columns"].as_array().cloned().unwrap_or_default();
@@ -1574,7 +1601,7 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                     match outcome {
                         Ok(()) => {
                             tally.ran += 1;
-                            if (cardinality == "at_most_one" && returned > 1) || (cardinality == "one" && returned != 1) {
+                            if beyond(cardinality, returned) {
                                 problems.push(format!("{file}: proven {cardinality}, returned {returned} rows with ({shown})"));
                             }
                         }
@@ -1591,7 +1618,8 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                                     problems.push(format!("{file}: {why} with ({shown})"));
                                 }
                             }
-                            if cardinality != "many" && returned > 1 {
+                            // A run that failed may have returned fewer rows than it would have, never more.
+                            if beyond(cardinality, returned) && (cardinality != "one" || returned > 1) {
                                 problems.push(format!("{file}: proven {cardinality}, returned {returned} rows before it failed with ({shown})"));
                             }
                             // A NULL the engine let a parameter take, which SQLite refuses with a
@@ -2144,6 +2172,20 @@ mod tests {
         assert_eq!(report.problems, ["a", "b"]);
         // A run the timeout stopped is named beside the runs that went on, and is never a run.
         assert_eq!(report.notes, ["failed.sql: 1 of 3 run(s) timed out (250 ms) and count for nothing; 0 ran", "mixed.sql: 2 of 3 run(s) timed out (250 ms) and count for nothing; 1 ran"]);
+    }
+
+    #[test]
+    fn a_result_the_describe_gives_no_columns_returns_no_row_to_a_driver() {
+        assert!(!reaches_a_driver(Some(0)));
+        assert!(reaches_a_driver(Some(2)) && reaches_a_driver(None));
+    }
+
+    #[test]
+    fn a_row_count_is_held_to_the_cardinality() {
+        assert!(!beyond("one", 1) && beyond("one", 0) && beyond("one", 2));
+        assert!(!beyond("at_most_one", 0) && !beyond("at_most_one", 1) && beyond("at_most_one", 2));
+        assert!(!beyond("none", 0) && beyond("none", 1));
+        assert!(!beyond("many", 0) && !beyond("many", 3));
     }
 
     #[test]
