@@ -987,8 +987,10 @@ pub(crate) fn aggregate_options(proc: &str) -> String {
 
 /// What a Postgres schema holds that Reylo reads by name alone, so that a change to its definition is
 /// never seen, or doesn't read at all, so that nothing of it is: each a line a person reads, the
-/// object and which of the two. None on the other databases, whose every kind is read.
-pub async fn unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
+/// object and which of the two. `writes` is whether the command writes a change from `schema.sql`
+/// (`migrate new`, `db push`), whose lines also say what that change leaves out. None on the other
+/// databases, whose every kind is read.
+pub async fn unmodeled(db: &mut Db, writes: bool) -> Result<Vec<String>, Error> {
     if db.dialect() != Dialect::Postgres {
         return Ok(vec![]);
     }
@@ -1023,7 +1025,10 @@ pub async fn unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
     let timescale = db.rows("select to_regclass('timescaledb_information.hypertables')::text as v").await?;
     if timescale.first().and_then(|r| r.get("v")).is_some() {
         let hypertables = r"select format('hypertable %I.%I', hypertable_schema, hypertable_name) as what from timescaledb_information.hypertables where hypertable_schema not like '\_timescaledb%' order by 1";
-        out.extend(db.rows(hypertables).await?.iter().map(|r| format!("{}: not read, so a migration written from schema.sql makes a plain table: call create_hypertable in it", r.text("what"))));
+        // What makes one is a migration's call, which a check of the migrations already written runs
+        // as they wrote it: only a change written from schema.sql would leave it out.
+        let why = if writes { ": not read, so a migration written from schema.sql makes a plain table: call create_hypertable in it" } else { ": not read" };
+        out.extend(db.rows(hypertables).await?.iter().map(|r| format!("{}{why}", r.text("what"))));
     }
     // Security labels.
     let labels = format!(

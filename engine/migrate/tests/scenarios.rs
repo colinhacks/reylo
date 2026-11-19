@@ -3337,7 +3337,8 @@ mod adversarial {
         p.output();
         p.exec("insert into timescaledb_information.hypertables values ('public', 'metrics')").await;
         p.dry_run().await;
-        assert_has!(p.output(), r"(?m)^    hypertable public\.metrics: not read");
+        // A check of the migrations already written gives no advice for writing one.
+        assert_has!(p.output(), r"(?m)^    hypertable public\.metrics: not read$");
     }
 
     pub async fn a_database_search_path_resolves_names_as_the_target_does(mut p: P) {

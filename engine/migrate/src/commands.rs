@@ -2032,7 +2032,7 @@ async fn dry_run_on(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
         Err(code) => return Ok(code),
     };
     swept_note(&server, swept, log);
-    let unmodeled = crate::catalog::unmodeled(&mut db).await;
+    let unmodeled = crate::catalog::unmodeled(&mut db, false).await;
     let result = check(&mut db, Some(&mut server), opts).await;
     let result = match result {
         Ok(mut plan) if plan.ok() && lock_free(opts) => {
@@ -3761,7 +3761,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
             return Ok(Err(vec![Problem::new("replay-fails", format!("{m} fails when replayed in a shadow database")).note(e)]));
         }
         shadows.taint(c);
-        let unread = crate::catalog::unmodeled(shadows.db(a)).await?;
+        let unread = crate::catalog::unmodeled(shadows.db(a), true).await?;
         unmodeled_note("schema.sql has what Reylo doesn't fully compare, so a migration can leave a change to it out: check those by hand", &unread, log);
         let mut target = match crate::diff::read(shadows.db(a)).await {
             Ok(schema) => schema,
@@ -5398,7 +5398,7 @@ async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Optio
     }
     let wanted = catalog(shadows.db(s_lane)).await?;
     let now = crate::catalog::without_extra_children(&catalog(db).await?, &wanted);
-    unmodeled_note("schema.sql has what Reylo doesn't fully compare, so a push can leave a change to it out: check those by hand", &crate::catalog::unmodeled(shadows.db(s_lane)).await?, log);
+    unmodeled_note("schema.sql has what Reylo doesn't fully compare, so a push can leave a change to it out: check those by hand", &crate::catalog::unmodeled(shadows.db(s_lane), true).await?, log);
     if now != wanted {
         let target = read_target(shadows.db(s_lane), Some(schema_sql)).await?;
         let counts = table_rows(db).await?;
