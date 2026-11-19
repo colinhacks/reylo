@@ -3137,7 +3137,13 @@ mod adversarial {
         p.output();
         assert_eq!(p.dev().await, 0, "{}", p.peek());
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
-        assert_has!(p.output(), r"Shadow databases leave out what \S+ owns here, the platform's, so a migration that uses it fails in them: a role reylo_platform on their server that madv_rolemaker may SET ROLE to lets them make it");
+        assert_has!(p.output(), r"Shadow databases leave out what \S+ owns here, the platform's, so a migration that uses it fails in them: a role reylo_platform on their server that madv_rolemaker, the role they are made as, may SET ROLE to lets them make it");
+        // Shadows made on shadow_url's server, as its role: that role is the one named.
+        p.exec("do $$ begin create role madv_hosted login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
+        let shadowed = Options { shadow_url: Some(as_role(&p.url, "madv_hosted")), ..p.opts() };
+        let mut out = Vec::new();
+        let _ = reylo_migrate::dry_run(&shadowed, &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("dry run: {e}"));
+        assert_has!(out.join("\n"), r"a role reylo_platform on their server that madv_hosted, the role they are made as, may SET ROLE to lets them make it");
         assert_eq!(roles(&p).await, before, "a run made or granted a role");
     }
 

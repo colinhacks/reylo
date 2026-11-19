@@ -661,9 +661,11 @@ async fn owned_by_platform(target: &mut Db, admin: &tokio_postgres::Client, url:
     if pg_rows(admin, &may).await?.first().is_some_and(|r| r.text("may") == "true") {
         return Ok(Owned { statements, extensions, role: Some(role.to_string()), note: None });
     }
+    // The role the shadows are made as, which takes on the role to make it: `shadow_url`'s, else
+    // the target's.
     let user = pg_rows(admin, "select current_user as u").await?.first().map(|r| r.text("u").to_string()).unwrap_or_default();
     let note = format!(
-        "· {LEFT_OUT} what {} {} here, the platform's, so a migration that uses it fails in them: a role {role} on their server that {user} may SET ROLE to lets them make it",
+        "· {LEFT_OUT} what {} {} here, the platform's, so a migration that uses it fails in them: a role {role} on their server that {user}, the role they are made as, may SET ROLE to lets them make it",
         owners.join(", "),
         if owners.len() == 1 { "owns" } else { "own" }
     );
