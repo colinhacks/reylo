@@ -3884,6 +3884,19 @@ async fn schema_as_sql_on(db: &mut Db, opts: &Options, schemas: &[String]) -> Re
     }
 }
 
+/// A statement of pg_dump's without the column options a platform stamps on every column it makes,
+/// which no other Postgres takes and the platform sets again itself: Neon's `pg_attver`. None where
+/// the statement set nothing else.
+fn without_platform_column_options(statement: &str) -> Option<String> {
+    static OPTIONS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)^(ALTER TABLE ONLY .+ ALTER COLUMN .+ SET \()(.*)\)$").expect("a valid pattern"));
+    let Some(c) = OPTIONS.captures(statement) else { return Some(statement.to_string()) };
+    let kept: Vec<&str> = c[2].split(", ").filter(|o| !o.starts_with("pg_attver=")).collect();
+    match kept.len() {
+        0 => None,
+        _ => Some(format!("{}{})", &c[1], kept.join(", "))),
+    }
+}
+
 async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<String, Error> {
     match db.dialect() {
         Dialect::Postgres => {
@@ -3956,7 +3969,8 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             // What every new database has already: its public schema, as initdb makes it.
             const AS_MADE: [&str; 4] = ["CREATE SCHEMA public", "CREATE SCHEMA IF NOT EXISTS public", "ALTER SCHEMA public OWNER TO pg_database_owner", "COMMENT ON SCHEMA public IS 'standard public schema'"];
             for statement in crate::sql::split_statements(&text, Dialect::Postgres) {
-                let s = statement.text.as_str();
+                let Some(s) = without_platform_column_options(&statement.text) else { continue };
+                let s = s.as_str();
                 if s.starts_with("SET ") || s.starts_with("SELECT pg_catalog.set_config") || (s.starts_with("ALTER ") && s.ends_with(&own)) || platform_default(s) || s.starts_with("CREATE EXTENSION ") || AS_MADE.contains(&s) {
                     continue;
                 }
@@ -5377,6 +5391,15 @@ pub async fn run_sql(url: &str, root: &Path, items: &[(String, String)], log: Lo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_platforms_column_stamp_leaves_the_dump() {
+        // As pg_dump writes a Neon database's columns: each with Neon's own option, which plain Postgres refuses.
+        assert_eq!(without_platform_column_options("ALTER TABLE ONLY public.users ALTER COLUMN id SET (pg_attver=42164944)"), None);
+        assert_eq!(without_platform_column_options("ALTER TABLE ONLY public.users ALTER COLUMN id SET (n_distinct=-1, pg_attver=42164944)").as_deref(), Some("ALTER TABLE ONLY public.users ALTER COLUMN id SET (n_distinct=-1)"));
+        assert_eq!(without_platform_column_options("ALTER TABLE ONLY public.users ALTER COLUMN id SET (n_distinct=-1)").as_deref(), Some("ALTER TABLE ONLY public.users ALTER COLUMN id SET (n_distinct=-1)"));
+        assert_eq!(without_platform_column_options("ALTER TABLE ONLY public.users ALTER COLUMN email SET STATISTICS 500").as_deref(), Some("ALTER TABLE ONLY public.users ALTER COLUMN email SET STATISTICS 500"));
+    }
 
     #[test]
     fn a_rebuilds_own_copy_of_rows_is_no_data_statement() {

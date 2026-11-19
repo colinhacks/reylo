@@ -2786,6 +2786,7 @@ on!(
     a_platforms_schemas_and_extensions_are_in_every_shadow,
     a_platforms_extension_in_pg_catalog_is_not_the_projects,
     a_role_that_is_no_superuser_runs_every_command,
+    a_platform_roles_default_privileges_are_the_platforms,
     a_role_that_cannot_create_databases_is_told_of_shadow_url,
     a_public_schema_its_role_owns_is_a_new_databases,
     a_servers_hint_is_in_its_error,
@@ -2922,6 +2923,34 @@ mod adversarial {
         let mut db = Db::connect(&admin, &p.dir).await.unwrap();
         let _ = db.exec(&format!("drop database if exists {theirs}")).await;
         db.close().await;
+    }
+
+    /// A platform's role's default privileges, as Neon's API gives every database it makes
+    /// (`cloud_admin`'s, granting to `neon_superuser`), which the role that runs the migrations may
+    /// not set: init writes schema.sql as `migrate new` writes, and a change by hand is shown alone.
+    pub async fn a_platform_roles_default_privileges_are_the_platforms(mut p: P) {
+        p.exec("do $$ begin create role madv_hosted login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec("do $$ begin create role cloud_admin; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec("do $$ begin create role madv_platform_users; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec(&format!("alter database {} owner to madv_hosted", p.name)).await;
+        p.exec("alter default privileges for role cloud_admin in schema public grant select, insert, update, delete on tables to madv_platform_users with grant option").await;
+        p.exec("alter default privileges for role cloud_admin in schema public grant usage, select on sequences to madv_platform_users with grant option").await;
+        p.url = as_role(&p.url, "madv_hosted");
+        p.exec("create table users (id bigint generated always as identity primary key, email text not null)").await;
+        let opts = p.opts();
+        let mut out = Vec::new();
+        assert_eq!(reylo_migrate::init(&opts, &[], &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("init: {e}")), 0, "{}", out.join("\n"));
+        let schema = std::fs::read_to_string(p.dir.join("schema.sql")).unwrap();
+        assert!(schema.starts_with("create table users (") && !schema.contains("cloud_admin"), "{schema}");
+        assert_eq!(reylo_migrate::db_introspect(&opts, &[]).await.unwrap(), schema);
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        p.output();
+        p.exec("alter table users add column hand text").await;
+        assert_eq!(p.dry_run().await, 1);
+        let out = p.output();
+        assert_has!(&out, r"alter table users add column hand text");
+        assert!(!out.contains("cloud_admin"), "{out}");
     }
 
     /// A role that may not create a database (PlanetScale's, some managed ones') can make no shadow:

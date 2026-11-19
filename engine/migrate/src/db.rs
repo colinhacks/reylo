@@ -391,6 +391,38 @@ fn host_start(rest: &str) -> usize {
     head.rfind('@').map_or(0, |at| at + 1)
 }
 
+/// Why a run can't go through the transaction pooler a Postgres URL names, by the host its platform
+/// gives one (Neon's endpoint with `-pooler`, Supabase's pooler on port 6543), with the connection
+/// to use instead in `key`, the project file's setting that named it (`direct_url`, `shadow_url`). Such a pooler gives each transaction whichever server session is free, so a
+/// run's session lock outlives the run on the pooler's session and stops the next run that connects
+/// directly, and a setting a run makes for its session reaches the app's queries on it.
+pub fn transaction_pooler(url: &str, key: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    if !matches!(scheme, "postgres" | "postgresql") {
+        return None;
+    }
+    let rest = &rest[host_start(rest)..];
+    let authority = rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())].to_ascii_lowercase();
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) if !port.contains(']') => (host, port.parse::<u16>().ok()),
+        _ => (authority.as_str(), None),
+    };
+    let (first, domain) = host.split_once('.')?;
+    let shown = shown_url(url);
+    let flag = if key == "direct_url" { " or with --url" } else { "" };
+    if let Some(endpoint) = first.strip_suffix("-pooler").filter(|_| domain.ends_with("neon.tech")) {
+        return Some(format!(
+            "{shown} is Neon's pooled connection, whose PgBouncer shares server sessions between clients, and a run of reylo migrate holds one: use the direct connection, host {endpoint}.{domain}, in {key} in .reylo.yaml{flag}"
+        ));
+    }
+    if domain.ends_with("pooler.supabase.com") && port == Some(6543) {
+        return Some(format!(
+            "{shown} is Supabase's transaction pooler, which shares server sessions between clients, and a run of reylo migrate holds one: use its session pooler, port 5432 on the same host, or the direct connection, in {key} in .reylo.yaml{flag}"
+        ));
+    }
+    None
+}
+
 /// The URL with its database replaced by `name`.
 pub fn with_database(url: &str, name: &str) -> String {
     let Some(scheme_end) = url.find("://") else { return url.to_string() };
@@ -962,16 +994,22 @@ pub(crate) async fn pg_close(admin: &tokio_postgres::Client, db: Db, name: &str)
 /// them: each grant, and on functions and types the revoke from PUBLIC of what Postgres grants by
 /// default, for the roles and in the schemas they name (the whole database where none). Those of the
 /// role that runs the migrations name none, so that they are the defaults of whoever runs them: a
-/// migration made by a developer's role runs in production as the deploy's.
+/// migration made by a developer's role runs in production as the deploy's. A platform's role's are
+/// left out (Neon's `cloud_admin`'s, on every database its API makes): they grant only on what that
+/// role makes, which is the platform's, and only that role may set them, so no shadow and no
+/// migration can.
 pub(crate) async fn default_privileges(target: &mut Db) -> Result<Vec<String>, Error> {
     let rows = target
-        .rows(
-            &format!("select format('%s', d.defaclrole::regrole) as role, d.defaclrole = {} as mine,
+        .rows(&format!(
+            "select format('%s', d.defaclrole::regrole) as role, d.defaclrole = {} as mine,
               case when d.defaclnamespace <> 0 then format('%I', n.nspname) end as schema, d.defaclobjtype as kind,
               format('%s', (select json_agg(json_build_object('grantee', case when x.grantee = 0 then 'public' else quote_ident(pg_get_userbyid(x.grantee)) end, 'privilege', x.privilege_type, 'grantable', x.is_grantable))
                  from aclexplode(d.defaclacl) x where x.grantee <> d.defaclrole)) as acl
-            from pg_default_acl d left join pg_namespace n on n.oid = d.defaclnamespace", crate::catalog::runner()),
-        )
+            from pg_default_acl d left join pg_namespace n on n.oid = d.defaclnamespace
+            where {}",
+            crate::catalog::runner(),
+            crate::catalog::not_platform("d.defaclrole")
+        ))
         .await?;
     let mut out = Vec::new();
     for r in rows {
@@ -1050,5 +1088,27 @@ mod url_tests {
         // An @ past the host is no part of the credentials, where a connection is made.
         assert_eq!(with_database("postgres://u@host/d@b", "x"), "postgres://u@host/x");
         assert_eq!(with_database("postgres://host/app?application_name=a@b", "x"), "postgres://host/x?application_name=a@b");
+    }
+
+    #[test]
+    fn a_transaction_pooler_is_refused_with_the_direct_connection() {
+        let neon = transaction_pooler("postgresql://neondb_owner:secret@ep-late-darkness-bb241gty-pooler.c-15.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require", "direct_url").expect("Neon's pooled host");
+        assert!(neon.ends_with("host ep-late-darkness-bb241gty.c-15.us-east-1.aws.neon.tech, in direct_url in .reylo.yaml or with --url"), "{neon}");
+        assert!(neon.starts_with("postgresql://ep-late-darkness-bb241gty-pooler.c-15.us-east-1.aws.neon.tech/neondb is Neon's"), "{neon}");
+        assert!(!neon.contains("secret"), "{neon}");
+        let supabase = transaction_pooler("postgres://postgres.abc:secret@aws-1-us-east-1.pooler.supabase.com:6543/postgres", "shadow_url").expect("Supabase's transaction pooler");
+        assert!(supabase.contains("port 5432") && supabase.ends_with("in shadow_url in .reylo.yaml") && !supabase.contains("secret"), "{supabase}");
+        // The direct connections, Supabase's session pooler and any other host are no transaction pooler.
+        for url in [
+            "postgresql://neondb_owner:secret@ep-late-darkness-bb241gty.c-15.us-east-1.aws.neon.tech/neondb?sslmode=require",
+            "postgres://postgres.abc:secret@aws-1-us-east-1.pooler.supabase.com:5432/postgres",
+            "postgres://postgres:secret@db.abc.supabase.co:5432/postgres",
+            "postgres://u@my-pooler.example.com:6543/app",
+            "postgres://u@localhost:5432/app",
+            "postgres://u@[::1]:6543/app",
+            "mysql://u@x-pooler.neon.tech/app",
+        ] {
+            assert_eq!(transaction_pooler(url, "direct_url"), None, "{url}");
+        }
     }
 }

@@ -359,6 +359,12 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
 fn run_group(command: &str, parsed: &Args, log: reylo_migrate::commands::Log<'_>, sql: &mut Option<String>) -> Result<i32, String> {
     let has = |s: &str| parsed.switches.iter().any(|x| x == s);
     let opts = settings(parsed)?;
+    // A run holds a session, which a transaction pooler shares out; `reylo run` holds none.
+    for (url, key) in std::iter::once((&opts.url, "direct_url")).chain(opts.shadow_url.as_ref().map(|u| (u, "shadow_url"))) {
+        if let Some(refusal) = reylo_migrate::db::transaction_pooler(url, key) {
+            return Err(refusal);
+        }
+    }
     // The home directory is no project's (project.rs), so nothing makes one there.
     if matches!(command, "migrate init" | "migrate history pull") && project::is_home(&opts.root, &environment()) {
         return Err(format!("{} won't write into your home directory: run it in your project's directory", command.trim_start_matches("migrate ")));
