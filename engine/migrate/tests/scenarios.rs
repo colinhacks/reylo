@@ -861,7 +861,7 @@ async fn new_without_schema_sql_writes_what_the_database_has(mut p: P) {
     // With nothing changed, the migration is empty, to write by hand: a change of data or of schema.
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "backfill", &Default::default(), log).await).await, 0, "{}", p.peek());
     let out = p.output();
-    assert_has!(&out, r"✓ Wrote \S*_backfill\.sql, empty, to write by hand: this database has nothing new\n");
+    assert_has!(&out, r"✓ Wrote \S*_backfill\.sql, empty, to write by hand: this database has nothing new");
     assert!(!out.contains("change to data"), "{out}");
 }
 
