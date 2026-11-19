@@ -142,7 +142,7 @@ pub fn run(args: &[String]) -> i32 {
         Err(message) => return fail(&message),
     };
     let Some(dialect) = project::dialect_of(&url) else {
-        return fail(&format!("Cannot tell the database from the URL ({source}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs, and for ClickHouse the http:// or https:// URL of its HTTP interface."));
+        return fail(&format!("Cannot tell the database from the URL ({source}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs, and for ClickHouse clickhouse+http:// or clickhouse+https://, the URL of its HTTP interface."));
     };
     // A relative SQLite path in a URL typed on the command line is the shell's, from the working
     // directory; one in the project's URL is from the project's root, as the type check reads it.

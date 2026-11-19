@@ -1,5 +1,5 @@
 //! The ClickHouse program: a server's HTTP interface, reached from the URL an app gives
-//! `@clickhouse/client`, with each statement analyzed by the replay loop of `reylo-engine`, which
+//! `@clickhouse/client`, which a project writes after `clickhouse+`, with each statement analyzed by the replay loop of `reylo-engine`, which
 //! keeps the connection's answers between statements. HTTP keeps no session, so a connection here
 //! is the server's address and its login, checked once when it is opened.
 
@@ -145,7 +145,7 @@ fn failure(server: &Server, outcome: Outcome) -> Value {
     match outcome {
         Outcome::Refused { message, code, status } if status == 401 || status == 403 || code.as_deref().is_some_and(|c| REFUSED.contains(&c)) => json!({ "status": "refused", "message": message, "code": code }),
         Outcome::Refused { message, code, .. } => json!({ "status": "error", "message": message, "code": code }),
-        Outcome::Foreign(what) => json!({ "status": "error", "message": format!("the server at {} answered with {what}, which ClickHouse's HTTP interface does not: the URL is the one an app gives @clickhouse/client, as http://localhost:8123", server.place()) }),
+        Outcome::Foreign(what) => json!({ "status": "error", "message": format!("the server at {} answered with {what}, which ClickHouse's HTTP interface does not: the URL is the one an app gives @clickhouse/client, after clickhouse+, as clickhouse+http://localhost:8123", server.place()) }),
         Outcome::Rows(_) | Outcome::Typed(..) => json!({ "status": "error", "message": "the server answered with rows where none were asked for" }),
     }
 }

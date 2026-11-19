@@ -147,8 +147,9 @@ export function dialectOf(url: string): Dialect | undefined {
   if (scheme === "postgres" || scheme === "postgresql") return "postgres";
   if (scheme === "mysql" || scheme === "mariadb") return "mysql";
   if (scheme === "file" || scheme === "sqlite") return "sqlite";
-  // ClickHouse is named by the URL of its HTTP interface, as an app gives it to @clickhouse/client.
-  if (scheme === "http" || scheme === "https") return "clickhouse";
+  // ClickHouse is named by the URL of its HTTP interface, as an app gives it to @clickhouse/client,
+  // after `clickhouse+`: a bare http:// or https:// names no one database.
+  if (scheme === "clickhouse+http" || scheme === "clickhouse+https") return "clickhouse";
   return undefined;
 }
 
@@ -485,7 +486,7 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
     if (hit) urlSource = hit.source;
   }
   let dialect = url ? dialectOf(url) : "postgres";
-  if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs, and for ClickHouse the http:// or https:// URL of its HTTP interface.`;
+  if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs, and for ClickHouse clickhouse+http:// or clickhouse+https://, the URL of its HTTP interface.`;
   const unusable = url && dialect === "sqlite" ? sqliteUrlProblem(url) : undefined;
   if (unusable) error ??= `Cannot read the SQLite URL ${url} (${urlSource}): ${unusable}.`;
   // Either name, created or removed, changes the project.

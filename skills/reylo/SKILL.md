@@ -52,7 +52,7 @@ On an error the database raised, `.run()` throws the driver's own error and `.tr
 
 ## Before changing anything
 
-- Find the project file, `.reylo.yaml` or `.reylo.yml`, beside `package.json`. Its `direct_url`, or `DATABASE_URL` without one, is the dev database the type check reads the schema from, and its scheme names the database: `postgres://`, `mysql://`, `file:` for SQLite, `http://` or `https://` for ClickHouse, the URL of its HTTP interface. Reylo reads `.env.local` and `.env` as `dotenv` does, so a value there that holds a `#` is quoted.
+- Find the project file, `.reylo.yaml` or `.reylo.yml`, beside `package.json`. Its `direct_url`, or `DATABASE_URL` without one, is the dev database the type check reads the schema from, and its scheme names the database: `postgres://`, `mysql://`, `file:` for SQLite, `clickhouse+http://` or `clickhouse+https://` for ClickHouse, the URL of its HTTP interface after `clickhouse+`. Reylo reads `.env.local` and `.env` as `dotenv` does, so a value there that holds a `#` is quoted.
 - The type check is `tsc --noEmit --runExternalCode` on TypeScript 7.1, usually a `typecheck` script. Run it before and after a change.
 
 ## Writing a query

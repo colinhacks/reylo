@@ -41,8 +41,8 @@ DATABASE_URL=file:./app.db
 ```
 
 ```sh tab="ClickHouse" tab-group="dialect"
-# .env: the URL of the HTTP interface, http:// or https://
-DATABASE_URL=http://default@localhost:8123/app
+# .env: clickhouse+http:// or clickhouse+https://, the HTTP interface
+DATABASE_URL=clickhouse+http://default@localhost:8123/app
 ```
 
 Point it at a direct connection, not a pooler: describing a query through a pooler in transaction mode, such as PgBouncer's, can fail. You can interpolate other variables from your environment to construct a connection string.

@@ -122,7 +122,7 @@ export async function mysqlDatabase(prefix: string, setup?: string) {
   };
 }
 
-/** A database of a test's own on the test ClickHouse, its URL, and a client of `@clickhouse/client` on it, with each statement of `setup` run first, a `;` at a line's end between two. */
+/** A database of a test's own on the test ClickHouse, the URL a project names it by, the address of its HTTP interface, which a client takes, and a client of `@clickhouse/client` on it, with each statement of `setup` run first, a `;` at a line's end between two. */
 export async function clickhouseDatabase(prefix: string, setup?: string) {
   const { createClient } = driver("@clickhouse/client");
   const admin = createClient({ url: CLICKHOUSE! });
@@ -134,7 +134,8 @@ export async function clickhouseDatabase(prefix: string, setup?: string) {
   const client = createClient({ url: url.href });
   for (const statement of (setup ?? "").split(/;[ \t]*$/m)) if (statement.trim()) await client.command({ query: statement });
   return {
-    url: url.href,
+    url: `clickhouse+${url.href}`,
+    address: url.href,
     client,
     /** Another client of the database, with `options` beside its URL. */
     connect: (options: Record<string, unknown>) => createClient({ url: url.href, ...options }),

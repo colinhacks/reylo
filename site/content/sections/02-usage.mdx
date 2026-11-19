@@ -602,7 +602,7 @@ import { createClient } from "@clickhouse/client";
 import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
-const db = createClient({ url: process.env.DATABASE_URL });
+const db = createClient({ url: process.env.CLICKHOUSE_URL });
 
 const user = await getUser.run(db, { id: 1 });
 

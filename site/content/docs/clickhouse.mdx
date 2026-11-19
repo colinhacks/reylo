@@ -10,7 +10,7 @@ description: How Reylo types SQL queries on ClickHouse. Each column's type in Ty
 | | |
 | --- | --- |
 | ClickHouse versions | 25.11 or later; tested on 25.11 through 26.10 |
-| Connection | The `http://` or `https://` URL of the server's HTTP interface, in `DATABASE_URL` or [`direct_url`](/configuration#direct_url) |
+| Connection | A `clickhouse+http://` or `clickhouse+https://` URL, the server's HTTP interface, in `DATABASE_URL` or [`direct_url`](/configuration#direct_url) |
 | Client | `@clickhouse/client` or `@clickhouse/client-web` ([Client](#client)) |
 | Type checking | Reylo's engine asks ClickHouse itself, over HTTP, so your project needs no client for it |
 
@@ -44,17 +44,19 @@ CREATE TABLE orders (
 
 ## Connection
 
-Name the database with the URL of ClickHouse's HTTP interface:
+Name the database with the URL of ClickHouse's HTTP interface, after `clickhouse+`:
 
 ```sh title=".env"
-DATABASE_URL="http://default:secret@localhost:8123/app"
+DATABASE_URL="clickhouse+http://default:secret@localhost:8123/app"
 ```
 
-The URL reads as `@clickhouse/client` reads one, so the same variable can configure your client. A server behind TLS takes `https://`, as ClickHouse Cloud does on port 8443:
+After `clickhouse+`, the URL reads as `@clickhouse/client` reads one. A server behind TLS takes `clickhouse+https://`, as ClickHouse Cloud does on port 8443:
 
 ```sh title=".env"
-DATABASE_URL="https://default:secret@abc123.us-east-1.aws.clickhouse.cloud:8443/default"
+DATABASE_URL="clickhouse+https://default:secret@abc123.us-east-1.aws.clickhouse.cloud:8443/default"
 ```
+
+Your client takes the URL without the prefix, `http://` or `https://`.
 
 | In the URL | What it sets |
 | --- | --- |
@@ -401,7 +403,7 @@ Reylo runs each query on your app's own client, `@clickhouse/client` in Node.js 
 import { createClient } from "@clickhouse/client";
 import getUser from "./ch_get_user.sql";
 
-const db = createClient({ url: process.env.DATABASE_URL });
+const db = createClient({ url: process.env.CLICKHOUSE_URL });
 
 const user = await getUser.run(db, { id: 1 });
 ```
@@ -428,6 +430,6 @@ What Reylo can't type on ClickHouse, and what to do instead:
 | An `INSERT … FORMAT`, whose rows are the request's body | `VALUES` with parameters, or your client's `insert()` |
 | `WITH TOTALS` and `extremes`: their extra rows aren't part of the result Reylo reads | Compute the total in a second query |
 | A statement other than a `SELECT`, an `INSERT`, a `DELETE` or an `UPDATE`, such as `CREATE TABLE` or `SHOW TABLES` | Run it on your client |
-| An `https://` server whose certificate no public authority signed, such as a self-signed one | None: the type check verifies the certificate against Mozilla's roots |
+| A `clickhouse+https://` server whose certificate no public authority signed, such as a self-signed one | None: the type check verifies the certificate against Mozilla's roots |
 | A server before 25.11, which doesn't mark an error that ends a result | None: the type check says so and stops |
 | The Rust crate | None: sqlx has no ClickHouse driver |

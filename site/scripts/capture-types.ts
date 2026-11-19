@@ -247,7 +247,8 @@ async function buildClickhouse(schema: string, url = URLS.clickhouse): Promise<s
   } finally {
     await client.close();
   }
-  return url;
+  // A project names the database by this URL after `clickhouse+`.
+  return `clickhouse+${url}`;
 }
 
 function buildSqlite(dir: string, schema: string): string {

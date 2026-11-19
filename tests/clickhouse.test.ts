@@ -314,7 +314,7 @@ test("ClickHouse: a select is typed from the server's own description, nullabili
     assert.deepEqual(await shown.run(db.client, { format: "%Y/%m", id: 1 }), [{ name: "ada", shown: "2026/01" }]);
     assert.deepEqual(await (await built(root, "middle", files["middle.sql"])).run(db.client, { level: 0.5 }), { middle: 38.5, n: 2n });
     // The web client reads the same bytes.
-    const web = driver("@clickhouse/client-web").createClient({ url: db.url });
+    const web = driver("@clickhouse/client-web").createClient({ url: db.address });
     try {
       assert.deepEqual(await counted.run(web, { after: 1 }), { users: 1n, oldest: 41, last_email: "bob@example.com" });
     } finally {

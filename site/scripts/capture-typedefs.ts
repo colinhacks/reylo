@@ -93,7 +93,8 @@ async function build(dialect: CardDialect, schema: string, dir: string): Promise
     } finally {
       await client.close();
     }
-    return url.href;
+    // A project names the database by this URL after `clickhouse+`.
+    return `clickhouse+${url.href}`;
   }
   const file = path.join(dir, `card-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
   const db = new DatabaseSync(file);

@@ -70,8 +70,10 @@ fn percent(text: &str) -> String {
 }
 
 impl Server {
-    /// The server a URL names, as `@clickhouse/client` reads one:
-    /// `http[s]://[user[:password]@]host[:port][/database][?parameters]`. A parameter named
+    /// The server a URL names: `clickhouse+` and the URL of its HTTP interface as
+    /// `@clickhouse/client` reads one,
+    /// `http[s]://[user[:password]@]host[:port][/database][?parameters]`, or that URL alone, as a
+    /// caller that already knows the server is ClickHouse gives it. A parameter named
     /// `clickhouse_setting_<name>` or `ch_<name>` is a setting every query runs under, as the
     /// client sends it, so the statements are described as the app runs them; `role` is a role,
     /// `http_header_<name>` a header, `access_token` a bearer token in place of a password, and
@@ -79,8 +81,10 @@ impl Server {
     /// are its own.
     pub fn of(url: &str) -> Result<Server, String> {
         let (scheme, rest) = url.split_once("://").ok_or("cannot read the URL: it has no scheme")?;
-        if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
-            return Err(format!("cannot read the URL: a ClickHouse database is named by the URL of its HTTP interface, http:// or https://, not {scheme}://"));
+        let scheme = scheme.to_ascii_lowercase();
+        let scheme = scheme.strip_prefix("clickhouse+").unwrap_or(&scheme);
+        if scheme != "http" && scheme != "https" {
+            return Err(format!("cannot read the URL: a ClickHouse database is named by the URL of its HTTP interface after clickhouse+, as clickhouse+http://localhost:8123, not {scheme}://"));
         }
         let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
         let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
@@ -117,7 +121,7 @@ impl Server {
             }
         }
         let config = ureq::Agent::config_builder().http_status_as_error(false).timeout_connect(Some(CONNECT_TIMEOUT)).timeout_global(Some(QUERY_TIMEOUT)).build();
-        Ok(Server { agent: ureq::Agent::new_with_config(config), endpoint: format!("{}://{host}{pathname}/", scheme.to_ascii_lowercase()), parameters, headers })
+        Ok(Server { agent: ureq::Agent::new_with_config(config), endpoint: format!("{scheme}://{host}{pathname}/"), parameters, headers })
     }
 
     /// The host and port, and the database where the URL names one, for a message.
@@ -209,6 +213,9 @@ mod tests {
         assert_eq!(server.place(), "db.example:8443/shop");
         let plain = Server::of("http://localhost:8123").unwrap();
         assert_eq!((plain.endpoint.as_str(), plain.parameters.len(), plain.headers.len(), plain.place()), ("http://localhost:8123/", 0, 0, "localhost:8123".to_string()));
+        // The scheme a project's URL has, and the interface's own address, read alike.
+        assert_eq!(Server::of("clickhouse+https://app@db.example:8443/shop").unwrap().endpoint, "https://db.example:8443/");
+        assert_eq!(Server::of("ClickHouse+HTTP://localhost:8123").unwrap().endpoint, "http://localhost:8123/");
         let proxied = Server::of("HTTP://localhost/analytics?pathname=/clickhouse/&access_token=t0ken").unwrap();
         assert_eq!(proxied.endpoint, "http://localhost/clickhouse/");
         assert_eq!(proxied.headers, [("Authorization".to_string(), "Bearer t0ken".to_string())]);
@@ -216,7 +223,8 @@ mod tests {
 
     #[test]
     fn a_url_of_another_kind_is_refused_by_what_to_write() {
-        assert!(Server::of("clickhouse://localhost:9000/app").err().unwrap().contains("http:// or https://, not clickhouse://"));
+        assert!(Server::of("clickhouse://localhost:9000/app").err().unwrap().contains("as clickhouse+http://localhost:8123, not clickhouse://"));
+        assert!(Server::of("clickhouse+native://localhost:9000/app").is_err());
         assert!(Server::of("localhost:8123").is_err());
         assert!(Server::of("http:///app").err().unwrap().contains("names no host"));
     }

@@ -123,7 +123,7 @@ test("analyze takes the project's direct_url and --url, and says what it cannot 
   assert.deepEqual(own.lines[0]!.result.columns.map((c) => c.name), ["label"]);
   const given = analyzeIn(root, ["--sql", "select name from users", "--url", "file:./app.db"]);
   assert.equal(given.status, 0, given.stderr);
-  const other = analyzeIn(root, ["--sql", "select 1", "--url", "ftp://localhost/app"]);
+  const other = analyzeIn(root, ["--sql", "select 1", "--url", "http://localhost/app"]);
   assert.equal(other.status, 2);
   assert.match(other.stderr, /^reylo analyze: Cannot tell the database from the URL/);
   const bare = mkdtempSync(join(tmpdir(), "reylo-analyze-cli-"));
