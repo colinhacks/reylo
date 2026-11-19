@@ -696,6 +696,7 @@ Reylo infers how many rows a query returns from its keys, aggregates, `limit 1` 
 - **Writes that join**, with `from`, `using` or a `with` query of one row, still return a row or `null` when their key is matched.
 - **`BEFORE` row triggers** can skip a row by returning `NULL`, so a write they fire on returns a row or `null`. A PL/pgSQL trigger whose every `return` returns `new`, or `old` on an update or a delete, skips nothing.
 - **Nondeterministic collations** bound nothing: compared under one, where `'a'` can equal `'A'`, a unique key matches more than one row.
+- **A `varchar` key** compared with a value Reylo can't type, as `coalesce(:code::char(3), 'x')`, bounds nothing: beside a `char` value Postgres compares the column as `char`, where trailing blanks don't count.
 
 ## Parameters
 

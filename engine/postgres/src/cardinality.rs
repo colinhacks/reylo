@@ -3512,8 +3512,10 @@ const CAST_TYPES: &[(&str, u32)] = &[
 
 /// Column types that no implicit cast converts with loss, so a value of any type bounds them:
 /// the server converts the value, or converts the column exactly (`int4` to `float8`, `date` to
-/// `timestamp`, `varchar` to `text`), or refuses the comparison.
-const ANY_VALUE_TYPES: &[u32] = &[oid::INT2, oid::INT4, oid::BOOL, oid::UUID, oid::DATE, oid::TEXT, oid::VARCHAR];
+/// `timestamp`), or refuses the comparison. Not `varchar`: beside a value of type `bpchar` the
+/// server converts the column to `bpchar`, whose `=` ignores trailing blanks, so `'a '` and `'a'`
+/// match one value.
+const ANY_VALUE_TYPES: &[u32] = &[oid::INT2, oid::INT4, oid::BOOL, oid::UUID, oid::DATE, oid::TEXT];
 
 /// Whether a column of type `column` compared with a value of type `value` uses an equality of the
 /// column's btree operator family on the column as it is: the cross-type members of `integer_ops`,
