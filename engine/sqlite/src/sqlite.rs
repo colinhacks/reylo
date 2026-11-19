@@ -3624,17 +3624,19 @@ mod tests {
             format!("create table u (b); vacuum into '{}'", vacuumed.display()),
             "create table v (c); pragma hard_heap_limit = 1; create table w (d)".to_string(),
         ];
-        // A refused statement ends its row's replay, which a statement that fails on what it would
-        // have made says (the replay's own steps are reported with the analysis that made it).
-        let refused = analyze_ddl("select d from w", &ddl, &Extras::default()).analysis;
-        let messages: Vec<&str> = refused.diagnostics.iter().map(|d| d.message.as_str()).collect();
-        assert_eq!(messages.first(), Some(&"no such table: w"), "{messages:?}");
-        assert!(messages.contains(&"The schema replay skipped statement 1: not authorized"), "{messages:?}");
-        assert!(messages.contains(&"The schema replay skipped statement 3: not authorized"), "{messages:?}");
-        assert!(!attached.exists() && !vacuumed.exists());
         // What each row made before the refused statement is there.
         let a = analyze_ddl("select a, b, c from t, u, v", &ddl, &Extras::default()).analysis;
         assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
+        assert!(!attached.exists() && !vacuumed.exists());
+        // A refused statement ends its row's replay, which every statement that fails on what it
+        // would have made says, the replay kept from the statement before included.
+        for _ in 0..2 {
+            let refused = analyze_ddl("select d from w", &ddl, &Extras::default()).analysis;
+            let messages: Vec<&str> = refused.diagnostics.iter().map(|d| d.message.as_str()).collect();
+            assert_eq!(messages.first(), Some(&"no such table: w"), "{messages:?}");
+            assert!(messages.contains(&"The schema replay skipped statement 1: not authorized"), "{messages:?}");
+            assert!(messages.contains(&"The schema replay skipped statement 3: not authorized"), "{messages:?}");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

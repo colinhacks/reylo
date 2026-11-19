@@ -40,6 +40,7 @@ static reylo_insert_select_fn reylo_insert_select_hook;
 
 static sqlite3 *gDb;            /* the in-memory schema replay */
 static char *gDdlKey;           /* the DDL it was built from */
+static char *gReplayErrors;     /* what its replay reported, as openSchema's errors list them */
 static sqlite3_str *gStmt;      /* the top-level SELECT, or a DML's SELECT source */
 static sqlite3_str *gDml;       /* the INSERT / UPDATE / DELETE */
 static sqlite3_str *gReturning; /* the RETURNING list */
@@ -723,14 +724,22 @@ static int openSchema(
   char *aMissing = 0;
   int i, rc;
   const int flags = SQLITE_UTF8|SQLITE_DETERMINISTIC|SQLITE_INNOCUOUS;
+  const int nBefore = sqlite3_str_length(errors);
   for(i=0; i<nFn; i++){ sqlite3_str_appendf(k, "%s/%d", azFn[i], aFnArg[i]); sqlite3_str_appendchar(k, 1, '\2'); }
   for(i=0; i<nHost; i++){ sqlite3_str_appendf(k, "%s/%d/%c", azHost[i], aHostArg[i], zHostType[i]); sqlite3_str_appendchar(k, 1, '\3'); }
   for(i=0; i<nDdl; i++){ sqlite3_str_appendall(k, azDdl[i]); sqlite3_str_appendchar(k, 1, '\1'); }
   zKey = sqlite3_str_finish(k);
   if( zKey==0 ) zKey = sqlite3_mprintf("");
-  if( gDb && gDdlKey && strcmp(gDdlKey, zKey)==0 ){ sqlite3_free(zKey); return SQLITE_OK; }
+  /* A replay kept from an earlier statement reports what it reported then, so every statement
+  ** analyzed against the schema can say which of its steps failed. */
+  if( gDb && gDdlKey && strcmp(gDdlKey, zKey)==0 ){
+    sqlite3_free(zKey);
+    if( gReplayErrors ) sqlite3_str_appendall(errors, gReplayErrors);
+    return SQLITE_OK;
+  }
   if( gDb ){ sqlite3_close(gDb); gDb = 0; }
   sqlite3_free(gDdlKey); gDdlKey = zKey;
+  sqlite3_free(gReplayErrors); gReplayErrors = 0;
   rc = sqlite3_open(":memory:", &gDb);
   if( rc!=SQLITE_OK ) return rc;
   /* The replay runs whatever text the database's sqlite_schema holds, more than one statement to a
@@ -796,6 +805,7 @@ static int openSchema(
   ** SQLite always reads a schema it loads from a file that way, whatever the build. */
   sqlite3_db_config(gDb, SQLITE_DBCONFIG_DQS_DML, 0, (int*)0);
   sqlite3_db_config(gDb, SQLITE_DBCONFIG_DQS_DDL, 0, (int*)0);
+  if( sqlite3_str_length(errors)>nBefore ) gReplayErrors = sqlite3_mprintf("%s", sqlite3_str_value(errors)+nBefore);
   return SQLITE_OK;
 }
 
