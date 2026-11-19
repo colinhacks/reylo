@@ -22,7 +22,7 @@ static LOCK: Mutex<()> = Mutex::new(());
 /// The version of the tree's format, which the walker writes as the tree's first member
 /// (`REYLO_TREE_VERSION` in `csrc/reylo_sqlite.c`): a tree of another is refused, by both numbers,
 /// before anything in it is read. A change to what either side reads or writes moves both.
-pub const TREE_VERSION: u32 = 1;
+pub const TREE_VERSION: u32 = 2;
 
 #[derive(Debug, Deserialize)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
@@ -105,6 +105,8 @@ pub struct PublicParam {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TableInfo {
     pub strict: bool,
+    /// The table is WITHOUT ROWID: its primary key is its rows' key (libSQL's `vector_top_k` returns it).
+    pub without_rowid: bool,
     #[serde(deserialize_with = "present")]
     pub rowid_alias: Option<String>,
     /// A NOT NULL, UNIQUE or PRIMARY KEY of the table is declared ON CONFLICT IGNORE: a write
@@ -187,6 +189,10 @@ pub struct From {
     pub tab_func: bool,
     /// A table-valued function's arguments (`json_each(:ids)`); empty for anything else.
     pub args: Vec<Node>,
+    /// For libSQL's `vector_top_k('docs_emb', …)`, the table whose rows the index it names holds,
+    /// which `tables` describes; `None` where the index is not written as a string or names no index.
+    #[serde(deserialize_with = "present")]
+    pub vector_table: Option<String>,
     pub cte: bool,
     /// A recursive WITH query's read of itself, inside the query, which has no subquery of its own.
     pub recursive: bool,
@@ -584,7 +590,7 @@ mod tests {
     /// A prepared statement's tree, `select a from t`, as the walker writes it.
     fn tree() -> Value {
         let column = json!({ "op": "column", "aff": "none", "outerOn": false, "innerOn": false, "cursor": 0, "index": 0, "register": false, "table": "t", "column": "a", "declared": "", "affinity": "blob", "coll": "BINARY", "notNull": false, "rowid": false, "generated": false, "subtype": false, "outer": false, "strict": false, "view": false });
-        let from = json!({ "cursor": 0, "table": "t", "alias": null, "outer": false, "right": false, "leftOfRight": false, "tabFunc": false, "args": [], "cte": false, "recursive": false, "view": false, "virtual": false, "subquery": null, "on": null });
+        let from = json!({ "cursor": 0, "table": "t", "alias": null, "outer": false, "right": false, "leftOfRight": false, "tabFunc": false, "args": [], "vectorTable": null, "cte": false, "recursive": false, "view": false, "virtual": false, "subquery": null, "on": null });
         let statement = json!({ "columns": [{ "name": "a", "named": false, "expr": column }], "from": [from], "where": null, "groupBy": [], "having": null, "orderBy": [], "limit": null, "offset": null, "distinct": false, "aggregate": false, "values": false, "window": false });
         json!({ "version": TREE_VERSION, "statement": statement, "dml": null, "returning": null, "columns": [{ "name": "a", "declared": null }], "params": [], "readonly": true, "tables": {}, "schemaErrors": [] })
     }

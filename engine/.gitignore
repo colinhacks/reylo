@@ -2,3 +2,4 @@ target/
 .patched/
 .wasi-sdk/
 .sqlite/
+.libsql/

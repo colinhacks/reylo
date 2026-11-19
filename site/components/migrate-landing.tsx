@@ -296,12 +296,11 @@ function usePlayer(script: Script, onEdit?: (edited: boolean) => void): Line[] {
   return lines;
 }
 
-/** A printed line's marks in their colours, as the CLI paints them: ✓ and + green, ✗ red, ! and ↺ yellow, a · note dim whole; a command it names bright. */
+/** A printed line's marks in their colours, as the CLI paints them: ✓ and + green, ✗ red, ! and ↺ yellow, a » note's mark dim; a command on its own line cyan. */
 function paint(line: string): ReactNode {
-  if (/^\s*· /.test(line)) return <span className="ml-mu">{line}</span>;
-  const m = line.match(/^(\s*)(✓|✗|!|\+|↺)(\s.*)?$/);
+  const m = line.match(/^(\s*)(✓|✗|!|\+|↺|»)(\s.*)?$/);
   if (m) {
-    const cls = m[2] === '✓' || m[2] === '+' ? 'ml-ok' : m[2] === '✗' ? 'ml-er' : 'ml-wn';
+    const cls = m[2] === '✓' || m[2] === '+' ? 'ml-ok' : m[2] === '✗' ? 'ml-er' : m[2] === '»' ? 'ml-mu' : 'ml-wn';
     return (
       <>
         {m[1]}
@@ -310,7 +309,7 @@ function paint(line: string): ReactNode {
       </>
     );
   }
-  if (/^\s+reylo /.test(line)) return <span className="ml-c">{line}</span>;
+  if (/^\s+reylo /.test(line)) return <span className="ml-cy">{line}</span>;
   if (line === 'Nothing was changed.') return <span className="ml-mu">{line}</span>;
   return line;
 }
@@ -414,7 +413,7 @@ const INTROSPECT: Script = [
 /** Lock-free: a migration that sorts before one the database ran is refused, then runs once it's given a later name. */
 const LOCK_FREE: Script = [
   '$ reylo migrate deploy',
-  '✗ 20261105080000_no_nick.sql sorts before 20261105090000_nick.sql, which this database already ran, and the two orders end differently',
+  '✗ Migration 20261105080000_no_nick.sql sorts before 20261105090000_nick.sql, which this database already ran, and the two orders end differently',
   '  + a fresh database: column users.nick text',
   '  Give 20261105080000_no_nick.sql a later name, so that every database runs it after 20261105090000_nick.sql',
   '',
@@ -431,7 +430,6 @@ const PUSH: Script = [
   'Pushing reylo/schema.sql to postgres://localhost:5432/app',
   '  + alter table users add column nick text;',
   '✓ This database matches reylo/schema.sql',
-  '· Not in a migration yet: reylo migrate new <name> writes it',
   '$ reylo migrate new add_nick',
   '✓ Wrote reylo/migrations/20261104150000_add_nick.sql',
 ];
