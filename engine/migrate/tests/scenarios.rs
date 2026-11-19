@@ -2784,6 +2784,7 @@ on!(
     a_migrations_session_setting_is_never_carried_by_the_cache,
     init_reads_a_function_dumped_before_the_table_it_reads,
     a_platforms_schemas_and_extensions_are_in_every_shadow,
+    a_platforms_extension_in_pg_catalog_is_not_the_projects,
     a_role_that_is_no_superuser_runs_every_command,
     a_role_that_cannot_create_databases_is_told_of_shadow_url,
     a_public_schema_its_role_owns_is_a_new_databases,
@@ -3057,6 +3058,32 @@ mod adversarial {
         assert_eq!(p.rows("select 1 from pg_extension where extname = 'pgcrypto'").await.len(), 1, "the platform's extension stays");
         p.exec("insert into auth.users values ('00000000-0000-0000-0000-000000000001')").await;
         assert_eq!(p.rows("select token from profiles").await.len(), 1, "the trigger and the default ran");
+    }
+
+    /// As Azure makes its `postgres` database: an extension its superuser made in `pg_catalog`
+    /// (`pgaadauth`), adopted by a role that is no superuser. No file holds it, and every command runs.
+    pub async fn a_platforms_extension_in_pg_catalog_is_not_the_projects(mut p: P) {
+        p.exec("do $$ begin create role madv_azuresu superuser; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec("do $$ begin create role madv_azure login createdb; exception when duplicate_object or unique_violation then null; end $$").await;
+        p.exec("set role madv_azuresu; create extension fuzzystrmatch with schema pg_catalog; reset role").await;
+        p.exec(&format!("alter database {} owner to madv_azure", p.name)).await;
+        p.url = as_role(&p.url, "madv_azure");
+        p.exec("create table users (id int primary key, email text not null)").await;
+        let opts = p.opts();
+        let mut out = Vec::new();
+        let code = reylo_migrate::init(&opts, &[], &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("init: {e}"));
+        assert_eq!(code, 0, "{}", out.join("\n"));
+        let text = std::fs::read_to_string(p.dir.join("schema.sql")).unwrap();
+        assert!(!text.contains("pg_catalog") && !text.contains("fuzzystrmatch"), "{text}");
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        p.schema(&format!("{text}\ncreate table posts (id int primary key, user_id int references users (id));\n"));
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "posts", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select 1 from pg_extension where extname = 'fuzzystrmatch'").await.len(), 1, "the server's extension stays");
     }
 
     pub async fn init_reads_a_function_dumped_before_the_table_it_reads(mut p: P) {

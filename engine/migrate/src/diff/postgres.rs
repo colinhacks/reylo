@@ -253,7 +253,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
 
     for r in db
         .rows(&format!(
-            "select x.oid, format('%I', x.extname) as name, format('%I', n.nspname) as schema from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {}",
+            "select x.oid, format('%I', x.extname) as name, format('%I', n.nspname) as schema from pg_extension x join pg_namespace n on n.oid = x.extnamespace where n.nspname <> 'pg_catalog' and {}",
             not_platform("x.extowner")
         ))
         .await?

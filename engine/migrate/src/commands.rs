@@ -3890,9 +3890,11 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             let mut kept: Vec<String> = Vec::new();
             // The extensions the dumped schemas use, which pg_dump writes only for the schema it
             // dumps them in: the platform's own aside, made where they are, if they aren't already.
+            // One in `pg_catalog` is the server's (`plpgsql`, Azure's `pgaadauth`): only a superuser
+            // may put one there, and no `create schema` may name it.
             for r in db
                 .rows(&format!(
-                    "select quote_ident(x.extname) as name, quote_ident(n.nspname) as schema, n.nspname as raw from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {}",
+                    "select quote_ident(x.extname) as name, quote_ident(n.nspname) as schema, n.nspname as raw from pg_extension x join pg_namespace n on n.oid = x.extnamespace where n.nspname <> 'pg_catalog' and {}",
                     crate::catalog::not_platform("x.extowner")
                 ))
                 .await?
