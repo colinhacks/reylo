@@ -689,7 +689,7 @@ jobs:
         run: |
           cases=''
           for dir in oracle/cases/*/; do
-            case "${dir%/}" in */mysql_* | */sqlite_*) ;; *) cases="$cases ${dir%/}" ;; esac
+            case "${dir%/}" in */mysql_* | */sqlite_* | */clickhouse_*) ;; *) cases="$cases ${dir%/}" ;; esac
           done
           # shellcheck disable=SC2086
           cargo run -q -p reylo-oracle -- --url postgres://postgres@localhost:25432/postgres --strict-coverage $cases
