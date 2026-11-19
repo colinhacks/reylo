@@ -11,7 +11,7 @@
 // (wiki/structured-params.md). A schema that says nothing more admits any JSON value, `Json`, as
 // src/render.ts writes it.
 
-export type Dialect = 'postgres' | 'mysql' | 'sqlite';
+export type Dialect = 'postgres' | 'mysql' | 'sqlite' | 'clickhouse';
 type Schema = string | boolean | { [key: string]: unknown };
 
 const LEAVES: Record<string, string> = { string: 'string', number: 'number', integer: 'number', boolean: 'boolean', null: 'null' };

@@ -31,7 +31,7 @@ export { pageFiles };
 //   analyzed in each, and a `ts twoslash` block that imports it follows the page's dialect choice,
 //   as under a code-tab group of dialects.
 // - A block's dialect is its `tab` when that is Postgres, MySQL or SQLite; else the enclosing
-//   <Dialect value> (or <Tab value>) panel's; else its `dialect="postgres|mysql|sqlite"` meta
+//   <Dialect value> (or <Tab value>) panel's; else its `dialect="postgres|mysql|sqlite|clickhouse"` meta
 //   attribute's, which this plugin removes; else, for a `ts twoslash` block, the dialect of the
 //   `.sql` blocks it imports; else Postgres.
 // - The page is several files, shown in order: content/docs/index.mdx (the title, the opening and the
@@ -76,16 +76,18 @@ export type MdNode = {
 type Code = MdNode & { type: 'code'; value: string };
 
 /** The dialects of the main page's examples, whose code tabs and switch name them in this order. */
-export const DIALECTS = ['Postgres', 'MySQL', 'SQLite'] as const;
+export const DIALECTS = ['Postgres', 'MySQL', 'SQLite', 'ClickHouse'] as const;
+/** A database's name, as the page's tabs and switches show it. */
 export type DialectName = (typeof DIALECTS)[number];
-export type Dialect = 'postgres' | 'mysql' | 'sqlite';
-const DIALECT_OF: Record<string, Dialect> = { postgres: 'postgres', mysql: 'mysql', sqlite: 'sqlite' };
-export const DIALECT_NAME: Record<Dialect, DialectName> = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite' };
+export type Dialect = 'postgres' | 'mysql' | 'sqlite' | 'clickhouse';
+const DIALECT_OF: Record<string, Dialect> = { postgres: 'postgres', mysql: 'mysql', sqlite: 'sqlite', clickhouse: 'clickhouse' };
+export const DIALECT_NAME: Record<Dialect, DialectName> = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite', clickhouse: 'ClickHouse' };
 /** The client an example calls `db`: the one Basic usage builds in each dialect. */
 const CLIENT: Record<Dialect, string> = {
   postgres: 'import("postgres").Sql',
   mysql: 'import("mysql2/promise").Pool',
   sqlite: 'import("better-sqlite3").Database',
+  clickhouse: 'import("@clickhouse/client").ClickHouseClient',
 };
 /** A tab or panel value or a meta attribute naming a dialect, in any case. */
 const dialectOf = (value: unknown): Dialect | undefined => (typeof value === 'string' ? DIALECT_OF[value.toLowerCase()] : undefined);
@@ -145,8 +147,10 @@ export function collect(tree: MdNode): Block[] {
           .findLast((a) => a.type === 'mdxJsxFlowElement' && (a.name === 'Dialect' || a.name === 'Tab') && dialectOf(attr(a, 'value')));
         const panelDialect = panel && dialectOf(attr(panel, 'value'));
         const metaDialect = attribute(code.meta, 'dialect');
-        const every = metaDialect === 'all';
-        if (metaDialect !== undefined && !every && !dialectOf(metaDialect)) throw new Error(`${where(code)}: dialect="${metaDialect}" names no dialect; write postgres, mysql, sqlite or all.`);
+        // `all`, or a list (`postgres,mysql,sqlite`): the same statement in each of them.
+        const shares = metaDialect === 'all' ? DIALECTS.map((d) => DIALECT_OF[d.toLowerCase()]) : metaDialect?.includes(',') ? metaDialect.split(',').map((d) => dialectOf(d.trim())) : undefined;
+        const every = shares !== undefined;
+        if (metaDialect !== undefined && (every ? shares.includes(undefined) : !dialectOf(metaDialect))) throw new Error(`${where(code)}: dialect="${metaDialect}" names no dialect; write postgres, mysql, sqlite, clickhouse, a list of them or all.`);
         const dialect = tabDialect ?? panelDialect ?? dialectOf(metaDialect) ?? 'postgres';
         const name = attribute(code.meta, 'title') ?? attribute(code.meta, 'file') ?? (tab && !tabDialect ? tab : undefined);
         const card = node.name === INFERENCE_CARD ? node : undefined;
@@ -157,11 +161,10 @@ export function collect(tree: MdNode): Block[] {
           const schema = card && cardSchema(card, d);
           return schema === undefined ? {} : { schema, hash: hashOf(`${schema}\n\0\n${code.value}`) };
         };
-        // The same statement in every dialect: one block per dialect, grouped as a code-tab group
+        // The same statement in several dialects: one block per dialect, grouped as a code-tab group
         // of dialects is, so that an import of it expands into a panel per dialect.
         if (every)
-          for (const each of DIALECTS) {
-            const d = DIALECT_OF[each.toLowerCase()]!;
+          for (const d of shares as Dialect[]) {
             blocks.push({ ...shared, ...local(d), order: blocks.length, dialect: d, from: 'meta', group: code });
           }
         else
@@ -187,7 +190,7 @@ function attr(node: MdNode, name: string): unknown {
 const where = (node: MdNode) => `line ${node.position?.start.line ?? '?'}`;
 
 /** A database's own page, whose every example is that database's. */
-const DIALECT_PAGE = /(^|\/)(postgres|mysql|sqlite)\.mdx$/;
+const DIALECT_PAGE = /(^|\/)(postgres|mysql|sqlite|clickhouse)\.mdx$/;
 /** A file of the main page's sections, which share its schema (lib/page-files.ts). */
 const MAIN_PAGE = /(^|\/)content\/sections\/[^/]+\.mdx$/;
 
@@ -443,7 +446,7 @@ function mergeDialectFiles(blocks: Block[]) {
   for (const block of blocks) {
     // The file is the tab's label without its dialect: `users.sql` of `users.sql (MySQL)`, and
     // `main.ts` of `main.ts (MySQL)` where the TypeScript differs per dialect too.
-    const label = /^(.+) \((Postgres|MySQL|SQLite)\)$/.exec(block.node.data?.tab ?? '');
+    const label = /^(.+) \((Postgres|MySQL|SQLite|ClickHouse)\)$/.exec(block.node.data?.tab ?? '');
     if (!label || !block.group || block.group.name !== 'CodeBlockTabs' || block.from !== 'meta' || dialectOf(label[2]) !== block.dialect) continue;
     const files = groups.get(block.group) ?? new Map<string, Block[]>();
     files.set(label[1]!, [...(files.get(label[1]!) ?? []), block]);
@@ -487,7 +490,7 @@ const TYPE_WIDTH = { side: 30, rows: 64 } as const;
 export function moduleTypes(module: string): { params: string | undefined; row: string; cardinality: string } {
   const params = /^export type Params = (.*);$/m.exec(module)?.[1];
   const row = /^export type Row = (.*);$/m.exec(module)?.[1];
-  const cardinality = /declare const query: Query<[\s\S]*, "(one|maybeOne|many|none)", "(?:postgres|mysql|sqlite)", QueryError> & \{/.exec(module)?.[1];
+  const cardinality = /declare const query: Query<[\s\S]*, "(one|maybeOne|many|none)", "(?:postgres|mysql|sqlite|clickhouse)", QueryError> & \{/.exec(module)?.[1];
   if (params === undefined || row === undefined || cardinality === undefined) throw new Error(`a module lib/remark-mapper.ts cannot read:\n${module}`);
   return { params: params === 'Record<never, never>' ? undefined : params, row, cardinality };
 }

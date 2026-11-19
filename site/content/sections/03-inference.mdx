@@ -3,7 +3,7 @@ title: "Inference"
 ---
 
 
-Reylo lets you use the full power of SQL provided by your database. Postgres, MySQL and SQLite are all supported.
+Reylo lets you use the full power of SQL provided by your database. Postgres, MySQL, SQLite and ClickHouse are all supported.
 
 To type a query, Reylo has your live database prepare it, without running it, and reads the catalog. From the answer, it learns:
 
@@ -17,11 +17,17 @@ For example, `id` is the primary key, so this query returns at most one row:
 
 <InferenceCard>
 
-```sql file="get_user.sql" dialect="all"
+```sql file="get_user.sql" dialect="clickhouse"
+SELECT id, name, email FROM users WHERE id = {id:UInt32} LIMIT 1
+```
+
+```sql file="get_user.sql" dialect="postgres,mysql,sqlite"
 select id, name, email from users where id = :id::int
 ```
 
 </InferenceCard>
+
+ClickHouse states most of this itself: a parameter declares its type, and a column's type says whether it can be null. So the rules below are mostly those of Postgres, MySQL and SQLite, and [ClickHouse](/clickhouse) has its own page.
 
 <Rust>
 Each card shows the types in TypeScript, in Rust, or as the [type descriptor](/typedefs) the [CLI](/cli) prints: pick one at the top of any card.
@@ -188,9 +194,42 @@ In TypeScript, a 64-bit integer is a `bigint`, a decimal its exact text, and an 
 </LanguagePanels>
 
 </Dialect>
+<Dialect value="ClickHouse">
+
+<LanguagePanels>
+<LanguagePanel value="TypeScript">
+
+| SQL type | TypeScript |
+| --- | --- |
+| `Int8`, `Int16`, `Int32`, `UInt8`, `UInt16`, `UInt32` | `number` |
+| `Int64` to `Int256`, `UInt64` to `UInt256`, `count()` | `bigint` |
+| `Float32`, `Float64` | `number` |
+| `Decimal` | `string` |
+| `String`, `FixedString` | `string` |
+| `Bool` | `boolean` |
+| `UUID`, `IPv4`, `IPv6` | `string` |
+| `Date`, `Date32` | `string`, as `2026-10-20` |
+| `DateTime`, `DateTime64` | `string`, the instant in UTC, as `2026-10-20T08:00:00.123Z` |
+| `Enum8`, `Enum16` | the union of its labels |
+| `Array(T)` | an array of its element type |
+| `Tuple(…)` | a tuple, or an object of its fields where they have names |
+| `Map(K, V)` | an array of `{ key, value }` pairs |
+| `Nullable(T)` | `T \| null` |
+| `LowCardinality(T)` | the type of `T` |
+| `JSON`, `Dynamic`, `AggregateFunction`, an interval | not yet: select it as text, as `toJSONString(x)` |
+
+</LanguagePanel>
+<LanguagePanel value="Rust">
+
+The Rust crate has no ClickHouse support yet: sqlx has no ClickHouse driver.
+
+</LanguagePanel>
+</LanguagePanels>
+
+</Dialect>
 </DialectTabs>
 
-For every rule and edge case of each database, from 64-bit integers to time zones, nulls, row counts and parameters, see its own page: [Postgres](/postgres#data-types), [MySQL](/mysql#data-types) and [SQLite](/sqlite#data-types).
+For every rule and edge case of each database, from 64-bit integers to time zones, nulls, row counts and parameters, see its own page: [Postgres](/postgres#data-types), [MySQL](/mysql#data-types), [SQLite](/sqlite#data-types) and [ClickHouse](/clickhouse#data-types).
 
 ## Named parameters [#naming]
 
@@ -200,7 +239,7 @@ Name a parameter with a colon, and Reylo infers its type from where it's used:
 
 <InferenceCard>
 
-```sql file="inferred_rename_user.sql" dialect="all"
+```sql file="inferred_rename_user.sql" dialect="postgres,mysql,sqlite"
 update users
 set name = :name
 where id = :id
@@ -214,7 +253,7 @@ Where the query doesn't pin down a parameter's type, cast it. Reylo compiles the
 
 <InferenceCard>
 
-```sql file="inferred_search_users.sql" dialect="all"
+```sql file="inferred_search_users.sql" dialect="postgres,mysql,sqlite"
 select id, name
 from users
 where name like concat('%', :q::text, '%')
@@ -248,6 +287,11 @@ select length(:text::text) as n
 A call to a function your application registers fails the type check, cast or not: Reylo prepares the statement in its own SQLite, which lacks it ("no such function"). Apply that function in TypeScript instead.
 
 </Dialect>
+<Dialect value="ClickHouse">
+
+ClickHouse infers no parameter's type: each one declares its own, as `{x:String}` or `:x::String`, and a bare `:x` is an error.
+
+</Dialect>
 </DialectTabs>
 
 </Details>
@@ -258,7 +302,7 @@ Each column comes back with its type:
 
 <InferenceCard>
 
-```sql file="inferred_users.sql" dialect="all"
+```sql file="inferred_users.sql" dialect="postgres,mysql,sqlite"
 select id, name
 from users
 where role = :role
@@ -272,7 +316,7 @@ A left join makes the joined table's columns nullable:
 
 <InferenceCard>
 
-```sql file="inferred_user_titles.sql" dialect="all"
+```sql file="inferred_user_titles.sql" dialect="postgres,mysql,sqlite"
 select u.name, p.title
 from users u
 left join posts p on p.user_id = u.id
@@ -285,7 +329,7 @@ A test in the `where` that fails on null, like a comparison, makes the whole joi
 
 <InferenceCard>
 
-```sql file="inferred_published_titles.sql" dialect="all"
+```sql file="inferred_published_titles.sql" dialect="postgres,mysql,sqlite"
 select u.name, p.title
 from users u
 left join posts p on p.user_id = u.id
@@ -300,7 +344,7 @@ Reylo infers which computed columns can never be null:
 
 <InferenceCard>
 
-```sql file="inferred_user_flags.sql" dialect="all"
+```sql file="inferred_user_flags.sql" dialect="postgres,mysql,sqlite"
 select u.name,
   coalesce(u.email, '') as email,
   exists (select 1 from posts p where p.user_id = u.id) as has_posts
@@ -316,7 +360,7 @@ To accept null, cast a parameter to `nullable(…)`. Leaving it out passes `null
 
 <InferenceCard>
 
-```sql file="inferred_posts_by_user.sql" dialect="all"
+```sql file="inferred_posts_by_user.sql" dialect="postgres,mysql,sqlite"
 select id, title
 from posts
 where user_id = coalesce(:user_id::nullable(int), user_id)
@@ -332,7 +376,7 @@ To pick the sort order at run time, order by a `case` on a parameter:
 
 <InferenceCard>
 
-```sql file="sort_users.sql" dialect="all"
+```sql file="sort_users.sql" dialect="postgres,mysql,sqlite"
 -- a parameter appears once, so one read twice comes from a with
 with input as (select :sort::text as sort)
 select u.id, u.name
@@ -497,7 +541,7 @@ create table users (
 ) strict;
 ```
 
-```sql file="inferred_user_by_email.sql" dialect="all"
+```sql file="inferred_user_by_email.sql" dialect="postgres,mysql,sqlite"
 select id, name
 from users
 where email = :email::text
@@ -538,6 +582,11 @@ Also a key match:
 - a subquery, a `with` query or a view that keeps a key
 
 A unique index on an expression or with a `where` gives `many`.
+
+</Dialect>
+<Dialect value="ClickHouse">
+
+No match is a key: ClickHouse enforces no unique key, and a table's primary key is the order its rows are stored in. Only a `LIMIT 1` or an aggregate with no `GROUP BY` bounds a result ([Cardinality](/clickhouse#cardinality)).
 
 </Dialect>
 </DialectTabs>
@@ -629,7 +678,7 @@ Reylo types each window function: a row number is never null, while `lag()` is n
 
 <InferenceCard>
 
-```sql file="window_functions.sql" dialect="all"
+```sql file="window_functions.sql" dialect="postgres,mysql,sqlite"
 select id, title,
   row_number() over (
     partition by user_id
@@ -825,7 +874,7 @@ So is a column the query fills with constants, each arm of a `union all` adding 
 
 <InferenceCard>
 
-```sql file="inferred_feed.sql" dialect="all"
+```sql file="inferred_feed.sql" dialect="postgres,mysql,sqlite"
 select 'user' as kind, id, name as label from users
 union all
 select 'post', id, title from posts
@@ -1016,7 +1065,7 @@ A JSON parameter declares its schema in its cast to `json` or `jsonb`, and Reylo
 
 <InferenceCard>
 
-```sql file="record_click.sql" dialect="all"
+```sql file="record_click.sql" dialect="postgres,mysql,sqlite"
 insert into events (kind, payload)
 values ('click', :payload::json('{
   "type": "object",
@@ -1044,7 +1093,7 @@ A schema can nest objects and arrays, and check every value in them:
 
 <InferenceCard>
 
-```sql file="record_order.sql" dialect="all"
+```sql file="record_order.sql" dialect="postgres,mysql,sqlite"
 insert into events (kind, payload)
 values ('order', :order::json('{
   "type": "object",
@@ -1215,7 +1264,7 @@ returning id
 
 Users with their posts, in one parameter. The posts find their user by `email`, a unique key.
 
-<DialectTabs>
+<DialectTabs dialects="Postgres,MySQL,SQLite">
 <Dialect value="Postgres">
 
 Postgres writes both tables in one statement: a `with` inserts the users, and the statement inserts the posts:
