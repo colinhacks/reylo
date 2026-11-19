@@ -3248,11 +3248,12 @@ impl Alterer for PostgresAlterer {
             Kind::Column if to.extra.iter().any(|l| l == "inherited") => {
                 let (a, b) = (parse_column(&from.def), parse_column(&to.def));
                 // What the column declares of its own beside (a generated expression, an identity)
-                // changes as any column's, at the type its parent gives it.
+                // changes as any column's, but for the type, which the parent's change gave it
+                // already: its bounds and defaults are the new type's.
                 if a.generated != b.generated || a.identity != b.identity {
-                    let own = Column { ty: a.ty.clone(), ..b.clone() };
-                    let plain = Object { def: render_column(&own), extra: to.extra.iter().filter(|l| *l != "inherited").cloned().collect(), ..to.clone() };
-                    return self.alter(from, &plain);
+                    let plain = Object { extra: to.extra.iter().filter(|l| *l != "inherited").cloned().collect(), ..to.clone() };
+                    let retype = format!("alter table {table} alter column {name} type ");
+                    return Some(self.alter(from, &plain)?.into_iter().filter(|s| !s.starts_with(&retype)).collect());
                 }
                 let at = format!("alter table {table} alter column {name}");
                 let mut out = Vec::new();
