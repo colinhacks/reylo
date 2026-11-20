@@ -84,7 +84,14 @@ pub fn uses_own_sql(sql: &str) -> bool {
     let name = |i: usize| {
         tokens.get(i).and_then(|t| match t.kind {
             Word => Some(t.text.to_ascii_lowercase()),
-            Quoted if t.text.len() >= 2 => Some(t.text[1..t.text.len() - 1].to_ascii_lowercase()),
+            // The quotes stripped only where both are there: an unterminated name is no call.
+            Quoted => {
+                let close = match t.text.chars().next()? {
+                    '[' => ']',
+                    open => open,
+                };
+                t.text.get(1..)?.strip_suffix(close).map(str::to_ascii_lowercase)
+            }
             _ => None,
         })
     };
@@ -452,6 +459,8 @@ mod tests {
         assert!(uses_own_sql("insert into near select a.id from a join b on vector_distance_cos(a.x, b.x) < 0.5;"));
         assert!(uses_own_sql("insert into docs (emb) values (\"vector\"('[1,2,3]'));"));
         assert!(!uses_own_sql("create table \"vector\" (x integer); insert into \"vector\" (x) values (1);"));
+        assert!(!uses_own_sql("create table \"café"));
+        assert!(!uses_own_sql("select [vector"));
         assert!(uses_own_sql("create view near as select id from vector_top_k('docs_emb', :q, 5);"));
         assert!(uses_own_sql("create view near as select d.id from docs d join vector_top_k('docs_emb', :q, 5) k on k.id = d.rowid;"));
         assert!(!uses_own_sql("create trigger t after insert on vector (x) begin select 1; end; create unique index if not exists i on vector (x);"));
