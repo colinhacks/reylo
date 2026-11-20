@@ -15,11 +15,15 @@ const db = postgres(process.env.DATABASE_URL);
 const author = await getAuthor.run(db, { id: 1 });
 ```
 
+It works through a new TypeScript feature:
+
 <Callout title="Content mappers">
 
 Reylo is powered by TypeScript [content mappers](https://github.com/microsoft/typescript-go/pull/4712), introduced in [TypeScript 7.1](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/) (currently in nightly builds), which let you dynamically define static types for external file types and integrate them directly into TypeScript compilation.
 
 </Callout>
+
+This is what happens on each import:
 
 <HowItWorksDiagram />
 
@@ -34,6 +38,8 @@ To install Reylo, you'll need:
   - **MySQL** 8.0.38 or later, including PlanetScale
   - **SQLite**, including Cloudflare D1 and Durable Objects, Turso and libSQL
   - **SQL Server** 2019 or later ([SQL Server](/sqlserver))
+
+A coding agent can set it up for you:
 
 <AgentPrompt>
 
@@ -303,6 +309,8 @@ Complete example: [`examples/jest`](https://github.com/reylosql/reylo/tree/main/
 
 </Tab>
 </Tabs>
+
+Every setup also has a full project to copy:
 
 <Callout title="Complete examples">
 

@@ -14,6 +14,8 @@ description: How Reylo types SQL queries on Postgres. Each column's type in Type
 | Drivers | <Rust>In TypeScript, </Rust>postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon, `@vercel/postgres` and Slonik, Drizzle over `pg`, postgres.js, Neon, PGlite or `Bun.sql`, and Knex over `pg` ([Drivers](#drivers))<Rust>; in Rust, sqlx</Rust> |
 | Type checking | Reylo's engine connects to Postgres itself, so your project needs no driver for it |
 
+The examples on this page use this schema:
+
 <Details summary="View the schema behind the examples" id="schema">
 
 ```sql file="schema.sql"
@@ -310,9 +312,7 @@ from orders o
 join users u on u.id = o.user_id
 ```
 
-A key given twice holds its last value, as `jsonb` keeps it and as a parser reads the two a `json` value holds.
-
-A `json` or `jsonb` value inside the JSON you build may be `null`, even from a `not null` column, since it can hold JSON's `null`, unless a JSON Schema `CHECK` refuses null. That holds at any depth: a column you put in, a field of a row, and an element of an array alike.
+A key given twice holds its last value, as `jsonb` keeps it and as a parser reads the two a `json` value holds. A `json` or `jsonb` value inside the JSON you build may be `null`, even from a `not null` column, since it can hold JSON's `null`, unless a JSON Schema `CHECK` refuses null. That holds at any depth: a column you put in, a field of a row, and an element of an array alike.
 
 A schema's type carries through an aggregate, and `to_jsonb` of a row is typed column by column, enums included:
 
@@ -339,6 +339,8 @@ const row = await userRow.run(db, { id: 1 });
 ```sql tab="pg_user_row.sql"
 select to_jsonb(u) as "user" from users u where u.id = :id::int
 ```
+
+What changes inside JSON:
 
 <Rules>
 
@@ -500,6 +502,8 @@ left join orders o on o.user_id = u.id
 group by u.id
 ```
 
+How arrays come back:
+
 <Rules>
 
 **`NULL` elements**
@@ -584,6 +588,8 @@ select u.id,
 from users u
 ```
 
+How a nested array comes back:
+
 <Rules>
 
 - **Arrays of rows.** An `array(…)` is `[]` over no rows, never `null`, where an `array_agg` of the same rows is `null`. An element is `null` only where an outer join nulls its whole row. If the row's alias is also the name of a column in scope, Postgres reads the column, and so does the type. Each level of nesting escapes the quotes and backslashes inside it again, which multiplies a JSON document's text by about four per level. Build rows nested that deep as JSON instead.
@@ -628,6 +634,8 @@ const rows = await deliveries.run(db);
 select id, tstzrange(placed_at, placed_at + interval '1 day') as delivery
 from orders
 ```
+
+How a range comes back:
 
 <Rules>
 
@@ -698,6 +706,8 @@ A parameter accepts the same values `.run()` returns for its type, so you can pa
 | pgvector's `vector`, `halfvec` | `number[]` |
 | `hstore` | an object whose values are strings or `null` |
 | A row value, a geometric type, a range | the object `.run()` returns for it |
+
+How dates and times go in:
 
 <Rules>
 

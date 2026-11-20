@@ -15,6 +15,8 @@ A PlanetScale MySQL database is MySQL, so everything on the [MySQL](/mysql) page
 | Schema | The migrations you deploy to PlanetScale, applied to that server too |
 | Monitoring | Insights shows the `.sql` file each query came from |
 
+The examples on this page use this schema:
+
 <Details summary="View the schema behind the examples" id="schema">
 
 ```sql file="schema.sql" dialect="mysql"
@@ -50,6 +52,8 @@ select id, name, email
 from users
 where id = :id
 ```
+
+About the driver:
 
 - Version 2.0 isn't supported, since it can't bind parameters.
 - The driver sends each query over HTTP, so it runs where there are no TCP sockets, as in [Cloudflare Workers](/d1#setup).
@@ -150,6 +154,8 @@ Point [`direct_url`](/configuration#direct_url) at it:
 direct_url: mysql://root@127.0.0.1:3306/app
 ```
 
+Why a local server:
+
 - Set it in `.reylo.yaml`, so that `DATABASE_URL` stays your app's PlanetScale connection string. Without it, the type check reads `DATABASE_URL`.
 - Your queries still run on PlanetScale, through the client you pass to `.run()`.
 
@@ -162,6 +168,8 @@ for file in migrations/*.sql; do
   mysql -h 127.0.0.1 -u root app < "$file"
 done
 ```
+
+With other tools:
 
 - With Prisma or Drizzle Kit, run its migrate command against the local server ([Schema](/deployment#schema)).
 - In CI, start MySQL as a service and apply the same migrations before the type check ([Deployment / CI](/deployment#mysql)).
@@ -185,6 +193,8 @@ DATABASE_URL=postgres://…:6432/…
 # the direct connection, for the type check
 DIRECT_DATABASE_URL=postgres://…:5432/…
 ```
+
+Then point Reylo at the direct connection:
 
 ```yaml title=".reylo.yaml"
 direct_url: ${DIRECT_DATABASE_URL}

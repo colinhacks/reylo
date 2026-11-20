@@ -25,6 +25,90 @@ select v.name || '_shadow' from sqlite_schema v where v.type = 'index' and v.sql
 union all select v.name || '_shadow_idx' from sqlite_schema v where v.type = 'index' and v.sql like '%libsql_vector_idx%' \
 union all select m.name from sqlite_schema m where m.name = 'libsql_vector_meta_shadow' and m.sql = 'CREATE TABLE libsql_vector_meta_shadow ( name TEXT PRIMARY KEY, metadata BLOB ) WITHOUT ROWID')";
 
+/// What follows a column of names to hold for every name but those Turso's engine keeps for itself:
+/// `__turso_internal_` and anything after it, in any case, the prefix the engine reserves beside
+/// `sqlite_`. The engine writes its own tables into the file's `sqlite_schema` as ordinary ones, one
+/// for each `AUTOINCREMENT` table's sequence among them, and refuses a `create` or `drop` of any of
+/// them, so they are never the project's: no catalog, diff, dump or wipe reads them.
+pub const NOT_TURSO_OWN: &str = r"not like '\_\_turso\_internal\_%' escape '\'";
+
+/// The table Turso's engine keeps an `AUTOINCREMENT` table's sequence in: this, then the table's name
+/// in lowercase.
+const TURSO_SEQUENCE: &str = "__turso_internal_seq___turso_internal_autoincrement_";
+
+/// The statements that keep a file Turso's engine has written as that engine would keep it after a
+/// change to its tables: one sequence table for each `AUTOINCREMENT` table, named after it. The
+/// engine drops and renames the sequence with its table, while SQLite, which Reylo changes the file
+/// with, leaves it under the old name. So a sequence whose table is gone, dropped or renamed, is
+/// dropped, and a table without one, renamed or made by Reylo, is given one as the engine makes it,
+/// unadvanced. Only a table defined exactly as the engine defines a sequence is one: another of
+/// that name is never dropped or emptied. The counter itself is `sqlite_sequence`'s, which SQLite keeps as the engine does: the
+/// engine reads it there, and copies it into each sequence when the file moves to its MVCC journal,
+/// which refuses an insert into a table with no sequence. With `restart`, every sequence is also put
+/// back to its first value, as a wipe empties `sqlite_sequence`. Only for a file the engine has
+/// written (`turso`): any other gets none of its tables.
+pub async fn turso_sequences(db: &mut Db, turso: bool, restart: bool) -> Result<String, Error> {
+    if db.dialect() != Dialect::Sqlite || !turso {
+        return Ok(String::new());
+    }
+    let tables = db.rows("select name, sql from sqlite_schema where type = 'table'").await?;
+    let starts = |name: &str, prefix: &str| name.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(prefix));
+    let owned: BTreeSet<String> = tables
+        .iter()
+        .filter(|r| !starts(r.text("name"), "__turso_internal_") && !starts(r.text("name"), "sqlite_"))
+        .filter(|r| tokenize(r.text("sql"), Dialect::Sqlite).iter().any(|t| t.kind == TokenKind::Word && t.text.eq_ignore_ascii_case("autoincrement")))
+        .map(|r| format!("{TURSO_SEQUENCE}{}", r.text("name").to_ascii_lowercase()))
+        .collect();
+    let quoted = |name: &str| format!("\"{}\"", name.replace('"', "\"\""));
+    // As the engine writes it, so that its own `sqlite_schema` row reads the same, and the one table
+    // so named that is the engine's: any other is left alone.
+    let definition = |name: &str| format!("CREATE TABLE {}(value INTEGER PRIMARY KEY,is_called INTEGER,start INTEGER,inc INTEGER,min INTEGER,max INTEGER,cycle INTEGER)", quoted(name));
+    let first = |name: &str| format!("insert into {} values (1, 0, 1, 1, 1, 9223372036854775807, 0);", quoted(name));
+    let mut sql = String::new();
+    let mut taken = BTreeSet::new();
+    for r in tables.iter().filter(|r| starts(r.text("name"), TURSO_SEQUENCE)) {
+        let name = r.text("name");
+        let owner = owned.contains(&name.to_ascii_lowercase());
+        taken.insert(name.to_ascii_lowercase());
+        if r.text("sql") != definition(name) {
+            continue;
+        }
+        if !owner {
+            sql.push_str(&format!("drop table {};", quoted(name)));
+        } else if restart {
+            sql.push_str(&format!("delete from {};{}", quoted(name), first(name)));
+        }
+    }
+    for name in owned.difference(&taken) {
+        sql.push_str(&format!("{};{}", definition(name), first(name)));
+    }
+    Ok(sql)
+}
+
+/// Whether a SQLite file holds a table of Turso's engine, which only the engine writes.
+pub async fn holds_turso_tables(db: &mut Db) -> Result<bool, Error> {
+    if db.dialect() != Dialect::Sqlite {
+        return Ok(false);
+    }
+    Ok(!db.rows(&format!("select 1 from sqlite_schema where not (name {NOT_TURSO_OWN}) limit 1")).await?.is_empty())
+}
+
+/// Runs `turso_sequences`' statements on a file the engine has written (`turso`), where there are
+/// any.
+pub async fn keep_turso_sequences_as(db: &mut Db, turso: bool) -> Result<(), Error> {
+    let sql = turso_sequences(db, turso, false).await?;
+    if !sql.is_empty() {
+        db.script(&sql).await?;
+    }
+    Ok(())
+}
+
+/// `keep_turso_sequences_as`, on a file that holds a table of the engine's.
+pub async fn keep_turso_sequences(db: &mut Db) -> Result<(), Error> {
+    let turso = holds_turso_tables(db).await?;
+    keep_turso_sequences_as(db, turso).await
+}
+
 /// The database's schema as sorted lines.
 pub async fn catalog(db: &mut Db) -> Result<Vec<String>, Error> {
     let lines = match db.dialect() {
@@ -1732,7 +1816,7 @@ const SQLITE_TABLE_CONSTRAINT: &[&str] = &["constraint", "primary", "unique", "c
 
 async fn sqlite(db: &mut Db) -> Result<Vec<String>, Error> {
     let mut lines = Vec::new();
-    let rows = db.rows(&format!("select type, name, tbl_name as tbl, sql from sqlite_schema where name not like 'sqlite_%' and tbl_name <> '{HISTORY_TABLE}' and {NOT_LIBSQL_VECTOR_OWN}")).await?;
+    let rows = db.rows(&format!("select type, name, tbl_name as tbl, sql from sqlite_schema where name not like 'sqlite_%' and tbl_name <> '{HISTORY_TABLE}' and name {NOT_TURSO_OWN} and tbl_name {NOT_TURSO_OWN} and {NOT_LIBSQL_VECTOR_OWN}")).await?;
     let options: BTreeMap<String, Row> = db.rows("select name, strict, wr from pragma_table_list where schema = 'main'").await?.into_iter().map(|r| (r.text("name").to_string(), r)).collect();
     for r in rows {
         let Some(sql) = r.get("sql") else { continue };
