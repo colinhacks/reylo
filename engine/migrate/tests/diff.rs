@@ -102,7 +102,8 @@ fn kept(before: &Rows, after: &Rows) -> Vec<Vec<String>> {
 }
 
 /// What the comparator does not read: the privileges of schemas and functions, each with its
-/// default where it has none of its own, and every object's comment.
+/// default where it has none of its own, and every object's comment but an identity's sequence's,
+/// which it reads by its column.
 async fn unread(db: &mut Db) -> Vec<String> {
     let user = r"n.nspname not in ('pg_catalog', 'information_schema') and n.nspname not like 'pg\_%'";
     let member = "exists (select 1 from pg_depend d where d.objid = {}.oid and d.deptype = 'e')";
@@ -111,6 +112,7 @@ async fn unread(db: &mut Db) -> Vec<String> {
         union all select format('function %s %s', p.oid::regprocedure, coalesce(p.proacl, acldefault('f', p.proowner))) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where {user} and not {}
         union all select format('comment on %s: %s', pg_describe_object(d.classoid, d.objoid, d.objsubid), d.description) from pg_description d
           where d.objoid >= 16384 and not exists (select 1 from pg_depend e where e.classid = d.classoid and e.objid = d.objoid and e.deptype = 'e')
+            and not exists (select 1 from pg_depend e join pg_class s on s.oid = e.objid where e.classid = d.classoid and e.objid = d.objoid and e.deptype = 'i' and s.relkind = 'S')
         order by 1",
         member.replace("{}", "n"),
         member.replace("{}", "p")

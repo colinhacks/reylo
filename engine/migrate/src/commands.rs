@@ -405,9 +405,15 @@ async fn ensure_history(db: &mut Db) -> Result<(), Error> {
     Ok(())
 }
 
-/// The lines a fingerprint is the digest of: what deploy shows of a database changed since.
-fn fingerprinted(lines: &[String]) -> Vec<String> {
-    crate::catalog::without_children(&crate::catalog::without_comments(lines))
+/// The lines a fingerprint is the digest of: what deploy shows of a database changed since. On
+/// MySQL, grants aside: which of them an account sees turns on the account (only its own, where
+/// it may not read the privilege tables), and a fingerprint is the database's, whoever reads it.
+fn fingerprinted(lines: &[String], d: Dialect) -> Vec<String> {
+    let lines = crate::catalog::without_children(&crate::catalog::without_comments(lines));
+    if d != Dialect::Mysql {
+        return lines;
+    }
+    lines.into_iter().filter(|l| !l.starts_with("grant ") && l != crate::catalog::GRANTS_UNREAD).collect()
 }
 
 /// Keeps the lines `name`'s fingerprint is of, on its row alone, so that a refusal can show what
@@ -417,7 +423,7 @@ async fn store_catalog(db: &mut Db, name: &str, lines: &[String]) -> Result<(), 
         return Ok(());
     }
     // As a JSON array: a line may hold newlines of its own (a function's definition).
-    let text = serde_json::to_string(&fingerprinted(lines)).unwrap_or_default();
+    let text = serde_json::to_string(&fingerprinted(lines, db.dialect())).unwrap_or_default();
     db.exec_with(&format!("update {HISTORY_TABLE} set catalog = null where name <> {} and catalog is not null", db.param(1)), &[&name]).await?;
     db.exec_with(&format!("update {HISTORY_TABLE} set catalog = {} where name = {}", db.param(1), db.param(2)), &[&text, &name]).await
 }
@@ -459,7 +465,7 @@ async fn fingerprint_of(db: &mut Db, lines: &[String]) -> Result<String, Error> 
     let version = db.rows(version).await?.first().map(|r| r.text("v").to_string()).unwrap_or_default();
     let mut digest = crate::cache::Sha256::new();
     // A child table may have been made at run time, as data: only a replay can tell.
-    for line in fingerprinted(lines) {
+    for line in fingerprinted(lines, db.dialect()) {
         digest.part(line.as_bytes());
     }
     Ok(format!("{}:{version}:{}", crate::cache::reader_id(), crate::cache::hex(&digest.finish())))
@@ -1399,6 +1405,7 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options) -> 
                 problems.push(Problem::new("not-replayable", format!("Migration {name} can't be replayed in a shadow database")).note(why));
             }
         }
+        problems.extend(unreadable_grants(db, opts, &files, schema_sql.as_deref()).await?);
     }
     if !problems.is_empty() {
         return Ok(Plan { problems: with_stamp(problems), ..Plan::default() });
@@ -1436,7 +1443,7 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options) -> 
                 Some(last) => stored_catalog(db, &last.name).await?,
                 None => None,
             } {
-                problem = problem.lines(std::iter::once(String::new()).chain(changed_lines(&stored, &fingerprinted(&live))).chain([String::new()]));
+                problem = problem.lines(std::iter::once(String::new()).chain(changed_lines(&stored, &fingerprinted(&live, db.dialect()))).chain([String::new()]));
             }
             let problem = problem
                 .fix("If a migration makes this change, record it here, running nothing", &["reylo migrate history push"])
@@ -1893,7 +1900,7 @@ fn edited_problem(name: &str, ran: &str, now: &str) -> Problem {
 
 /// Whether a database's catalog lines hold more than an empty database's do.
 fn holds_a_schema(lines: &[String]) -> bool {
-    const EMPTY: [&str; 5] = ["schema ", "grant schema ", "comment schema ", "extension ", crate::catalog::DEFAULT_PRIVILEGES];
+    const EMPTY: [&str; 6] = ["schema ", "grant schema ", "comment schema ", "comment language ", "extension ", crate::catalog::DEFAULT_PRIVILEGES];
     // A schema's owner too: a new database's `public` is `pg_database_owner`'s.
     lines.iter().any(|l| !EMPTY.iter().any(|kind| l.starts_with(kind)) && !(l.starts_with("owner ") && l.ends_with(" (schema)")))
 }
@@ -2360,6 +2367,7 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, init:
     let (files, strays) = opts.migrations()?;
     let before_rows = read_history(db).await?;
     let mut problems = file_problems(opts, &files, &strays, None, d);
+    problems.extend(unreadable_grants(db, opts, &files, None).await?);
     problems.extend(missing_dir(opts, &before_rows));
     if !problems.is_empty() {
         return Ok(refuse(&problems, log));
@@ -2735,7 +2743,7 @@ async fn status_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Err
                     let mut problem = Problem::new("database-changed", CHANGED_OUTSIDE);
                     if let Some(last) = history.iter().rfind(|r| r.applied) {
                         if let Some(stored) = stored_catalog(db, &last.name).await? {
-                            let lines = changed_lines(&stored, &fingerprinted(&now_lines));
+                            let lines = changed_lines(&stored, &fingerprinted(&now_lines, db.dialect()));
                             changes = lines.iter().map(|l| l.trim().to_string()).collect();
                             problem = problem.lines(std::iter::once(String::new()).chain(lines).chain([String::new()]));
                         }
@@ -2931,6 +2939,7 @@ async fn reset_on(db: &mut Db, server: &mut Server, opts: &Options, log: Log<'_>
     // and a migrations directory that is gone, which this database ran migrations from.
     let (files, strays) = opts.migrations()?;
     let mut problems = file_problems(opts, &files, &strays, opts.schema_text().as_deref(), db.dialect());
+    problems.extend(unreadable_grants(db, opts, &files, opts.schema_text().as_deref()).await?);
     problems.extend(missing_dir(opts, &read_history(db).await?));
     if problems.is_empty() {
         problems.extend(dev_lock_notes(opts, &files, &[]).err());
@@ -3824,7 +3833,8 @@ async fn settle(db: &mut Db, mut current: crate::diff::Schema, target: &Target, 
 async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_name: &str, migration: &str, choices: &Choices, log: Log<'_>) -> Result<Result<Drafted, Vec<Problem>>, Error> {
     let drafted = |texts: Vec<String>, code: i32, notes: Vec<String>, empty: bool| Drafted { texts, code, notes, empty, target: target_name.to_string(), lock_safe: false };
     let mut db = Db::open(opts).await?;
-    let problems = out_of_reach(&mut db, &opts.url).await?;
+    let mut problems = out_of_reach(&mut db, &opts.url).await?;
+    problems.extend(unreadable_grants(&mut db, opts, files, Some(schema_sql)).await?);
     if !problems.is_empty() {
         db.close().await;
         return Ok(Err(problems));
@@ -3853,7 +3863,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
         }
         shadows.taint(c);
         let unread = crate::catalog::unmodeled(shadows.db(a), true).await?;
-        unmodeled_note("Reylo doesn't fully compare these in schema.sql, so a migration can leave a change to them out: check them by hand", &unread, log);
+        unmodeled_note("Reylo doesn't fully compare these in schema.sql, so a migration can leave them, or a change to them, out: check them by hand", &unread, log);
         let mut target = match crate::diff::read(shadows.db(a)).await {
             Ok(schema) => schema,
             Err(e) => {
@@ -4369,6 +4379,10 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 let row = db.rows(&format!("show create event `{}`", r.text("n"))).await?;
                 out.push(format!("{};", DEFINER.replace(row.first().map(|x| x.text("Create Event")).unwrap_or_default(), "")));
             }
+            // The privileges on what it holds, which a push compares as it does the rest.
+            for g in crate::catalog::mysql_grants(db).await?.unwrap_or_default() {
+                out.push(format!("{};", g.statement(&|name| format!("`{}`", name.replace('`', "``")), true)));
+            }
             out.push("set foreign_key_checks = 1;".into());
             Ok(format!("{}\n", out.join("\n\n")))
         }
@@ -4602,6 +4616,30 @@ async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String
     result
 }
 
+/// The refusal of MySQL grants in the project's files where the account may not read the
+/// privilege tables, which a plan compares them by: information_schema shows such an account its
+/// own privileges alone, so a replay's grants and the database's would go unseen.
+async fn unreadable_grants(db: &mut Db, opts: &Options, files: &[Migration], schema_sql: Option<&str>) -> Result<Option<Problem>, Error> {
+    if db.dialect() != Dialect::Mysql {
+        return Ok(None);
+    }
+    let schema_name = opts.schema.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "schema.sql".into());
+    let Some(name) = files.iter().map(|f| (f.name.as_str(), f.sql.as_str())).chain(schema_sql.map(|s| (schema_name.as_str(), s))).find(|(_, sql)| crate::sql::grants_on_objects(sql)).map(|(n, _)| n.to_string()) else { return Ok(None) };
+    if crate::catalog::mysql_grants(db).await?.is_some() {
+        return Ok(None);
+    }
+    let me = db.rows("select current_user() as u").await?.first().map(|r| r.text("u").to_string()).unwrap_or_default();
+    let (user, host) = me.rsplit_once('@').unwrap_or((me.as_str(), "%"));
+    let account = format!("'{}'@'{}'", user.replace('\'', "''"), host.replace('\'', "''"));
+    let grants: Vec<String> = ["tables_priv", "columns_priv", "procs_priv"].iter().map(|t| format!("grant select on mysql.{t} to {account};")).collect();
+    let grants: Vec<&str> = grants.iter().map(String::as_str).collect();
+    Ok(Some(
+        Problem::new("grants-unreadable", format!("Can't plan the grants in {name}"))
+            .note(format!("MySQL shows {account} its own privileges alone, and Reylo Migrate reads every account's from mysql.tables_priv, mysql.columns_priv and mysql.procs_priv"))
+            .fix("Let it read them, as an administrator", &grants),
+    ))
+}
+
 /// The plan from the database `from` to the database `to`, as `create` would write it (from
 /// `declared`, the text that built `to`), styled as schema.sql is.
 #[cfg(feature = "cli")]
@@ -4699,6 +4737,7 @@ async fn dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, 
     let d = db.dialect();
     let (files, strays) = opts.migrations()?;
     let mut problems = file_problems(opts, &files, &strays, opts.schema_text().as_deref(), d);
+    problems.extend(unreadable_grants(db, opts, &files, opts.schema_text().as_deref()).await?);
     let history = read_history(db).await?;
     problems.extend(missing_dir(opts, &history));
     // What the lock's rewrite says of it, printed once it is written.
@@ -5425,6 +5464,7 @@ async fn db_push_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Optio
     let (files, strays) = opts.migrations()?;
     let schema_sql = opts.schema_text();
     let mut problems = file_problems(opts, &files, &strays, schema_sql.as_deref(), d);
+    problems.extend(unreadable_grants(db, opts, &files, schema_sql.as_deref()).await?);
     if schema_sql.as_deref().is_some_and(|sql| crate::sql::is_blank(sql, d)) {
         problems.push(
             Problem::new("schema-sql-empty", format!("Nothing is declared in {}", shown(&opts.schema)))
@@ -5507,7 +5547,7 @@ async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Optio
     }
     let wanted = catalog(shadows.db(s_lane)).await?;
     let now = crate::catalog::without_extra_children(&catalog(db).await?, &wanted);
-    unmodeled_note("Reylo doesn't fully compare these in schema.sql, so a push can leave a change to them out: check them by hand", &crate::catalog::unmodeled(shadows.db(s_lane), true).await?, log);
+    unmodeled_note("Reylo doesn't fully compare these in schema.sql, so a push can leave them, or a change to them, out: check them by hand", &crate::catalog::unmodeled(shadows.db(s_lane), true).await?, log);
     if now != wanted {
         let target = read_target(shadows.db(s_lane), Some(schema_sql)).await?;
         let counts = table_rows(db).await?;

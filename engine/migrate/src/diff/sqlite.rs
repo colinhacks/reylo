@@ -528,6 +528,15 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
             o.extra = info.lines();
         }
     }
+    // What the file keeps of the project's own, where it is set: `pragma user_version` and
+    // `pragma application_id`. One the target no longer sets is left as it is, as an app may set
+    // its own.
+    for pragma in ["user_version", "application_id"] {
+        let value = db.rows(&format!("select {pragma} as v from pragma_{pragma}")).await?.first().map(|r| r.text("v").to_string()).unwrap_or_default();
+        if !value.is_empty() && value != "0" {
+            s.add(Object { id: format!("pragma {pragma}"), kind: Some(Kind::ColumnSetting), def: value.clone(), create: vec![format!("pragma {pragma} = {value}")], ..Object::default() });
+        }
+    }
     Ok(s)
 }
 
