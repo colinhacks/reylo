@@ -345,9 +345,13 @@ Without a lock, a merged migration can sort before one a database already ran. T
 
 ```terminal
 $ reylo migrate deploy
-✗ Migration 20261105080000_no_nick.sql sorts before 20261105090000_nick.sql, which this database already ran, and the two orders end differently
-  + a fresh database: column users.nick text
-  Give 20261105080000_no_nick.sql a later name, so that every database runs it after 20261105090000_nick.sql
+✗ Migration 20261105080000_no_nick.sql sorts before 20261105090000_nick.sql, which this database already ran
+  Run in name order, as on a fresh database, the migrations end differently:
+
+    + a fresh database: column users.nick text
+
+  Give it a later name, so that every database runs it after 20261105090000_nick.sql:
+    mv reylo/migrations/20261105080000_no_nick.sql reylo/migrations/20261105100000_no_nick.sql
 
 Nothing was changed.
 ```
@@ -488,30 +492,50 @@ $ reylo migrate new rename_bio
       reylo migrate new rename_bio --drop users.bio
 ```
 
-Where the new column differs too, say which it is:
+A column replaced by one that differs in more than its name could be either, so you say which:
+
+```sql title="schema.sql"
+create table posts (
+  id integer primary key,
+  title varchar(100) -- [!code --]
+  heading varchar(200) -- [!code ++]
+);
+
+create table users (
+  id integer primary key,
+  bio varchar(200) -- [!code --]
+  about text -- [!code ++]
+);
+```
 
 ```terminal
 $ reylo migrate new tidy_columns
-✗ These 2 look like renames, but each changes more than its name
+✗ This migration can't tell renames from new columns
 
-    posts.title → heading  text → varchar(100)
-    users.bio   → about    text → varchar(200)
+    posts.title → heading  varchar(100) → varchar(200)
+    users.bio   → about    varchar(200) → text
 
-  If they are renames, keeping their rows:
-    reylo migrate new tidy_columns \
-      --rename posts.title=heading \
-      --rename users.bio=about
-  If they are new, dropping the old ones and their data:
-    reylo migrate new tidy_columns --drop posts.title,users.bio
+  For each, rename to keep its rows, or drop it:
+    --rename posts.title=heading   or   --drop posts.title
+    --rename users.bio=about       or   --drop users.bio
+  Add the flags you picked to:
+    reylo migrate new tidy_columns
 
 Nothing was changed.
+
+$ reylo migrate new tidy_columns --rename posts.title=heading --drop users.bio
+✓ Wrote reylo/migrations/20261104150000_tidy_columns.sql
+  ! Drops the column users.bio and its data
 ```
+
+It asks wherever a table loses one column and gains one, whatever their types; a rename converts each value to the new type. With one such column, it prints both commands whole.
 
 With no schema change, the migration is empty, for a data change:
 
 ```terminal
 $ reylo migrate new backfill
-✓ Wrote reylo/migrations/20261104160000_backfill.sql, empty: reylo/schema.sql has nothing new, so it's for a change to data
+✓ Wrote reylo/migrations/20261104160000_backfill.sql
+» Empty: reylo/schema.sql has nothing new, so it's for a change to data
 ```
 
 ### `dev`
@@ -811,7 +835,8 @@ It leaves a platform's own tables alone, such as Supabase's `auth.users`:
 
 ```terminal
 $ reylo db wipe
-✓ Deleted every row of 2 tables on postgres://localhost:5432/app; the schema and the history stay
+✓ Deleted every row of 2 tables on postgres://localhost:5432/app
+» The schema and the history stay
 ```
 
 ### `db introspect`
