@@ -68,7 +68,7 @@ test("the migration commands and reylo run are the binary's, with their output a
   // A SQLite file that isn't there is refused, never made, as the migrations' commands refuse it.
   const absent = reylo(root, ["run", `--url=sqlite:${other}`, "create table here (id integer)"]);
   assert.equal(absent.status, 1);
-  assert.match(absent.out + absent.err, /No SQLite database at /);
+  assert.match(absent.out + absent.err, /There's no SQLite database at /);
   assert.ok(!existsSync(other));
   new DatabaseSync(other).close();
   assert.equal(reylo(root, ["run", `--url=sqlite:${other}`, "create table here (id integer)"]).status, 0);

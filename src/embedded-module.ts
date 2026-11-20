@@ -74,7 +74,7 @@ export async function projectMigrations(root: string): Promise<{ list?: Migratio
   if (existsSync(lockPath)) {
     const lock = readFileSync(lockPath, "utf8");
     // Two branches that each added a migration leave git's markers in the lock.
-    if (/^(<{7}|={7}|>{7})( |$)/m.test(lock)) return { error: `Merge conflict markers in ${shown}/reylo.lock: keep main's lines, then run reylo migrate dev, which adds this branch's migrations back`, watched };
+    if (/^(<{7}|={7}|>{7})( |$)/m.test(lock)) return { error: `The lock has a merge conflict, in ${shown}/reylo.lock: keep main's lines, then run reylo migrate dev, which adds this branch's migrations back`, watched };
     const entries = [...lock.matchAll(/^\s*-\s+(\S+\.sql)\s+([0-9a-f]+)\s*$/gm)].map((m) => ({ name: m[1]!, sum: m[2]! }));
     names = entries.map((e) => e.name);
     const missing = names.filter((n) => !existsSync(join(migrationsDir, n)));
@@ -97,7 +97,7 @@ export async function projectMigrations(root: string): Promise<{ list?: Migratio
     // The checksum of schema.sql from when the migrations last reached it, which a deploy holds it to (`stamp`).
     const schemaSum = /^schema:\s*(\S+)\s*$/m.exec(lock)?.[1];
     if (schemaSum !== undefined && existsSync(schemaPath) && schemaChecksum(entries.at(-1)?.sum ?? "", readFileSync(schemaPath, "utf8")) !== schemaSum) {
-      return { error: `Changes in ${shown}/schema.sql since the lock was written: if the schema changed, write its migration and run it with reylo migrate new <name> and reylo migrate dev; if only formatting or comments changed, check it again with reylo migrate dev`, watched: [...watched, ...names.map((n) => join(migrationsDir, n))] };
+      return { error: `The schema changed since the lock was written, in ${shown}/schema.sql: if the schema changed, write its migration and run it with reylo migrate new <name> and reylo migrate dev; if only formatting or comments changed, check it again with reylo migrate dev`, watched: [...watched, ...names.map((n) => join(migrationsDir, n))] };
     }
   } else {
     names = migrations;

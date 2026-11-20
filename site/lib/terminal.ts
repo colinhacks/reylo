@@ -13,7 +13,7 @@ const command = [
  * A ```terminal block: a session at a prompt, as the reader would see it. A line that opens with
  * `$ ` is a command, after a dim prompt; a line that opens with `# ` is a
  * comment; every other line is what the command printed, coloured as `reylo` paints it in a
- * terminal (engine/migrate/src/commands.rs): its marks (✓ green, ↺ and ! yellow, » dim, ✗ and its
+ * terminal (engine/migrate/src/commands.rs): its marks (✓ green, ↺ and ! yellow, a » note dim whole, ✗ and its
  * heading red), the dim headings and timings, the statements `db push` ran and the commands a refusal names.
  * From a `Usage:` line on, it is help, as `reylo migrate --help` paints it (engine/cli/src/main.rs):
  * bold headings, commands, flags and the dim values they take.
@@ -47,7 +47,9 @@ export const terminal: LanguageRegistration = {
     { match: '^Not run on this database.*$', name: 'comment.outcome' },
     { match: '^(\\s*)(✓)', captures: { 2: { name: 'entity.name.tag.ok' } } },
     { match: '^(\\s*)([↺!↓])', captures: { 2: { name: 'variable.warn' } } },
-    { match: '^(\\s*)(»)', captures: { 2: { name: 'comment.note' } } },
+    // A note is dim whole, and so is each lead that names a next step, so that its commands stand out.
+    { match: '^\\s*» .*$', name: 'comment.note' },
+    { match: '^\\s+[A-Z][^✓✗!↺↓+·»]*:$', name: 'comment.note' },
     { match: '^\\s+Dropped .*$', name: 'variable.warn' },
     // A migration recorded or taken out of the history, by name; then a statement `db push` ran.
     { match: '^(\\s+)(\\+) (?=\\S+\\.sql )', captures: { 2: { name: 'entity.name.tag.ok' } } },
