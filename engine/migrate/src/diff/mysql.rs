@@ -280,6 +280,9 @@ struct Body {
     /// Indexes and checks, each `(name, name as written, definition)`.
     indexes: Vec<(String, String, String)>,
     checks: Vec<(String, String, String)>,
+    /// Its next AUTO_INCREMENT value: no part of its definition, which follows the rows, but the
+    /// start a new table is made with.
+    counter: Option<String>,
 }
 
 impl Body {
@@ -306,6 +309,7 @@ impl Body {
             columns: v["columns"].as_array().into_iter().flatten().map(|c| Column { name: s(&c[0]), q: s(&c[1]), ty: s(&c[2]), collation: s(&c[3]), rest: s(&c[4]) }).collect(),
             indexes: triples(&v["indexes"]),
             checks: triples(&v["checks"]),
+            counter: None,
         })
     }
 
@@ -563,7 +567,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     }
 
     // Routines: functions and procedures, each in a namespace of its own.
-    for r in db.rows("select routine_name as n, routine_type as type, routine_definition as body, definer from information_schema.routines where routine_schema = database() order by routine_name").await? {
+    for r in db.rows("select routine_name as n, routine_type as type, routine_definition as body, definer as definer from information_schema.routines where routine_schema = database() order by routine_name").await? {
         let (name, word) = (r.text("n"), r.text("type").to_ascii_lowercase());
         let q = ctx.ident(name);
         let column = if word == "function" { "Create Function" } else { "Create Procedure" };
@@ -575,7 +579,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         s.add(Object {
             id: format!("{word} {name}"),
             kind: Some(Kind::Function),
-            def: format!("{head}\n{body}\n-- definer {}", r.text("definer")),
+            def: format!("{head}\n{body}\n-- {}", ctx.definer(r.text("definer"))),
             create: vec![create],
             drop: vec![format!("drop {word} {q}")],
             change: Change::Alter { blocks: false },
@@ -586,7 +590,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     // Triggers, in their order on their table: each after the one before it, which it follows.
     let triggers = db
         .rows(&format!(
-            "select trigger_name as n, event_manipulation as ev, event_object_table as t, action_statement as body, action_timing as timing, action_order as ord, definer
+            "select trigger_name as n, event_manipulation as ev, event_object_table as t, action_statement as body, action_timing as timing, action_order as ord, definer as definer
             from information_schema.triggers where trigger_schema = database() and event_object_table <> '{history}' order by event_object_table, action_timing, event_manipulation, action_order"
         ))
         .await?;
@@ -601,7 +605,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             id: format!("trigger {name}"),
             kind: Some(Kind::Trigger),
             owner: Some(format!("table {}", r.text("t"))),
-            def: format!("{head}{body}\n-- definer {}", r.text("definer")),
+            def: format!("{head}{body}\n-- {}", ctx.definer(r.text("definer"))),
             create: vec![format!("create {}trigger {q} {head}{body}", ctx.definer(r.text("definer")))],
             drop: vec![format!("drop trigger {q}")],
             deps: before.map(|p| format!("trigger {}", p.text("n"))).into_iter().collect(),
@@ -615,7 +619,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     // one-time event runs, for the same reason.
     for r in db
         .rows(
-            "select event_name as n, definer, event_definition as body, event_type as type, interval_value as iv, interval_field as field, ends, status, on_completion as oc, event_comment as comment,
+            "select event_name as n, definer as definer, event_definition as body, event_type as type, interval_value as iv, interval_field as field, ends as ends, status as status, on_completion as oc, event_comment as comment,
               starts = created as now
             from information_schema.events where event_schema = database() order by event_name",
         )
@@ -627,7 +631,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let (head, body) = split_body(&ctx, &text, r.text("body"));
         let head = without_defaults(&head, r.flag("now"));
         let def = format!(
-            "{} every {} {} ends {} {} {} comment {}\n{body}\n-- definer {}",
+            "{} every {} {} ends {} {} {} comment {}\n{body}\n-- {}",
             r.text("type"),
             r.text("iv"),
             r.text("field"),
@@ -635,7 +639,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             r.text("status"),
             r.text("oc"),
             r.text("comment"),
-            r.text("definer")
+            ctx.definer(r.text("definer"))
         );
         s.add(Object {
             id: format!("event {name}"),
@@ -923,7 +927,12 @@ fn parse_table(ctx: &Ctx, text: &str, table: &str, infos: &BTreeMap<(String, Str
         k += 1;
         let key = key.into_iter().filter(|w| w != "DEFAULT").collect::<Vec<_>>().join(" ").to_ascii_lowercase();
         let key = if key == "character set" { "charset".to_string() } else { key };
-        if !key.is_empty() && key != "auto_increment" {
+        // A table in a file of its own, as one with no tablespace is where `innodb_file_per_table` is
+        // on: no statement takes the clause away once written.
+        let own_file = key == "tablespace" && close[start..end].trim_matches('`').eq_ignore_ascii_case("innodb_file_per_table");
+        if key == "auto_increment" {
+            body.counter = Some(close[start..end].to_string());
+        } else if !key.is_empty() && !own_file {
             body.options.push((key, close[start..end].to_string()));
         }
     }
@@ -981,6 +990,9 @@ fn create_table(ctx: &Ctx, body: &Body) -> String {
         if !skip {
             out += &format!(" {key}={value}");
         }
+    }
+    if let Some(counter) = &body.counter {
+        out += &format!(" auto_increment={counter}");
     }
     if !body.partition.is_empty() {
         out += &format!("\n{}", body.partition);
@@ -1097,6 +1109,12 @@ fn renamed_parts(text: &str, map: &BTreeMap<String, String>) -> String {
 
 /// The statements that take a table from one body to the other: one `alter table` with a clause
 /// per change, and the change of its partitioning, which MySQL takes only as a statement of its own.
+/// An index's definition without its block size and full-text parser.
+fn without_index_options(def: &str) -> String {
+    static OPTIONS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i) (key_block_size\s*=\s*\d+|with parser `[^`]+`|with parser \w+)").expect("a valid pattern"));
+    OPTIONS.replace_all(def, "").into_owned()
+}
+
 fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)], made: &BTreeSet<String>) -> Vec<String> {
     let pairs = pairs.to_vec();
     let map: BTreeMap<String, String> = pairs.iter().map(|(old, new)| (old.clone(), to.column(new).map(|c| c.q.clone()).unwrap_or_default())).collect();
@@ -1144,7 +1162,10 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)], made: &BTreeS
             clauses.push(format!("alter index {q} {}", if d.ends_with(" invisible") { "invisible" } else { "visible" }));
             continue;
         }
-        if resrid.iter().any(|r| reads(def, r)) && name != "PRIMARY" {
+        // One whose block size or full-text parser alone changes goes in a statement before:
+        // dropped and added again in one, MySQL takes it as the same index and keeps it as it was.
+        let options_alone = now.is_some_and(|(_, _, d)| *d != index_now(def) && without_index_options(d) == without_index_options(&index_now(def)));
+        if (resrid.iter().any(|r| reads(def, r)) || options_alone) && name != "PRIMARY" {
             first.push(format!("drop index {q}"));
         } else if now.is_none_or(|(_, _, d)| *d != index_now(def)) || indexes_on(def) {
             clauses.push(if name == "PRIMARY" { "drop primary key".to_string() } else { format!("drop index {q}") });
@@ -1212,7 +1233,12 @@ fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)], made: &BTreeS
             clauses.push(match key.as_str() {
                 "comment" => "comment=''".to_string(),
                 "key_block_size" | "checksum" | "delay_key_write" | "max_rows" | "min_rows" | "avg_row_length" | "autoextend_size" => format!("{key}=0"),
-                "engine_attribute" | "secondary_engine_attribute" => format!("{key}=''"),
+                "engine_attribute" | "secondary_engine_attribute" | "connection" => format!("{key}=''"),
+                // Those whose grammar has no `default`, each by the value it starts with.
+                "compression" => "compression='None'".to_string(),
+                "secondary_engine" => "secondary_engine=null".to_string(),
+                "insert_method" => "insert_method=no".to_string(),
+                "tablespace" => "tablespace=innodb_file_per_table".to_string(),
                 _ => format!("{key}=default"),
             });
         }
@@ -1602,6 +1628,7 @@ mod tests {
         assert_eq!(body.checks, [("c".to_string(), "c".to_string(), "constraint c check ((id > 0))".to_string())]);
         assert_eq!(body.option("comment"), Some("'People'"));
         assert_eq!(body.option("auto_increment"), None);
+        assert!(body.counter.is_some());
         assert_eq!(body.partition, "partition by hash (id) partitions 2");
     }
 

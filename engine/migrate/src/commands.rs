@@ -1900,7 +1900,7 @@ fn edited_problem(name: &str, ran: &str, now: &str) -> Problem {
 
 /// Whether a database's catalog lines hold more than an empty database's do.
 fn holds_a_schema(lines: &[String]) -> bool {
-    const EMPTY: [&str; 5] = ["schema ", "grant schema ", "comment schema ", "extension ", crate::catalog::DEFAULT_PRIVILEGES];
+    const EMPTY: [&str; 6] = ["schema ", "grant schema ", "comment schema ", "comment language ", "extension ", crate::catalog::DEFAULT_PRIVILEGES];
     // A schema's owner too: a new database's `public` is `pg_database_owner`'s.
     lines.iter().any(|l| !EMPTY.iter().any(|kind| l.starts_with(kind)) && !(l.starts_with("owner ") && l.ends_with(" (schema)")))
 }
@@ -3833,7 +3833,8 @@ async fn settle(db: &mut Db, mut current: crate::diff::Schema, target: &Target, 
 async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_name: &str, migration: &str, choices: &Choices, log: Log<'_>) -> Result<Result<Drafted, Vec<Problem>>, Error> {
     let drafted = |texts: Vec<String>, code: i32, notes: Vec<String>, empty: bool| Drafted { texts, code, notes, empty, target: target_name.to_string(), lock_safe: false };
     let mut db = Db::open(opts).await?;
-    let problems = out_of_reach(&mut db, &opts.url).await?;
+    let mut problems = out_of_reach(&mut db, &opts.url).await?;
+    problems.extend(unreadable_grants(&mut db, opts, files, Some(schema_sql)).await?);
     if !problems.is_empty() {
         db.close().await;
         return Ok(Err(problems));
@@ -4373,8 +4374,8 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 let row = db.rows(&format!("show create trigger `{}`", r.text("n"))).await?;
                 out.push(format!("{};", DEFINER.replace(row.first().map(|x| x.text("SQL Original Statement")).unwrap_or_default(), "")));
             }
-            // Recurring events, as the catalog reads them: a one-time event is gone once it fires.
-            for r in db.rows("select event_name as n from information_schema.events where event_schema = database() and event_type <> 'ONE TIME'").await? {
+            // Every event, a one-time event until it fires.
+            for r in db.rows("select event_name as n from information_schema.events where event_schema = database()").await? {
                 let row = db.rows(&format!("show create event `{}`", r.text("n"))).await?;
                 out.push(format!("{};", DEFINER.replace(row.first().map(|x| x.text("Create Event")).unwrap_or_default(), "")));
             }

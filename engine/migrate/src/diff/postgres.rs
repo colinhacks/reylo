@@ -253,13 +253,30 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
 
     for r in db
         .rows(&format!(
-            "select x.oid, format('%I', x.extname) as name, format('%I', n.nspname) as schema from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {}",
+            "select x.oid, format('%I', x.extname) as name, format('%I', n.nspname) as schema,
+              nullif(obj_description(x.oid, 'pg_extension'), (select a.comment from pg_available_extensions a where a.name = x.extname)) as comment,
+              (select a.comment from pg_available_extensions a where a.name = x.extname) as made_with
+            from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {}",
             project_extension("x", "n")
         ))
         .await?
     {
         let id = format!("extension {}", r.text("name"));
         ids.extensions.insert(oid(&r, "oid"), id.clone());
+        // A comment other than the one the extension is made with, which a drop puts back.
+        if let Some(comment) = r.get("comment") {
+            let on = format!("extension {}", r.text("name"));
+            s.add(Object {
+                id: format!("comment {id}"),
+                kind: Some(Kind::Comment),
+                owner: Some(id.clone()),
+                def: comment.to_string(),
+                create: vec![format!("comment on {on} is {}", literal(comment))],
+                drop: vec![format!("comment on {on} is {}", r.get("made_with").map(literal).unwrap_or_else(|| "null".into()))],
+                change: Change::Alter { blocks: false },
+                ..Object::default()
+            });
+        }
         s.add(Object {
             id,
             kind: Some(Kind::Extension),
@@ -275,6 +292,31 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         if let Some(ext) = ids.extensions.get(&oid(&r, "refobjid")).cloned() {
             ids.members.insert((r.text("cls").to_string(), oid(&r, "objid")), ext);
         }
+    }
+
+    // Privileges granted or revoked on what an extension made since it made it, which go with the
+    // extension; plpgsql's language's, which no object of the schema stands for, on their own.
+    for r in db.rows(&crate::catalog::extension_member_privileges()).await? {
+        let ext = format!("extension {}", r.text("ext"));
+        let owner = s.objects.contains_key(&ext).then_some(ext);
+        let parts: Vec<serde_json::Value> = serde_json::from_str(r.text("privileges")).unwrap_or_default();
+        let privileges = serde_json::json!([parts.first(), parts.get(1), null, null, "current_user"]).to_string();
+        grants_of(&mut s, &privileges, r.text("identity"), owner.as_deref(), crate::catalog::privilege_target(r.text("type")));
+    }
+
+    // A trusted language's comment (plpgsql's, sql's), which every database has from its making.
+    for r in db.rows("select format('%I', l.lanname) as name, obj_description(l.oid, 'pg_language') as comment from pg_language l where l.lanpltrusted").await? {
+        let Some(comment) = r.get("comment") else { continue };
+        let on = format!("language {}", r.text("name"));
+        s.add(Object {
+            id: format!("comment {on}"),
+            kind: Some(Kind::Comment),
+            def: comment.to_string(),
+            create: vec![format!("comment on {on} is {}", literal(comment))],
+            drop: vec![format!("comment on {on} is null")],
+            change: Change::Alter { blocks: false },
+            ..Object::default()
+        });
     }
 
     let version: i64 = db.rows("select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
@@ -663,7 +705,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
               case t.typstorage when 'p' then 'plain' when 'e' then 'external' when 'm' then 'main' else 'extended' end as type_storage,
               case a.attcompression when 'p' then 'pglz' when 'l' then 'lz4' end as compression,
               case when coalesce(a.attstattarget, -1) >= 0 then a.attstattarget end as stattarget,
-              (select string_agg(o, ', ' order by o) from unnest(a.attoptions) o where left(o, 10) = 'n_distinct') as attoptions
+              (select string_agg(o, ', ' order by o) from unnest(a.attoptions) o where left(o, 10) = 'n_distinct') as attoptions,
+              (select string_agg(quote_ident(split_part(o, '=', 1)) || ' ' || quote_literal(substr(o, strpos(o, '=') + 1)), ', ' order by o) from unnest(a.attfdwoptions) o) as fdwoptions
             from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace join pg_type t on t.oid = a.atttypid
             left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
             where a.attnum > 0 and not a.attisdropped and c.relkind in ('r', 'p', 'v', 'm', 'f', 'c') and {ns} and {} and {} and c.relname <> '{history}'
@@ -761,6 +804,21 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                         def: options.to_string(),
                         create: vec![format!("{at} set ({options})")],
                         drop: vec![format!("{at} reset ({})", keys.join(", "))],
+                        change: Change::Replace,
+                        ..Object::default()
+                    });
+                }
+                // A foreign table column's options for its wrapper (`column_name 'b'`), added as a list
+                // and dropped by their names.
+                if let Some(options) = c.get("fdwoptions").filter(|_| kind == "f") {
+                    let parts: Vec<&str> = options.split(", ").collect();
+                    s.add(Object {
+                        id: format!("wrapper options {col_id}"),
+                        kind: Some(Kind::ColumnSetting),
+                        owner: Some(col_id.clone()),
+                        def: options.to_string(),
+                        create: vec![format!("{at} options ({})", parts.iter().map(|p| format!("add {p}")).collect::<Vec<_>>().join(", "))],
+                        drop: vec![format!("{at} options ({})", parts.iter().filter_map(|p| p.split(' ').next()).map(|k| format!("drop {k}")).collect::<Vec<_>>().join(", "))],
                         change: Change::Replace,
                         ..Object::default()
                     });
@@ -1300,7 +1358,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             kind: Some(Kind::Function),
             // Replaced in place (create or replace) when its result and arguments stay; the
             // alterer decides.
-            def: format!("{def}\n-- result {}; arguments {}", r.text("result"), r.text("args")),
+            // Its kind with them: create or replace can't make a function a window function, or back.
+            def: format!("{def}\n-- result {}; arguments {}; kind {}", r.text("result"), r.text("args"), r.text("kind")),
             create: vec![create],
             drop: vec![format!("drop {word} {}", star(&ident))],
             change: Change::Alter { blocks: false },
@@ -1405,6 +1464,37 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             ..Object::default()
         });
     }
+    // A trigger a partitioned table's makes on a partition, fired otherwise there (disabled, or for
+    // replicas): set on the partition once the parent's trigger is made, which makes it.
+    for r in db
+        .rows(&format!(
+            "select format('%I', tg.tgname) as name, format('%I.%I', n.nspname, c.relname) as rel, c.oid as reloid, tg.tgenabled as enabled, tg.tgparentid as parent
+            from pg_trigger tg join pg_class c on c.oid = tg.tgrelid join pg_namespace n on n.oid = c.relnamespace
+            where tg.tgparentid <> 0 and tg.tgenabled <> (select p.tgenabled from pg_trigger p where p.oid = tg.tgparentid) and {ns} and {}",
+            not_extension("pg_class", "c")
+        ))
+        .await?
+    {
+        let (rel, name) = (r.text("rel"), r.text("name"));
+        let Some(parent) = ids.triggers.get(&oid(&r, "parent")).cloned() else { continue };
+        let set = match r.text("enabled") {
+            "D" => "disable trigger",
+            "R" => "enable replica trigger",
+            "A" => "enable always trigger",
+            _ => "enable trigger",
+        };
+        s.add(Object {
+            id: format!("fired trigger {rel}.{name}"),
+            kind: Some(Kind::Trigger),
+            owner: relations.get(&oid(&r, "reloid")).map(|(t, _)| t.clone()),
+            def: r.text("enabled").to_string(),
+            create: vec![format!("alter table {rel} {set} {name}")],
+            drop: vec![format!("alter table {rel} enable trigger {name}")],
+            deps: [parent].into_iter().collect(),
+            change: Change::Alter { blocks: false },
+            ..Object::default()
+        });
+    }
 
     for r in db
         .rows(
@@ -1480,7 +1570,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
 
     for r in db
         .rows(&format!(
-            "select s.oid, format('%I.%I', n.nspname, s.stxname) as name, pg_get_statisticsobjdef(s.oid) as def, s.stxrelid as rel
+            "select s.oid, format('%I.%I', n.nspname, s.stxname) as name, pg_get_statisticsobjdef(s.oid) as def, s.stxrelid as rel,
+              nullif(coalesce(s.stxstattarget::int, -1), -1) as target
             from pg_statistic_ext s join pg_namespace n on n.oid = s.stxnamespace where {ns} and {}",
             format!("({} or {})", not_platform("s.stxowner"), not_platform_schema("n"))
         ))
@@ -1498,6 +1589,21 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             drop: vec![format!("drop statistics {}", r.text("name"))],
             ..Object::default()
         });
+        // Its own statistics target, which its definition doesn't print.
+        if let Some(target) = r.get("target") {
+            let id = format!("statistics {}", r.text("name"));
+            s.add(Object {
+                id: format!("target {id}"),
+                kind: Some(Kind::ColumnSetting),
+                owner: Some(id.clone()),
+                def: target.to_string(),
+                create: vec![format!("alter statistics {} set statistics {target}", r.text("name"))],
+                drop: vec![format!("alter statistics {} set statistics -1", r.text("name"))],
+                deps: [id].into_iter().collect(),
+                change: Change::Alter { blocks: false },
+                ..Object::default()
+            });
+        }
     }
 
     for r in db
@@ -1861,13 +1967,39 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         };
         held.insert(oid(&r, "oid"), (name, at));
     }
+    // What a migration made depend on an extension (`alter function f() depends on extension
+    // citext`), which drops it with the extension.
+    for r in db
+        .rows(
+            "select format('%s', d.classid::regclass) as cls, d.objid, o.type, o.identity, format('%I', x.extname) as ext
+            from pg_depend d join pg_extension x on x.oid = d.refobjid, lateral pg_identify_object(d.classid, d.objid, 0) o
+            where d.deptype = 'x' and d.refclassid = 'pg_extension'::regclass",
+        )
+        .await?
+    {
+        let Some(on) = ids.of(r.text("cls"), oid(&r, "objid"), 0) else { continue };
+        let ext = format!("extension {}", r.text("ext"));
+        let (word, identity) = (r.text("type"), r.text("identity"));
+        s.add(Object {
+            id: format!("depends {on} on {ext}"),
+            kind: Some(Kind::Comment),
+            owner: Some(on.clone()),
+            def: String::new(),
+            create: vec![format!("alter {word} {identity} depends on {ext}")],
+            drop: vec![format!("alter {word} {identity} no depends on {ext}")],
+            deps: [Some(on), s.objects.contains_key(&ext).then_some(ext)].into_iter().flatten().collect(),
+            ..Object::default()
+        });
+    }
+
     // Comments on what is not a relation or a column, which are read with them.
     for r in db
         .rows(
             "select format('%s', d.classoid::regclass) as cls, d.objoid, d.description,
               (select t.typtype from pg_type t where d.classoid = 'pg_type'::regclass and t.oid = d.objoid) as typtype,
               (select p.prokind from pg_proc p where d.classoid = 'pg_proc'::regclass and p.oid = d.objoid) as prokind
-            from pg_description d where d.objsubid = 0 and d.objoid >= 16384
+            from pg_description d where d.objsubid = 0
+              and (d.objoid >= 16384 or (d.classoid = 'pg_namespace'::regclass and d.objoid = 'public'::regnamespace and d.description <> 'standard public schema'))
               and d.classoid in ('pg_namespace'::regclass, 'pg_type'::regclass, 'pg_proc'::regclass, 'pg_constraint'::regclass, 'pg_trigger'::regclass, 'pg_policy'::regclass, 'pg_class'::regclass,
                 'pg_collation'::regclass, 'pg_publication'::regclass, 'pg_rewrite'::regclass, 'pg_foreign_server'::regclass, 'pg_event_trigger'::regclass, 'pg_foreign_data_wrapper'::regclass, 'pg_statistic_ext'::regclass)",
         )
@@ -1943,13 +2075,15 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             _ => None,
         };
         let (Some(on), Some(text)) = (on, r.get("description")) else { continue };
+        // The public schema's goes back to the one every database's is made with.
+        let none = if target == "schema public" { literal("standard public schema") } else { "null".into() };
         s.add(Object {
             id: format!("comment {target}"),
             kind: Some(Kind::Comment),
             owner: Some(target.clone()),
             def: text.to_string(),
             create: vec![format!("comment on {on} is {}", literal(text))],
-            drop: vec![format!("comment on {on} is null")],
+            drop: vec![format!("comment on {on} is {none}")],
             change: Change::Alter { blocks: false },
             ..Object::default()
         });
@@ -1974,6 +2108,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let Some(target) = target else { continue };
         let word = match r.text("type") {
             "composite type" => "type",
+            "foreign-data wrapper" => "foreign data wrapper",
+            "statistics object" => "statistics",
             other => other,
         };
         let (identity, role) = (r.text("identity"), r.text("owner"));
@@ -2673,6 +2809,12 @@ fn acl_in(acl: &str, kind: char, owner: &str, schema: Option<&str>) -> String {
 /// grants beyond those it has by default, and one per default privilege it has revoked: a new
 /// object has its defaults, which the plan revokes where the target has. `privileges` is `acl`'s.
 fn grants(s: &mut Schema, privileges: &str, name: &str, id: &str, on: &str) {
+    grants_of(s, privileges, name, Some(id), on);
+}
+
+/// As `grants`, on an object `id` names where the schema has one: what no object stands for
+/// (plpgsql's language) has its grants on their own.
+fn grants_of(s: &mut Schema, privileges: &str, name: &str, id: Option<&str>, on: &str) {
     let parts: Vec<serde_json::Value> = serde_json::from_str(privileges).unwrap_or_default();
     // What the owner has taken from itself, revoked after the object is made or its owner set.
     let owner = parts.get(4).and_then(|v| v.as_str()).unwrap_or("current_user").to_string();
@@ -2680,11 +2822,11 @@ fn grants(s: &mut Schema, privileges: &str, name: &str, id: &str, on: &str) {
         s.add(Object {
             id: format!("revoke {privilege} on {name} from its owner"),
             kind: Some(Kind::Grant),
-            owner: Some(id.to_string()),
+            owner: id.map(String::from),
             def: String::new(),
             create: vec![format!("revoke {} on {on} {name} from {owner}", privilege.to_lowercase())],
             drop: vec![format!("grant {} on {on} {name} to {owner}", privilege.to_lowercase())],
-            deps: [format!("owner {id}")].into_iter().collect(),
+            deps: id.map(|id| format!("owner {id}")).into_iter().collect(),
             ..Object::default()
         });
     }
@@ -2700,7 +2842,7 @@ fn grants(s: &mut Schema, privileges: &str, name: &str, id: &str, on: &str) {
         s.add(Object {
             id: format!("grant {privilege} on {name} to {grantee}"),
             kind: Some(Kind::Grant),
-            owner: Some(id.to_string()),
+            owner: id.map(String::from),
             def: grantable.to_string(),
             create: vec![grant(grantee, privilege, *grantable)],
             drop: vec![revoke(grantee, privilege)],
@@ -2714,7 +2856,7 @@ fn grants(s: &mut Schema, privileges: &str, name: &str, id: &str, on: &str) {
         s.add(Object {
             id: format!("revoke {privilege} on {name} from {grantee}"),
             kind: Some(Kind::Grant),
-            owner: Some(id.to_string()),
+            owner: id.map(String::from),
             def: grantable.to_string(),
             create: vec![revoke(grantee, privilege)],
             drop: vec![grant(grantee, privilege, *grantable)],
@@ -2725,7 +2867,7 @@ fn grants(s: &mut Schema, privileges: &str, name: &str, id: &str, on: &str) {
         s.add(Object {
             id: format!("revoke {privilege} on {name} from {grantee}"),
             kind: Some(Kind::Grant),
-            owner: Some(id.to_string()),
+            owner: id.map(String::from),
             def: grantable.to_string(),
             create: vec![revoke(grantee, privilege)],
             drop: vec![grant(grantee, privilege, *grantable)],
@@ -4393,7 +4535,25 @@ impl Alterer for PostgresAlterer {
             }
             Kind::Sequence => {
                 let name = to.id.strip_prefix("sequence ")?;
-                Some(vec![format!("alter sequence {name} {}", to.def.replace(" start with ", " start with ").replacen("as ", "as ", 1))])
+                // Bounds that close in past where it stands move it to the new bound first, which
+                // the change otherwise refuses; bounds that share no value with the old ones start
+                // it again, every value it gave lying outside them.
+                let ((_, ex), (_, ey)) = (identity_parts(&format!("sequence ({})", from.def)), identity_parts(&format!("sequence ({})", to.def)));
+                let bound = |e: &BTreeMap<String, String>, key: &str| e.get(key).and_then(|v| v.parse::<i128>().ok()).unwrap_or_default();
+                let disjoint = bound(&ey, "maxvalue") < bound(&ex, "minvalue") || bound(&ey, "minvalue") > bound(&ex, "maxvalue");
+                let descending = ey.get("increment by").is_some_and(|i| i.starts_with('-'));
+                let (edge, beyond) = if descending { ("maxvalue", ">") } else { ("minvalue", "<") };
+                let closes = if descending { bound(&ey, edge) < bound(&ex, edge) } else { bound(&ey, edge) > bound(&ex, edge) };
+                let mut out = Vec::new();
+                if closes && !disjoint {
+                    let at = ey.get(edge).cloned().unwrap_or_default();
+                    out.push(format!(
+                        "select setval({0}, {at}, false) from pg_sequences s where format('%I.%I', s.schemaname, s.sequencename)::regclass = {0}::regclass and coalesce(s.last_value, s.start_value) {beyond} {at}",
+                        literal(name)
+                    ));
+                }
+                out.push(format!("alter sequence {name} {}{}", to.def, if disjoint { " restart" } else { "" }));
+                Some(out)
             }
             Kind::Extension => {
                 let name = to.id.strip_prefix("extension ")?;

@@ -3715,6 +3715,10 @@ mod adversarial {
         let out = p.output();
         assert_has!(&out, r"✗ Can't plan the grants in schema\.sql");
         assert_has!(&out, r"grant select on mysql\.tables_priv to 'madv_noread'@'%';");
+        // Nor does a migration written from it leave them out.
+        assert_ne!(p.run(async |o, log| reylo_migrate::create(o, "t", &Default::default(), log).await).await, 0);
+        assert_has!(p.output(), r"Can't plan the grants in schema\.sql");
+        assert!(p.files().is_empty(), "a migration was written: {:?}", p.files());
     }
 
     pub async fn a_comment_made_by_hand_stops_nothing(mut p: P) {

@@ -1274,6 +1274,7 @@ pub(crate) async fn default_privileges(target: &mut Db) -> Result<Vec<String>, E
             "f" => "functions",
             "T" => "types",
             "n" => "schemas",
+            "L" => "large objects",
             _ => continue,
         };
         let role = if r.flag("mine") { String::new() } else { format!(" for role {}", r.text("role")) };
