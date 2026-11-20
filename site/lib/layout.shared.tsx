@@ -52,7 +52,7 @@ export const pageGroups = [
       { title: 'Intro', href: introUrl },
       { title: SHOW_RUST ? 'Usage with TypeScript' : 'Usage', href: '/typescript' },
       ...(SHOW_RUST ? [{ title: 'Usage with Rust', href: '/rust' }] : []),
-      { title: 'Inference engine', href: '/inference' },
+      { title: 'Inference', href: '/inference' },
       { title: 'Reylo Migrate', href: '/migrate', external: true },
       { title: 'Comparison', href: '/compare' },
       { title: 'FAQ', href: '/faq' },

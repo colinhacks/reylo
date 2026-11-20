@@ -37,6 +37,14 @@ Each field of the result:
 | `capabilities` | The tables the statement reads or writes |
 | `diagnostics` | What the database reports where it refuses the statement |
 
+The output is in [Reylo Type Defs](/typedefs), Reylo's format for types:
+
+<Callout type="warning" title="A developing API">
+
+Reylo Type Defs is still changing. For now, consider it an internal detail of Reylo, and don't build on it.
+
+</Callout>
+
 Reylo caches each answer in [`reylo/.cache/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so the next check after a migration sees the new schema.
 
 <Rust>
