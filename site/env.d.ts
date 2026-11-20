@@ -6,3 +6,9 @@ declare module 'virtual:compare-cards' {
   const cards: Record<string, import('@/lib/compare-cards').CompareCard>;
   export default cards;
 }
+
+// The homepage's examples, the docs' schemas and the intro's import, built by lib/home-examples.ts.
+declare module 'virtual:home-examples' {
+  const data: import('@/lib/home-examples').HomeData;
+  export default data;
+}

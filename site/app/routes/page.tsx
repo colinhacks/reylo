@@ -9,8 +9,7 @@ import { HeroTitle } from '@/components/hero';
 import { getMDXComponents } from '@/components/mdx';
 import { HeroActions } from '@/components/hero';
 import { loadPage } from '@/lib/content';
-import { compareTitle, docsTitle, docsUrl, githubUrl, migrateDocsUrl, markdownPath, pageGroups, pageLinks, pageTitle, siteTitle, siteUrl } from '@/lib/layout.shared';
-import { movedAnchorsScript } from '@/lib/moved-anchors';
+import { compareTitle, docsTitle, docsUrl, githubUrl, introUrl, migrateDocsUrl, markdownPath, pageGroups, pageLinks, pageTitle, siteUrl } from '@/lib/layout.shared';
 import { ogAlt, ogSize } from '@/lib/og';
 import { source } from '@/lib/source';
 
@@ -34,8 +33,11 @@ const CENTERED: Record<string, string> = {
  * a change to the card changes the URL and the caches of X and Slack fetch the new card.
  */
 export async function loader({ params, request }: Route.LoaderArgs) {
-  // Reylo Migrate's docs have an address of their own, /migrate/docs (app/routes.ts).
-  const slug = params.slug ?? (new URL(request.url).pathname.replace(/\/$/, '') === migrateDocsUrl ? 'migrate' : '');
+  // The intro and Reylo Migrate's docs have addresses of their own, /docs and /migrate/docs
+  // (app/routes.ts); a prerender asks for each page's data at its address with `.data` after it.
+  const pathname = new URL(request.url).pathname.replace(/\.data$/, '').replace(/\/$/, '');
+  const slug = params.slug ?? (pathname === migrateDocsUrl ? 'migrate' : pathname === introUrl ? '' : undefined);
+  if (slug === undefined) throw new Response('Not found', { status: 404 });
   const page = source.getPage(slug ? [slug] : []);
   if (!page) throw new Response('Not found', { status: 404 });
   const card = await readFile('app/routes/opengraph-image.tsx');
@@ -62,9 +64,10 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 export function meta({ loaderData }: Route.MetaArgs): Route.MetaDescriptors {
   if (!loaderData) return [];
   const main = loaderData.slug === '';
-  const title = main ? siteTitle : loaderData.slug === 'compare' ? compareTitle : DIALECT_PAGES.has(loaderData.slug) ? pageTitle(loaderData.title) : docsTitle(loaderData.title);
+  // The intro is named for the docs it opens; the site's own title is the homepage's (app/routes/home.tsx).
+  const title = main ? docsTitle('Docs') : loaderData.slug === 'compare' ? compareTitle : DIALECT_PAGES.has(loaderData.slug) ? pageTitle(loaderData.title) : docsTitle(loaderData.title);
   const { description } = loaderData;
-  const url = main ? siteUrl : `${siteUrl}${loaderData.url}`;
+  const url = `${siteUrl}${loaderData.url}`;
   const image = `${siteUrl}/opengraph-image.png?${loaderData.og}`;
   return [
     { title },
@@ -86,7 +89,7 @@ export function meta({ loaderData }: Route.MetaArgs): Route.MetaDescriptors {
     { property: 'og:image:width', content: String(ogSize.width) },
     { property: 'og:image:height', content: String(ogSize.height) },
     { property: 'og:image:alt', content: ogAlt },
-    { property: 'og:type', content: main ? 'website' : 'article' },
+    { property: 'og:type', content: 'article' },
     { name: 'twitter:card', content: 'summary_large_image' },
     { name: 'twitter:creator', content: '@colinhacks' },
     { name: 'twitter:title', content: title },
@@ -111,7 +114,7 @@ export default function Page({ loaderData }: Route.ComponentProps) {
 }
 
 function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
-  const { slug, path, title, description, tree, url, agentPrompt } = loaderData;
+  const { slug, path, title, tree, url, agentPrompt } = loaderData;
   const files = use(loadPage(path));
   const components = getMDXComponents(slug === '' ? { HeroActions: () => <HeroActions agentPrompt={agentPrompt} /> } : undefined);
   const main = slug === '';
@@ -127,9 +130,8 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
   // sections it holds (lib/page-sections.ts). The subheader under the title is the page's first
   // element (`.dk-subheader`), since it may set code; the frontmatter's description, in plain text,
   // is the page's metadata (above). On the main page only, the title is centred, the mark over the
-  // name (components/hero.tsx), and "Copy agent prompt" sits under the subheader with the badges;
-  // an old link to a section that moved finds its page (lib/moved-anchors.ts); and the structured
-  // data describes the site and the project. Every page's column ends on the licence.
+  // name (components/hero.tsx), and "Copy agent prompt" sits under the subheader with the badges.
+  // Every page's column ends on the licence.
   return (
     <DocsShell
       // The tree's names are the pages' titles, plain strings, so it reaches the browser as it is
@@ -146,14 +148,6 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
       pageTitle={pageName(slug, title)}
       brand={<Brand />}
       github={githubUrl}
-      before={
-        main ? (
-          <>
-            <script dangerouslySetInnerHTML={{ __html: movedAnchorsScript }} />
-            <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: structuredData(description) }} />
-          </>
-        ) : undefined
-      }
       footer={<>Released under the MIT License. Copyright © 2026 Colin McDonnell.</>}
     >
       {files.map((file, i) => (
@@ -169,33 +163,4 @@ const STANDALONE = new Set(['migrate']);
 /** The current page's name on the phone's strip, as the list names it. */
 function pageName(slug: string, title: string): string {
   return slug === '' ? 'Intro' : title;
-}
-
-/**
- * The site and the project as schema.org data: the WebSite gives search results the site's name,
- * and the SoftwareSourceCode says what the page is about and where its code lives.
- */
-function structuredData(description: string): string {
-  const author = { '@type': 'Person', name: 'Colin McDonnell', url: 'https://github.com/colinhacks' };
-  const data = {
-    '@context': 'https://schema.org',
-    '@graph': [
-      { '@type': 'WebSite', '@id': `${siteUrl}/#website`, url: `${siteUrl}/`, name: 'Reylo', description, inLanguage: 'en' },
-      {
-        '@type': 'SoftwareSourceCode',
-        '@id': `${siteUrl}/#software`,
-        name: 'Reylo',
-        description,
-        url: `${siteUrl}/`,
-        codeRepository: githubUrl,
-        programmingLanguage: ['TypeScript', 'SQL'],
-        runtimePlatform: 'Node.js',
-        license: 'https://opensource.org/licenses/MIT',
-        author,
-        isPartOf: { '@id': `${siteUrl}/#website` },
-      },
-    ],
-  };
-  // `<` is escaped so that no string in the data can close the script element.
-  return JSON.stringify(data).replace(/</g, '\\u003c');
 }
