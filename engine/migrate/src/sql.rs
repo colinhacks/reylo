@@ -630,11 +630,13 @@ fn mysql_grant_reach(words: &[String], statement: &Statement) -> Option<String> 
 /// qualifies it.
 fn qualified_at(t: &[Token], at: usize) -> Option<String> {
     let mut text = String::new();
-    for k in at..t.len() {
-        if (k > at && t[k - 1].end != t[k].start) || matches!(t[k].text.as_str(), "(" | ")" | "," | ";") {
+    let mut next = at;
+    while next < t.len() {
+        if (next > at && t[next - 1].end != t[next].start) || matches!(t[next].text.as_str(), "(" | ")" | "," | ";" | ".") {
             break;
         }
-        text.push_str(&t[k].text);
+        text.push_str(&t[next].text);
+        next += 1;
     }
     let mut quoted = false;
     for (i, c) in text.char_indices() {
@@ -644,7 +646,8 @@ fn qualified_at(t: &[Token], at: usize) -> Option<String> {
             _ => {}
         }
     }
-    None
+    // Or a dot after it, with space between (`123é . users`).
+    (!text.is_empty() && t.get(next).is_some_and(|d| d.text == ".")).then_some(text)
 }
 
 re!(DATA, r"^(INSERT|UPDATE|DELETE|MERGE|COPY|CALL|DO|SELECT|WITH|TRUNCATE|REPLACE|LOAD)\b");
@@ -809,6 +812,9 @@ mod tests {
         assert!(shadow_problem("revoke select on 123app.* from 'reader'@'%'", Dialect::Mysql).is_some());
         assert!(shadow_problem("create table 123app.users (id int)", Dialect::Mysql).unwrap().contains("names the database 123app"));
         assert!(shadow_problem("grant insert on 123é.users to 'reader'@'%'", Dialect::Mysql).unwrap().contains("names the database 123é"));
+        assert!(shadow_problem("grant insert on 123é . users to 'reader'@'%'", Dialect::Mysql).unwrap().contains("names the database 123é"));
+        assert!(shadow_problem("grant insert on 123app . users to 'reader'@'%'", Dialect::Mysql).is_some());
+        assert!(shadow_problem("create table 123é . t (id int)", Dialect::Mysql).is_some());
         assert!(shadow_problem("grant insert on `app`.`users` to 'reader'@'%'", Dialect::Mysql).is_some());
         assert!(shadow_problem("insert into 123é.t values (1)", Dialect::Mysql).is_some());
         assert_eq!(shadow_problem("grant select on 123users to 'reader'@'%'; grant select on `a.b` to 'reader'@'%'; select 1.5e3, 2.5 from t; insert into t(a) values (1.5); call p(1.5)", Dialect::Mysql), None);
