@@ -2891,6 +2891,7 @@ on!(Mysql, a_migration_that_names_a_database_is_refused);
 mod on_sqlserver {
     use super::*;
     on!(Sqlserver, deploy_waits_out_a_lock_another_session_holds);
+    on!(Sqlserver, a_role_that_cannot_create_databases_is_told_of_shadow_url);
 }
 on!(
     Postgres,
@@ -3147,9 +3148,14 @@ mod adversarial {
                 p.exec(&format!("do $$ begin create role {role} login nocreatedb; exception when duplicate_object or unique_violation then null; end $$")).await;
                 p.exec(&format!("alter database {} owner to {role}", p.name)).await;
             }
+            // A login of its own, which owns this database and is in no server role, so it may not create one.
+            Dialect::Sqlserver => {
+                p.exec(&format!("if suser_id(N'{role}') is null create login {role} with password = N'Madv-nocreate-1', check_policy = off")).await;
+                p.exec(&format!("create user {role} for login {role}; alter role db_owner add member {role}")).await;
+            }
             _ => p.exec(&format!("create user if not exists '{role}'@'%'; grant all on `{}`.* to '{role}'@'%'", p.name)).await,
         }
-        p.url = as_role(&p.url, role);
+        p.url = as_role(&p.url, if p.d == Dialect::Sqlserver { "madv_nocreate:Madv-nocreate-1" } else { role });
         p.exec("create table users (id int primary key)").await;
         let opts = p.opts();
         let e = reylo_migrate::init(&opts, &[], &mut |_: &str| {}).await.expect_err("no shadow database can be made");

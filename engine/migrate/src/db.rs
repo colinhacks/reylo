@@ -1093,9 +1093,15 @@ impl Server {
                 }
                 // A collation's name is a word, which the server reads unquoted alone.
                 let collate = collation.as_deref().filter(|c| c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')).map(|c| format!(" collate {c}")).unwrap_or_default();
-                if let Err(e) = sqlserver_rows(admin, &format!("create database {}{collate}", bracket(&name))).await {
+                let made = match admin.simple_query(format!("create database {}{collate}", bracket(&name))).await {
+                    Ok(stream) => stream.into_results().await.map(drop),
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = made {
                     sqlserver_unlock(admin, &name).await;
-                    return Err(e);
+                    // 262, CREATE DATABASE permission denied: the login lacks CREATE ANY DATABASE, which `dbcreator` holds.
+                    let refused = matches!(&e, tiberius::error::Error::Server(t) if t.code() == 262);
+                    return Err(if refused { cannot_create(sqlserver_error(e), false) } else { sqlserver_error(e) });
                 }
                 let db = Db::Sqlserver(Box::new(open_sqlserver(&with_database(url, &name)).await?));
                 Ok(Shadow { db, name })
