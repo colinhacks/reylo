@@ -309,7 +309,9 @@ function paint(line: string): ReactNode {
       </>
     );
   }
-  if (/^\s+reylo /.test(line)) return <span className="ml-cy">{line}</span>;
+  if (/^\s+(reylo|mv) /.test(line)) return <span className="ml-cy">{line}</span>;
+  // A line of flags to pick from: each flag cyan, the `or` between them plain.
+  if (/^\s+--/.test(line)) return line.split(/(\s+or\s+)/).map((part, i) => (i % 2 ? part : <span key={i} className="ml-cy">{part}</span>));
   if (line === 'Nothing was changed.') return <span className="ml-mu">{line}</span>;
   return line;
 }
@@ -334,9 +336,12 @@ const paintSpin = (line: string): ReactNode => (
 
 function TermWindow({ lines, script, className, sql }: { lines: Line[]; script: Script; className?: string; sql?: boolean }) {
   const out = (text: string) => (SPINNER.includes(text[0] ?? ' ') ? paintSpin(text) : sql ? paintSql(text) : paint(text));
+  // A line too long for the window wraps under its own text, past its indent and its mark, as the
+  // CLI's lines read: a command's continuation under the command, a refusal's under its title.
+  const hang = (l: Line) => `${l.prompt ? 2 : (l.text.match(/^ */)?.[0].length ?? 0) + 2}ch`;
   const draw = (ls: Line[]) =>
     ls.map((l, i) => (
-      <div key={i} className="ml-ln">
+      <div key={i} className="ml-ln" style={{ paddingLeft: hang(l), textIndent: `-${hang(l)}` }}>
         {l.prompt ? <span className="ml-ps">$ </span> : null}
         {l.prompt ? <span className="ml-c">{l.text}</span> : out(l.text)}
         {l.cursor ? <span className="ml-cur" /> : null}
@@ -365,24 +370,24 @@ function Term({ lines, sql }: { lines: Script; sql?: boolean }) {
   return <TermWindow lines={usePlayer(lines)} script={lines} sql={sql} />;
 }
 
-/** As reylo 0.8.0 printed it: the migration asked for with no flags, then again with the renames named. */
+/** The migration asked for with no flags, then again with a flag picked for each line. */
 const RENAMES: Script = [
   '$ reylo migrate new tidy_columns',
-  '✗ These 2 look like renames, but each changes more than its name',
+  "✗ This migration can't tell renames from new columns",
   '',
-  '    posts.title → heading  text → varchar(100)',
-  '    users.bio   → about    text → varchar(200)',
+  '    posts.title → heading  varchar(100) → varchar(200)',
+  '    users.bio   → about    varchar(200) → text',
   '',
-  '  If they are renames, keeping their rows:',
-  '    reylo migrate new tidy_columns \\',
-  '      --rename posts.title=heading \\',
-  '      --rename users.bio=about',
-  '  If they are new, dropping the old ones and their data:',
-  '    reylo migrate new tidy_columns --drop posts.title,users.bio',
+  '  For each, rename to keep its rows, or drop it:',
+  '    --rename posts.title=heading   or   --drop posts.title',
+  '    --rename users.bio=about       or   --drop users.bio',
+  '  Add the flags you picked to:',
+  '    reylo migrate new tidy_columns',
   '',
   'Nothing was changed.',
-  '$ reylo migrate new tidy_columns --rename posts.title=heading --rename users.bio=about',
+  '$ reylo migrate new tidy_columns --rename posts.title=heading --drop users.bio',
   '✓ Wrote reylo/migrations/20261104150000_tidy_columns.sql',
+  '  ! Drops the column users.bio and its data',
 ];
 
 /** With no schema.sql: DDL run on the database, the migration written from what it changed (`#edit` fills the editor above), and the migration recorded as run. */
@@ -413,9 +418,13 @@ const INTROSPECT: Script = [
 /** Lock-free: a migration that sorts before one the database ran is refused, then runs once it's given a later name. */
 const LOCK_FREE: Script = [
   '$ reylo migrate deploy',
-  '✗ Migration 20261105080000_no_nick.sql sorts before 20261105090000_nick.sql, which this database already ran, and the two orders end differently',
-  '  + a fresh database: column users.nick text',
-  '  Give 20261105080000_no_nick.sql a later name, so that every database runs it after 20261105090000_nick.sql',
+  '✗ Migration 20261105080000_no_nick.sql sorts before 20261105090000_nick.sql, which this database already ran',
+  '  Run in name order, as on a fresh database, the migrations end differently:',
+  '',
+  '    + a fresh database: column users.nick text',
+  '',
+  '  Give it a later name, so that every database runs it after 20261105090000_nick.sql:',
+  '    mv reylo/migrations/20261105080000_no_nick.sql reylo/migrations/20261105100000_no_nick.sql',
   '',
   'Nothing was changed.',
   '$ mv reylo/migrations/20261105080000_no_nick.sql reylo/migrations/20261105100000_no_nick.sql',
