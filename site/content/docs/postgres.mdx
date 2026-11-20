@@ -112,7 +112,7 @@ In TypeScript, `.run()` returns the same value for a type on every driver, apart
 </LanguagePanel>
 <LanguagePanel value="Rust">
 
-In Rust, `#[reylo::query]` writes these types ([Rust](/rust#types)):
+In Rust, `#[reylo::query]` writes these types:
 
 | SQL type | Rust |
 | --- | --- |
@@ -1054,6 +1054,27 @@ order by o.placed_at desc, o.id
 ```
 
 </Rules>
+
+<Rust>
+### sqlx
+
+In Rust, queries run on sqlx, on your own pool.
+
+Through PgBouncer in transaction mode, turn on its prepared statements. Each query is prepared once per connection, under a name such as `sqlx_s_1`, and run by that name after. A pooler in transaction mode gives each transaction whichever server connection is free, so the name may be missing there, or belong to another client's statement. PgBouncer 1.21 and later keeps each client's statements across its server connections:
+
+```ini title="pgbouncer.ini"
+pool_mode = transaction
+# keep each client's prepared statements
+max_prepared_statements = 200
+# sqlx sets extra_float_digits when it connects
+ignore_startup_parameters = extra_float_digits
+```
+
+- Without `max_prepared_statements`, queries fail with errors such as `prepared statement "sqlx_s_1" does not exist`, and some return another statement's rows with no error at all.
+- Turning off sqlx's statement cache with `statement_cache_capacity(0)` doesn't help, since sqlx still prepares each query under a name.
+- Where you can't change the pooler's settings, `.extra_float_digits(None)` on sqlx's `PgConnectOptions` does what `ignore_startup_parameters` does.
+- The attribute reads `DATABASE_URL` as the crate compiles, so point it at a direct connection, not the pooler.
+</Rust>
 
 ## Limits
 

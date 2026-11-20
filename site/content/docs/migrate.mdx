@@ -893,12 +893,21 @@ Every setting, for migrations and the rest of Reylo, is in the [`.reylo.yaml` re
 
 Run your migrations from code:
 
-```ts title="server.ts"
+```ts title="server.ts"<Rust> tab="TypeScript"</Rust>
 import { migrate } from "reylo";
 
 // reylo migrate deploy, in this directory, on direct_url's database
 const ran = await migrate();
 ```
+
+<Rust>
+```rust title="src/main.rs" tab="Rust"
+let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+
+// reylo migrate deploy, on the pool's database
+let ran = reylo::migrate!().run(&pool).await?;
+```
+</Rust>
 
 It resolves to the names of the migrations it ran, and rejects with the deploy's problems. Pass `url` for another database:
 
@@ -907,7 +916,22 @@ await migrate({ url: process.env.PRODUCTION_URL });
 ```
 
 <Rust>
-In Rust, `reylo::migrate!()` compiles your migrations into the crate and runs them on your sqlx pool ([Rust](/rust#migrations)).
+In Rust, `.run()` returns the same names, or an error with the deploy's problems, whose `.applied()` lists the migrations that ran before one failed. The macro compiles your migrations into the crate, with their lock and `reylo/schema.sql`, so the app runs the migrations it was built with. To check the database without changing it, call `.status()`:
+
+```rust
+let status = reylo::migrate!().status(&pool).await?;
+if !status.is_current() {
+    eprintln!("{status}");
+}
+```
+
+The crate compiles again when a migration, the lock or `reylo/schema.sql` changes. The lock lists each new migration, so without one, have a build script watch the directory:
+
+```rust title="build.rs"
+fn main() {
+    println!("cargo:rerun-if-changed=reylo/migrations");
+}
+```
 </Rust>
 
 A Cloudflare Durable Object runs its migrations on itself, from its constructor ([Durable Objects](/durable-objects#migrations)).
