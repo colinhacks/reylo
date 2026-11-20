@@ -1,0 +1,534 @@
+/* ── Reylo's homepage (components/home-landing.tsx) ───────────────────────────
+   On the Migrate landing's styles (`.ml-*` in app/global.css): its nav, install, windows and foot,
+   with what the homepage adds: the star pill and its note, the hero's pair of windows, the docs'
+   inference card and "View schema" outside the docs, and the features. The windows stay dark on
+   either theme, as an editor is; the cards follow the theme, as the docs' do. */
+
+.rh {
+  /* Code's size and a whole-pixel line for it (see "Whole-pixel lines" below). */
+  --rh-code: 0.875rem;
+  --rh-lh: 1.5rem;
+  --rh-max: 1180px;
+}
+
+.rh code {
+  font-family: var(--font-code);
+}
+
+/* ── The nav: links, then the star pill with its handwritten note ── */
+.rh-links {
+  align-items: center;
+}
+
+.rh-star-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+/* GitHub's star button, unstarred. Only the border warms on hover. */
+.rh-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  height: 2.125rem;
+  padding: 0 0.875rem 0 0.625rem;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 999px;
+  color: var(--color-fd-foreground);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  transition: border-color 0.15s;
+}
+
+.rh-pill:hover {
+  border-color: var(--color-fd-primary);
+}
+
+.rh-pill svg {
+  width: 1.0625rem;
+  height: 1.0625rem;
+}
+
+.rh-pill .rh-pill-star {
+  width: 0.875rem;
+  height: 0.875rem;
+  margin-left: 0.125rem;
+  color: var(--color-fd-muted-foreground);
+}
+
+/* The note's arrow tip is at (150, 3) in its box: the box's left edge 150px left of the pill's middle,
+   its top 2px under the pill, so the tip lands a hair below the pill's underside. */
+.rh-star-note {
+  position: absolute;
+  top: calc(100% - 1px);
+  left: calc(50% - 150px);
+  width: 170px;
+  height: 84px;
+  overflow: visible;
+  pointer-events: none;
+  user-select: none;
+  color: var(--color-fd-primary);
+}
+
+.rh-star-note text {
+  fill: currentColor;
+  font: 600 21px var(--font-hand);
+}
+
+.rh-star-note path {
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dark .rh-star-note {
+  filter: drop-shadow(0 0 5px rgb(255 184 0 / 0.5));
+}
+
+/* ── Code ── */
+.rh-code {
+  margin: 0;
+  font: 400 var(--rh-code) / var(--rh-lh) var(--font-code);
+  font-variant-ligatures: none;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* Each token in its colour by day and by night, as the docs' code; a window is dark on either theme. */
+.rh-tok {
+  color: var(--l);
+}
+
+.dark .rh-tok,
+.ml-win .rh-tok {
+  color: var(--d);
+}
+
+.ml-win > .rh-code {
+  padding: 1.25rem 1.5rem;
+  color: #e1e4e8;
+}
+
+/* ── The docs' inference card ──
+   As `.reylo-inference-card` in app/global.css, which is scoped to the docs' page: a row's label on a
+   line of its own over its code, the database switch at the right of the Query row's label line, and
+   Params and Returns in a band under a rule. */
+.rh-card {
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.75rem;
+  background: var(--color-fd-secondary);
+  overflow: hidden;
+  text-align: left;
+}
+
+.rh-card-row {
+  position: relative;
+}
+
+.rh-card-label {
+  padding: 0.75rem 1.25rem 0;
+  font: 500 0.6875rem/1.25rem var(--font-text);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-fd-muted-foreground);
+}
+
+.rh-card .rh-code {
+  padding: 0.375rem 1.25rem 0.875rem;
+}
+
+.rh-card-types {
+  border-top: 1px solid var(--color-fd-border);
+  background: var(--color-fd-muted);
+}
+
+.rh-card-types .rh-card-row:first-child .rh-code {
+  padding-bottom: 0.25rem;
+}
+
+/* The docs' database switch (docs-kit's `.dk-variant-switch`). */
+.rh-switch {
+  position: absolute;
+  top: 0.625rem;
+  right: 0.75rem;
+  z-index: 1;
+  display: inline-flex;
+  gap: 1px;
+  padding: 2px;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 7px;
+}
+
+.rh-switch button {
+  padding: 4px 7px;
+  border-radius: 5px;
+  font: 500 0.6875rem/1 var(--font-code);
+  color: var(--color-fd-muted-foreground);
+  white-space: nowrap;
+}
+
+.rh-switch button:hover {
+  color: var(--color-fd-foreground);
+}
+
+.rh-switch button[data-state='active'] {
+  color: var(--color-fd-primary);
+  background: color-mix(in oklab, var(--color-fd-primary) 14%, transparent);
+}
+
+/* "View schema" under the card's right corner: the docs' (`.schema-query-*` in app/global.css), its
+   popover holding the schema as a code block. */
+.rh-schema-foot {
+  margin: 0.75rem 0.25rem 0 0;
+  line-height: 1.25rem;
+}
+
+.rh .schema-query-card .rh-schema {
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.875rem;
+  background: var(--color-fd-secondary);
+  --rh-code: 0.75rem;
+  --rh-lh: 1.25rem;
+}
+
+/* ── Heroes ── */
+.rh-h1 em {
+  white-space: nowrap;
+}
+
+/* The headline is three lines, each kept whole, at the size that fits its longest, "into
+   TypeScript," (6.66 times the font size), in the words' column: never a fourth line, at any width. */
+.rh .ml-hero-words {
+  container-type: inline-size;
+}
+
+.rh .ml-hero-words .rh-h1 {
+  --rh-h1: min(5rem, 14.6cqi);
+}
+
+.rh-hero-split {
+  padding-bottom: 6rem;
+}
+
+/* get_author.sql, and under it, indented, the main.ts that imports it (the Migrate hero's pair), with
+   the hover on `author`. */
+.rh-import {
+  --rh-code: 0.8125rem;
+  --rh-lh: 1.375rem;
+}
+
+.rh-import .ml-editor > .rh-code {
+  padding-bottom: 2.25rem;
+}
+
+.rh-import-ts > .rh-code {
+  padding-bottom: 9.5rem;
+}
+
+/* Under `author`, on the last line: the bar, the code's top padding and five lines down, six characters in. */
+.rh-hover {
+  position: absolute;
+  top: calc(2.375rem + 1.25rem + 5 * var(--rh-lh) + 4px);
+  left: calc(1.5rem + 6ch - 0.875rem - 1px);
+  font: 400 var(--rh-code) / var(--rh-lh) var(--font-code);
+  border: 1px solid hsl(0 0% 22%);
+  border-radius: 0.5rem;
+  background: hsl(0 0% 11%);
+  box-shadow: 0 12px 30px -8px rgb(0 0 0 / 0.6);
+}
+
+.rh-hover .rh-code {
+  padding: 0.5rem 0.875rem;
+}
+
+/* ── The examples ── */
+.rh-examples {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 7rem 3rem;
+  border-top: 1px solid var(--color-fd-border);
+}
+
+.rh-section-head {
+  max-width: 46rem;
+  margin: 0 auto 3.5rem;
+  text-align: center;
+}
+
+.rh-section-head h2 {
+  margin: 0;
+  font-size: 2.75rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.rh-section-head p {
+  margin: 1.25rem 0 0;
+  font-size: 1.1875rem;
+  color: var(--color-fd-muted-foreground);
+  text-wrap: balance;
+}
+
+/* The card centred, between the names in the left gutter and a right gutter as wide. */
+.rh-ex {
+  display: grid;
+  grid-template-columns: 11rem minmax(0, 1fr) 11rem;
+  gap: 2.5rem;
+  max-width: var(--rh-max);
+  margin: 0 auto;
+}
+
+/* The picked example alone, at its own height: the section grows and shrinks with it, and the
+   browser's scroll anchoring keeps whatever the reader is looking at from moving. */
+.rh-ex-card {
+  display: none;
+}
+
+.rh-ex-card[data-on] {
+  display: block;
+}
+
+/* The list: the names in the left gutter, the picked one lit with the yellow rule the docs' sidebar uses. */
+.rh-ex-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.rh-ex-list button {
+  position: relative;
+  padding: 0.375rem 0.75rem 0.375rem 1rem;
+  border-radius: 0.5rem;
+  text-align: left;
+  font-size: 0.9375rem;
+  line-height: 1.25rem;
+  color: var(--color-fd-muted-foreground);
+}
+
+.rh-ex-list button:hover {
+  color: var(--color-fd-foreground);
+}
+
+.rh-ex-list button.on {
+  color: var(--color-fd-foreground);
+  background: var(--color-fd-secondary);
+  font-weight: 500;
+}
+
+.rh-ex-list button.on::before {
+  content: '';
+  position: absolute;
+  left: 0.3125rem;
+  top: 0.5rem;
+  bottom: 0.5rem;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--color-fd-primary);
+}
+
+.dark .rh-ex-list button.on::before {
+  box-shadow: 0 0 8px rgb(255 184 0 / 0.65);
+}
+
+/* ── Features ── */
+.rh-features {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 7rem 3rem;
+  border-top: 1px solid var(--color-fd-border);
+}
+
+.rh-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  max-width: var(--rh-max);
+  margin: 0 auto;
+}
+
+.rh-feature {
+  padding: 1.75rem 1.75rem 1.875rem;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 1rem;
+  background: var(--color-fd-card);
+}
+
+.rh-feature svg {
+  width: 1.625rem;
+  height: 1.625rem;
+  fill: none;
+  stroke: var(--color-fd-primary);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dark .rh-feature svg {
+  filter: drop-shadow(0 0 4px rgb(255 200 31 / 0.45));
+}
+
+.rh-feature h3 {
+  margin: 1.125rem 0 0.5rem;
+  font-size: 1.1875rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.rh-feature p {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--color-fd-muted-foreground);
+  text-wrap: pretty;
+}
+
+.dark .rh-feature p {
+  color: hsl(0 0% 72%);
+}
+
+.rh-feature p code {
+  padding: 0.15em 0.35em;
+  border-radius: 0.3rem;
+  background: color-mix(in oklab, var(--color-fd-foreground) 11%, transparent);
+  font-size: 0.86em;
+  color: var(--color-fd-foreground);
+}
+
+/* The databases and hosts in two rows, each centred. */
+.rh-logos {
+  display: grid;
+  gap: 1.25rem;
+  max-width: var(--rh-max);
+  margin: 4rem auto 0;
+  font-size: 0.875rem;
+  color: var(--color-fd-muted-foreground);
+}
+
+.rh-logos-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1.25rem 2.5rem;
+}
+
+.rh-logos span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.rh-logos svg {
+  /* Each logo sat 0.9px low beside its name (ink-align.mjs, 2026-11-19). */
+  translate: 0 -0.9px;
+  width: auto;
+  max-width: 2.5rem;
+  height: 1.25rem;
+  flex: none;
+}
+
+/* ── The call to action: the install, and under it a plain link to star the repository ── */
+.rh-star-link {
+  display: inline-block;
+  margin-top: 2rem;
+  font-size: 1rem;
+  color: var(--color-fd-muted-foreground);
+  text-decoration: underline dotted;
+  text-decoration-color: color-mix(in oklab, currentColor 60%, transparent);
+  text-underline-offset: 0.3rem;
+}
+
+.rh-star-link:hover {
+  color: var(--color-fd-foreground);
+}
+
+/* ── Whole-pixel lines ──
+   Text snaps to whole pixels and an icon does not, so a block of fractional height above a row of
+   icons and labels lifts every label and leaves its icon low by up to a pixel, differently on each
+   page. Every block of text and every box here is a whole number of pixels tall (ink-align.mjs,
+   2026-11-19). */
+.rh .ml-h1 {
+  --rh-h1: clamp(2.25rem, 5.4vw, 5rem);
+  font-size: var(--rh-h1);
+  line-height: round(calc(var(--rh-h1) * 0.98), 1px);
+}
+
+.rh .ml-lede {
+  line-height: 2.125rem;
+}
+
+.rh .ml-seg button {
+  line-height: 1.25rem;
+}
+
+.rh .rh-section-head h2,
+.rh .ml-end h2 {
+  line-height: 3rem;
+}
+
+.rh .rh-section-head p {
+  line-height: 1.875rem;
+}
+
+.rh .rh-feature h3 {
+  line-height: 1.75rem;
+}
+
+.rh .rh-feature p {
+  line-height: 1.5rem;
+}
+
+/* ── Optical nudges, each measured with ink-align.mjs on 2026-11-19 ──
+   main.ts's icon in hero B sat 1.06px low (a 0.5px lift lands it, the svg snapping on its own); the
+   arrow of a centred "Get started" (4rem tall, 17px) 1.3px low. */
+.rh-import-ts .ml-bar svg {
+  translate: 0 -0.5px;
+}
+
+.rh .ml-centered .ml-docs-primary svg {
+  translate: 0 -0.94px;
+}
+
+/* ── Narrower windows ── */
+@media (max-width: 1023px) {
+  .rh-examples,
+  .rh-features {
+    padding-inline: 1.25rem;
+  }
+
+  .rh-ex {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+
+  .rh-ex-list {
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 0.25rem;
+  }
+
+  .rh-ex-list button {
+    flex: none;
+  }
+
+  .rh-ex-list button.on::before {
+    display: none;
+  }
+
+  .rh-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rh-star-note {
+    display: none;
+  }
+}
+
+/* A phone's bar holds the brand, Docs and the star pill. */
+@media (max-width: 639px) {
+  .rh-links > a:not(:first-child) {
+    display: none;
+  }
+
+}

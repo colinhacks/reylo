@@ -110,7 +110,7 @@ export function MigrateLanding({ stars }: { stars?: number }) {
 }
 
 /** Variadic's mark: its squares, in their own colours. */
-function VariadicMark() {
+export function VariadicMark() {
   return (
     <svg viewBox="90 90 332 332" aria-hidden="true">
       {VARIADIC_SQUARES.map((q) => (
@@ -120,7 +120,7 @@ function VariadicMark() {
   );
 }
 
-function Mark({ className }: { className?: string }) {
+export function Mark({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 400 235.47" fill="currentColor" aria-hidden="true">
       <path d={wordmark.mark} />
@@ -129,11 +129,11 @@ function Mark({ className }: { className?: string }) {
 }
 
 /** A star count as GitHub writes it: 1.6k from a thousand on. */
-function starCount(n: number): string {
+export function starCount(n: number): string {
   return n < 1000 ? String(n) : `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`;
 }
 
-function GitHubIcon() {
+export function GitHubIcon() {
   return (
     <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
       <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
@@ -211,7 +211,7 @@ function Install({ centered }: { centered?: boolean }) {
 }
 
 /** Whether the reader asked for less motion: then every player shows its last frame and stays. */
-function stillPlease(): boolean {
+export function stillPlease(): boolean {
   return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
@@ -474,7 +474,7 @@ const MIGRATE: Script = [
 const kw = (s: string) => <span className="ml-kw">{s}</span>;
 const ty = (s: string) => <span className="ml-ty">{s}</span>;
 
-function FileIcon() {
+export function FileIcon() {
   return (
     <svg viewBox="0 0 16 16">
       <path d="M4.5 1.75h4.75l3.25 3.25v8.5a.75.75 0 0 1-.75.75h-7.25a.75.75 0 0 1-.75-.75v-11a.75.75 0 0 1 .75-.75z M9.25 1.75v3.25h3.25" />

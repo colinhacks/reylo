@@ -210,4 +210,8 @@ const MOVED: Record<string, string> = {
   "write-queries": "/typescript#usage",
 };
 
-export const movedAnchorsScript = `(function(){var m=${JSON.stringify(MOVED)};var t=m[location.hash.slice(1)];if(t)location.replace(t)})()`;
+/**
+ * On the homepage, /, where the docs' intro was until it moved to /docs: a link to a section that moved
+ * goes to its page, and a link to any other heading to the intro's.
+ */
+export const movedAnchorsScript = `(function(){var h=location.hash.slice(1);if(!h)return;var m=${JSON.stringify(MOVED)};location.replace(m[h]||'/docs#'+h)})()`;
