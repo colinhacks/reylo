@@ -48,7 +48,7 @@ direct_url: ${DIRECT_URL:-${DATABASE_URL}}
 - The type check prepares each query on its connection. The transaction pooler keeps nothing on a connection from one transaction to the next, so describing a query through it can fail.
 - Copy each connection string from the Connect panel of your project's dashboard.
 - The direct connection is IPv6 only, unless your project has Supabase's IPv4 add-on. From a network without IPv6, use the session pooler.
-- With no TLS setting in the URL, the connection is encrypted, since Supabase offers TLS. To check its certificate too, download it from your project's database settings and name it in the URL ([TLS](/configuration#tls)).
+- With no TLS setting in the URL, the connection is encrypted, since Supabase offers TLS. To check its certificate too, download it from your project's database settings and name it in the URL ([TLS](/configuration#direct_url)).
 
 ## Drivers
 
