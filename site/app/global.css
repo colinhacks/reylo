@@ -1879,30 +1879,10 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   min-height: 0;
 }
 
-/* The hosts, three by three: each logo, in the text's colour, over its name. */
-/* The databases in a row of their own, and the hosts in rows of four under them. */
+/* The databases and then the hosts, in rows of four: each logo, in the text's colour, over its name. */
 .ml-hosts {
   display: grid;
   gap: 0.625rem;
-}
-
-.ml-dbs,
-.ml-hostgrid {
-  display: grid;
-  gap: 0.625rem;
-}
-
-.ml-dbs {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-/* MySQL's mark is a wordmark, wider than it is tall: the databases' marks get the room to show it. */
-.ml-dbs svg {
-  max-width: 4.5rem;
-  height: 1.875rem;
-}
-
-.ml-hostgrid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
@@ -1930,6 +1910,18 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   height: 1.5rem;
   flex: none;
   color: var(--color-fd-foreground);
+}
+
+/* On a phone, four to a row wrap a name onto three lines and push its logo into the chip: three to a
+   row, each a little taller, leave room for a name on two. */
+@media (max-width: 699px) {
+  .ml-hosts {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .ml-hosts span {
+    height: 7rem;
+  }
 }
 
 /* Every kind is drawn in one cell and all but the chosen one hidden, so the editor holds the tallest
