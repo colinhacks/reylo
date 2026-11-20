@@ -15,6 +15,8 @@ description: How Reylo types SQL queries on ClickHouse. Each column's type in Ty
 | Type checking | Reylo's engine asks ClickHouse itself, over HTTP, so your project needs no client for it |
 | Example | [clickhouse](https://github.com/reylosql/reylo/tree/main/examples/clickhouse), a Node project on `@clickhouse/client` with a lookup, a join, an insert and a delete |
 
+The examples on this page use this schema:
+
 <Details summary="View the schema behind the examples" id="schema">
 
 ```sql file="schema.sql" dialect="clickhouse"
@@ -102,6 +104,8 @@ Each ClickHouse type has one TypeScript type:
 | `Variant(T1, T2)` | the union of its types, or `null` | `7` |
 | `Point`, `Ring`, `Polygon` and the other geometric types | the tuples and arrays they stand for | `[1.5, 2.5]` |
 
+How each type comes back:
+
 ```ts twoslash tab="main.ts"
 import getOrder from "./ch_get_order.sql";
 
@@ -176,6 +180,8 @@ ClickHouse doesn't make a value `NULL` the way other databases do, and Reylo rea
 - **An aggregate over no rows**, such as `max(total)`, returns the type's default value. Its `-OrNull` form, `maxOrNull(total)`, returns `NULL`.
 - **A scalar subquery** is `Nullable`, since it can return no row.
 
+How a left join's missing row comes back:
+
 ```ts twoslash tab="main.ts"
 import usersWithOrders from "./ch_users_with_orders.sql";
 
@@ -214,6 +220,8 @@ Reylo infers how many rows a query returns from its aggregates and its `LIMIT`:
 - **An aggregate** with no `GROUP BY` returns exactly one row.
 - **A `LIMIT 1`** returns at most one row.
 - **Everything else** returns any number of rows. ClickHouse enforces no unique key: a table's primary key is the order its rows are stored in, and two rows can share it. So `WHERE id = {id:UInt64}` can return several rows, and a lookup by key says `LIMIT 1`.
+
+How a lookup and an aggregate come back:
 
 ```ts twoslash tab="main.ts"
 import getUser from "./ch_get_user.sql";
@@ -277,6 +285,8 @@ A parameter accepts the same values `.run()` returns for its type:
 | `Tuple(…)` | a tuple, or an object where the tuple has names |
 | `Map(K, V)` | an array of `{ key, value }` pairs |
 | `Nullable(T)` | what `T` takes, or `null`; such a parameter can be left out |
+
+How arrays go in:
 
 ```ts twoslash tab="main.ts"
 import usersIn from "./ch_users_in.sql";
@@ -383,6 +393,8 @@ With [`.try()`](/typescript#try), an error ClickHouse raised comes back as `{ er
 | `number` | The error's number, as `469` |
 | `message` | The server's message |
 
+An insert a constraint refuses:
+
 ```ts twoslash tab="main.ts"
 import addOrder from "./ch_add_order.sql";
 
@@ -408,6 +420,8 @@ const db = createClient({ url: process.env.CLICKHOUSE_URL });
 const user = await getUser.run(db, { id: 1 });
 ```
 
+How Reylo uses your client:
+
 - Reylo decodes results itself, so your client's own format and JSON settings don't apply to Reylo's queries, and Reylo's don't change yours.
 - Each parameter goes to the server as ClickHouse's own query parameter, never written into the query's text.
 - The settings your client is made with apply to every query it runs, Reylo's included. Reylo sends none of its own, so a read-only user can run every query.
@@ -415,7 +429,7 @@ const user = await getUser.run(db, { id: 1 });
 
 ## Migrations
 
-[Reylo Migrate](/migrations) doesn't support ClickHouse yet. Keep your schema with the tool you use today: the type check reads whatever the database holds.
+[Reylo Migrate](/migrate/docs) doesn't support ClickHouse yet. Keep your schema with the tool you use today: the type check reads whatever the database holds.
 
 ## Limits
 

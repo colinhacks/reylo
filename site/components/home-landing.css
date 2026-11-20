@@ -210,7 +210,20 @@
 }
 
 .rh-hero-split {
-  padding-bottom: 6rem;
+  padding-bottom: 4rem;
+}
+
+/* The install and "Read the docs" side by side, and the button under the command only where the
+   column is too narrow for both. */
+.rh .ml-hero .ml-big {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.rh .ml-hero .ml-box,
+.rh .ml-hero .ml-cmd {
+  align-self: auto;
 }
 
 /* get_author.sql, and under it, indented, the main.ts that imports it (the Migrate hero's pair), with
@@ -274,6 +287,8 @@
 
 /* The card centred, between the names in the left gutter and a right gutter as wide. */
 .rh-ex {
+  /* The "View schema" line under the card, 32px: the list centres on the card above it. */
+  --rh-schema-foot: 2rem;
   display: grid;
   grid-template-columns: 11rem minmax(0, 1fr) 11rem;
   gap: 2.5rem;
@@ -296,6 +311,9 @@
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
+  /* Centred on the card, not on the card and the "View schema" line under it. */
+  align-self: center;
+  margin-bottom: var(--rh-schema-foot, 0px);
 }
 
 .rh-ex-list button {
@@ -396,13 +414,23 @@
   color: var(--color-fd-foreground);
 }
 
-/* The databases and hosts in two rows, each centred. */
+/* Under the hero, the databases and hosts in two rows, each centred, under a small title in petite caps. */
 .rh-logos {
   display: grid;
   gap: 1.25rem;
   max-width: var(--rh-max);
-  margin: 4rem auto 0;
+  margin: 0 auto;
+  padding: 0 3rem 5.5rem;
   font-size: 0.875rem;
+  color: var(--color-fd-muted-foreground);
+}
+
+.rh-logos-title {
+  margin: 0 0 0.25rem;
+  text-align: center;
+  font: 600 1rem/1.5rem var(--font-text);
+  font-variant-caps: all-petite-caps;
+  letter-spacing: 0.14em;
   color: var(--color-fd-muted-foreground);
 }
 
@@ -426,21 +454,6 @@
   max-width: 2.5rem;
   height: 1.25rem;
   flex: none;
-}
-
-/* ── The call to action: the install, and under it a plain link to star the repository ── */
-.rh-star-link {
-  display: inline-block;
-  margin-top: 2rem;
-  font-size: 1rem;
-  color: var(--color-fd-muted-foreground);
-  text-decoration: underline dotted;
-  text-decoration-color: color-mix(in oklab, currentColor 60%, transparent);
-  text-underline-offset: 0.3rem;
-}
-
-.rh-star-link:hover {
-  color: var(--color-fd-foreground);
 }
 
 /* ── Whole-pixel lines ──

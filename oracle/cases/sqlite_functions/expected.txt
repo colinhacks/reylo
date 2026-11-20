@@ -6,7 +6,7 @@ math_in_where.sql: many (s: float(11,52)) -> { id: INTEGER }
 offset_missing.sql: many () -> {  } !! reylo6: no such function: sqlite_offset on this database's SQLite
 offset_missing_in_where.sql: many (s: unknown) -> {  } !! reylo6: no such function: sqlite_offset on this database's SQLite
 operators.sql: many (p: text(UTF-8, ill-formed), a: int64, b: int64) -> { l: boolean, g: boolean, j: unknown?, k: unknown?, c: text(UTF-8, ill-formed), t: text(UTF-8, ill-formed), i: int64, e: text(UTF-8, ill-formed), ty: text(UTF-8, ill-formed), n: int64 }
-soundex.sql: many (x: text(UTF-8, ill-formed)) -> { s: text(UTF-8, ill-formed), e: text(UTF-8, ill-formed) }
+soundex.sql: many (x: text(UTF-8, ill-formed)) -> { s: text(UTF-8, ill-formed), e: text(UTF-8, ill-formed)? }
 strings.sql: many () -> { u: text(UTF-8, ill-formed), l: int64, s: text(UTF-8, ill-formed), r: text(UTF-8, ill-formed), t: text(UTF-8, ill-formed), i: int64, h: text(UTF-8, ill-formed), q: text(UTF-8, ill-formed), p: text(UTF-8, ill-formed), a: float(11,52)?, rd: float(11,52)?, nu: text(UTF-8, ill-formed)?, em: text(UTF-8, ill-formed), ch: text(UTF-8, ill-formed), un: int64?, rn: int64, lk: boolean }
 view.sql: at_most_one (id: int64) -> { name: text(UTF-8, ill-formed), sound: text(UTF-8, ill-formed) }
 windows.sql: many () -> { name: TEXT(text(UTF-8, ill-formed) | bytes), r: int64, prev: text(UTF-8, ill-formed)?, s: float(11,52)?, positive: int64 }

@@ -100,26 +100,18 @@ export function CompareTable() {
               <span className="reylo-compare-sub">{t.sub}</span>
             </div>
           ))}
-          {compareRows.map((g) => {
-            const group = row++;
+          {compareRows.map((r) => {
+            const at = row++;
             return (
-              <Fragment key={g.group}>
-                <div className="reylo-compare-group" style={{ gridRow: group }}><span>{g.group}</span></div>
-                {g.rows.map((r) => {
-                  const at = row++;
-                  return (
-                    <Fragment key={r.id}>
-                      <div className="reylo-compare-rule" style={{ gridRow: at }} />
-                      <div className="reylo-compare-row-label" style={{ gridRow: at, gridColumn: 1 }}><Label label={r.label} asks={r.asks} /></div>
-                      <div className="reylo-compare-cell" style={{ gridRow: at, gridColumn: 3 }}><Mark tool="reylo" row={r.id} label={r.label} cell={compareCell('reylo', r.id)} /></div>
-                      {compareTools.map((t, i) => (
-                        <div key={t.id} className="reylo-compare-cell" style={{ gridRow: at, gridColumn: column(i) }}>
-                          <Mark tool={t.id} row={r.id} label={r.label} cell={compareCell(t.id, r.id)} />
-                        </div>
-                      ))}
-                    </Fragment>
-                  );
-                })}
+              <Fragment key={r.id}>
+                <div className="reylo-compare-rule" style={{ gridRow: at }} />
+                <div className="reylo-compare-row-label" style={{ gridRow: at, gridColumn: 1 }}><Label label={r.label} asks={r.asks} /></div>
+                <div className="reylo-compare-cell" style={{ gridRow: at, gridColumn: 3 }}><Mark tool="reylo" row={r.id} label={r.label} cell={compareCell('reylo', r.id)} /></div>
+                {compareTools.map((t, i) => (
+                  <div key={t.id} className="reylo-compare-cell" style={{ gridRow: at, gridColumn: column(i) }}>
+                    <Mark tool={t.id} row={r.id} label={r.label} cell={compareCell(t.id, r.id)} />
+                  </div>
+                ))}
               </Fragment>
             );
           })}

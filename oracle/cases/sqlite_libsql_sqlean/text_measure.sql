@@ -1,0 +1,1 @@
+select char_length(name) as a, character_length(nick) as b, bit_length(name) as c, strpos(name, 'a') as d, text_count(name, 'a') as e, text_index(name, 'b') as f, text_last_index(nick, 'a') as g, text_size(name) as h, text_bitsize(nick) as i, text_length(name) as j from people

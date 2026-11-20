@@ -2830,9 +2830,9 @@ on!(Postgres, init_keeps_a_publications_generated_columns, init_makes_a_wrapper_
 on!(Sqlite, a_virtual_tables_own_tables_are_not_in_the_dump);
 mod on_mysql {
     use super::*;
-    on!(Mysql, a_comment_made_by_hand_stops_nothing, a_comment_in_schema_sql_is_written, a_role_that_cannot_create_databases_is_told_of_shadow_url);
+    on!(Mysql, a_comment_made_by_hand_stops_nothing, a_comment_in_schema_sql_is_written, a_role_that_cannot_create_databases_is_told_of_shadow_url, a_grant_is_written_pushed_and_left_by_no_shadow, grants_an_account_cannot_read_back_are_refused);
 }
-on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, libsqls_own_sql_migrates, a_libsql_history_replays_on_a_branch_without_it, a_table_renamed_keeps_its_rows_key_and_counter);
+on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, libsqls_own_sql_migrates, a_libsql_history_replays_on_a_branch_without_it, a_table_renamed_keeps_its_rows_key_and_counter, a_turso_engines_own_tables_are_tursos);
 mod on_turso {
     use super::*;
     on!(Turso, a_virtual_tables_own_tables_are_not_in_the_dump, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, a_vector_indexs_own_tables_are_libsqls, libsqls_own_sql_migrates, a_libsql_history_replays_on_a_branch_without_it);
@@ -3674,6 +3674,51 @@ mod adversarial {
         let out = p.output();
         assert!(has(&out, r"revoke execute on function f\(\) from public"), "{out}");
         assert!(has(&out, r"comment on index t_x is 'by x'"), "{out}");
+    }
+
+    /// MySQL grants on a table and a column are written in a migration, checked, and pushed back
+    /// where one is taken away by hand. MySQL keeps a dropped database's grants, and no shadow's
+    /// outlives it.
+    pub async fn a_grant_is_written_pushed_and_left_by_no_shadow(mut p: P) {
+        p.exec("create user if not exists 'madv_reader'@'%'").await;
+        let shadows = "select count(*) as n from mysql.tables_priv where user = 'madv_reader' and db like 'reylo\\_shadow\\_%'";
+        p.schema("create table t (id int primary key, note text); grant select on t to 'madv_reader'@'%';");
+        p.file("20261120100000_t.sql", "create table t (id int primary key, note text);");
+        p.file("20261120100001_read.sql", "grant select on t to 'madv_reader'@'%';");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.output();
+        p.schema("create table t (id int primary key, note text); grant select on t to 'madv_reader'@'%'; grant update (note) on t to 'madv_reader'@'%';");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "note", &Default::default(), log).await).await, 0, "{}", p.peek());
+        p.output();
+        let written = p.files().into_iter().find(|f| f.ends_with("_note.sql")).unwrap();
+        let text = std::fs::read_to_string(p.dir.join("migrations").join(&written)).unwrap();
+        assert!(has(&text, r"grant update \(note\) on t to `madv_reader`@`%`"), "{text}");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.output();
+        let (code, out) = p.check_every_way().await;
+        assert_eq!(code, 0, "{out}");
+        p.exec("revoke select on t from 'madv_reader'@'%'").await;
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        assert_has!(p.output(), r"grant select on t to `madv_reader`@`%`");
+        assert_eq!(p.rows("select count(*) as n from mysql.tables_priv where user = 'madv_reader' and db = database() and table_priv = 'Select'").await[0].text("n"), "1");
+        assert_eq!(p.rows(shadows).await[0].text("n"), "0", "a shadow's grants outlived it");
+    }
+
+    /// An account with its database's privileges alone sees only its own grants in MySQL, so the
+    /// grants schema.sql makes would be planned from nothing: they are refused, naming what to grant.
+    pub async fn grants_an_account_cannot_read_back_are_refused(mut p: P) {
+        let role = "madv_noread";
+        p.exec(&format!("create user if not exists '{role}'@'%'; create user if not exists 'madv_reader'@'%'; grant all on `{}`.* to '{role}'@'%' with grant option", p.name)).await;
+        p.url = as_role(&p.url, role);
+        p.schema("create table t (id int primary key); grant select on t to 'madv_reader'@'%';");
+        assert_eq!(p.db_push().await, 1);
+        let out = p.output();
+        assert_has!(&out, r"✗ Can't plan the grants in schema\.sql");
+        assert_has!(&out, r"grant select on mysql\.tables_priv to 'madv_noread'@'%';");
+        // Nor does a migration written from it leave them out.
+        assert_ne!(p.run(async |o, log| reylo_migrate::create(o, "t", &Default::default(), log).await).await, 0);
+        assert_has!(p.output(), r"Can't plan the grants in schema\.sql");
+        assert!(p.files().is_empty(), "a migration was written: {:?}", p.files());
     }
 
     pub async fn a_comment_made_by_hand_stops_nothing(mut p: P) {
@@ -4668,6 +4713,85 @@ create trigger kids_note after insert on kids begin update parents set name = na
         assert_eq!(p.rows("select count(*) as n from vector_top_k('docs_emb', vector32('[1,2,3]'), 1)").await[0].text("n"), "1");
         // Dropped, the index leaves its settings table behind, which is still libSQL's.
         p.exec("drop index docs_emb").await;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+    }
+
+    /// The tables of Turso's engine in a file, by name: each `AUTOINCREMENT` table's sequence, with
+    /// its row.
+    async fn turso_tables(p: &P) -> Vec<String> {
+        let mut out = Vec::new();
+        for r in p.rows(r"select name from sqlite_schema where name like '\_\_turso\_internal\_%' escape '\' and name not like '%stray' order by name").await {
+            let name = r.text("name").to_string();
+            let row = p.rows(&format!("select value || ' ' || is_called as v from \"{name}\"")).await.iter().map(|r| r.text("v").to_string()).collect::<Vec<_>>().join(", ");
+            out.push(format!("{} {row}", name.trim_start_matches("__turso_internal_seq___turso_internal_autoincrement_")));
+        }
+        out
+    }
+
+    /// Turso's engine writes tables of its own into a SQLite file as ordinary ones, each
+    /// `AUTOINCREMENT` table's sequence among them (`__turso_internal_seq___turso_internal_autoincrement_<table>`),
+    /// drops and renames that with its table, and refuses to drop it by name. Every `__turso_internal_`
+    /// table is the engine's: no introspection, plan, status or wipe reads one, and as tables come, go,
+    /// are rebuilt and renamed, each `AUTOINCREMENT` table keeps one sequence, named after it.
+    pub async fn a_turso_engines_own_tables_are_tursos(mut p: P) {
+        let sequence = |t: &str| {
+            let name = format!("\"__turso_internal_seq___turso_internal_autoincrement_{t}\"");
+            format!("create table {name}(value INTEGER PRIMARY KEY,is_called INTEGER,start INTEGER,inc INTEGER,min INTEGER,max INTEGER,cycle INTEGER); insert into {name} values (1, 0, 1, 1, 1, 9223372036854775807, 0);")
+        };
+        let v1 = "create table posts (id integer primary key autoincrement, body text);\ncreate table notes (id integer primary key autoincrement, body text);\ncreate table tags (id integer primary key, name text);";
+        p.schema(v1);
+        p.file("20261027100000_v1.sql", v1);
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        // The file as the engine leaves it when it made the tables and wrote rows.
+        p.exec(&format!("{} {} insert into posts (body) values ('a'), ('b');", sequence("posts"), sequence("notes"))).await;
+        // A table of that name that the engine didn't define is never dropped or emptied.
+        let stray = "__turso_internal_seq___turso_internal_autoincrement_stray";
+        p.exec(&format!("create table {stray} (note text); insert into {stray} values ('kept');")).await;
+        let sql = reylo_migrate::db_introspect(&p.opts(), &[]).await.unwrap();
+        assert!(sql.contains("create table posts") && !sql.contains("__turso"), "{sql}");
+        let mut db = Db::connect(&p.url, &p.dir).await.unwrap();
+        let lines = catalog(&mut db).await.unwrap();
+        db.close().await;
+        assert!(!lines.iter().any(|l| l.contains("__turso")), "{lines:#?}");
+        p.output();
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        // `notes` goes, `posts` is rebuilt, `tags` is rebuilt with AUTOINCREMENT, and `events` comes.
+        p.schema("create table posts (id integer primary key autoincrement, body text check (length(body) < 100));\ncreate table tags (id integer primary key autoincrement, name text);\ncreate table events (id integer primary key autoincrement);");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "v2", &reylo_migrate::Choices { drop: vec!["notes".into()], ..Default::default() }, log).await).await, 0, "{}", p.peek());
+        let made = p.files().into_iter().find(|f| f.ends_with("_v2.sql")).unwrap();
+        let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
+        assert!(sql.contains("drop table notes") && !sql.contains("__turso"), "{sql}");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(turso_tables(&p).await, ["events 1 0", "posts 1 0", "tags 1 0"]);
+        // A run that fails partway still leaves each table it made with a sequence.
+        let code = p.run(async |o, log| reylo_migrate::run_sql(o, &[("make".into(), "create table drafts (id integer primary key autoincrement); begin; create table scraps (id integer primary key autoincrement); select * from missing;".into())], log).await).await;
+        assert_eq!(code, 1, "{}", p.peek());
+        assert_eq!(turso_tables(&p).await, ["drafts 1 0", "events 1 0", "posts 1 0", "tags 1 0"]);
+        // And so does one that ends with its transaction open, which closing rolls back.
+        let code = p.run(async |o, log| reylo_migrate::run_sql(o, &[("make".into(), "create table sketches (id integer primary key autoincrement); begin; create table scraps (id integer primary key autoincrement);".into())], log).await).await;
+        assert_eq!(code, 0, "{}", p.peek());
+        assert_eq!(turso_tables(&p).await, ["drafts 1 0", "events 1 0", "posts 1 0", "sketches 1 0", "tags 1 0"]);
+        p.exec("drop table drafts; drop table sketches").await;
+        p.exec("insert into posts (body) values ('c')").await;
+        assert_eq!(p.rows("select max(id) as n from posts").await[0].text("n"), "3");
+        // Renamed, `posts` takes its counter, which is `sqlite_sequence`'s, and its sequence is renamed.
+        p.schema("create table articles (id integer primary key autoincrement, body text check (length(body) < 100));\ncreate table tags (id integer primary key autoincrement, name text);\ncreate table events (id integer primary key autoincrement);");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "v3", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(turso_tables(&p).await, ["articles 1 0", "events 1 0", "tags 1 0"]);
+        p.exec("insert into articles (body) values ('d')").await;
+        assert_eq!(p.rows("select max(id) as n from articles").await[0].text("n"), "4");
+        // Wiped, each sequence starts again, as `sqlite_sequence` does.
+        p.exec("update \"__turso_internal_seq___turso_internal_autoincrement_articles\" set value = 4, is_called = 1").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::db_wipe(o, false, log).await).await, 0, "{}", p.peek());
+        assert_eq!(turso_tables(&p).await, ["articles 1 0", "events 1 0", "tags 1 0"]);
+        // Reset, the tables are made again, each with its sequence.
+        assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 0, "{}", p.peek());
+        assert_eq!(turso_tables(&p).await, ["articles 1 0", "events 1 0", "tags 1 0"]);
+        assert_eq!(p.rows("pragma integrity_check").await[0].text("integrity_check"), "ok");
+        assert_eq!(p.rows(&format!("select note from {stray}")).await[0].text("note"), "kept");
+        p.output();
         assert_eq!(p.status().await, 0, "{}", p.peek());
     }
 

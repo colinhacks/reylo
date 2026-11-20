@@ -1,11 +1,18 @@
 import type { Plugin } from 'vite';
 import { SHOW_RUST } from './languages.ts';
 
-/** The page that is Rust's alone, which the site builds only while SHOW_RUST is on. */
+/** The page that is Rust's alone. The site always builds it, at /rust; while SHOW_RUST is off it is unlisted. */
 export const RUST_PAGE = 'rust.mdx';
 
-/** Whether a file of content/docs is a page the site builds. */
-export const builtPage = (name: string) => name.endsWith('.mdx') && (SHOW_RUST || name !== RUST_PAGE);
+/** Whether a file of content/docs is a page the site builds: every one, the Rust page included. */
+export const builtPage = (name: string) => name.endsWith('.mdx');
+
+/**
+ * Whether a page is unlisted: reachable at its address, but in no list of pages (the sidebar, the
+ * pager, the sitemap, /llms.txt) and marked for search engines not to index. The Rust page, while
+ * the docs leave Rust out.
+ */
+export const unlistedPage = (slug: string) => !SHOW_RUST && `${slug}.mdx` === RUST_PAGE;
 
 /** What `<tag>…</tag>` wraps: whole lines, the tags on lines of their own, or a phrase inside a line. */
 const wrapped = (tag: string) => [new RegExp(`^<${tag}>\\n[\\s\\S]*?\\n</${tag}>\\n`, 'gm'), new RegExp(`<${tag}>.*?</${tag}>`, 'g')] as const;

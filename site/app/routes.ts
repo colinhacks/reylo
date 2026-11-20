@@ -4,8 +4,8 @@ import { builtPage } from '../lib/rust-content.ts';
 
 // The homepage at /, the pages at /docs (the intro) and /<name> (content/docs), each page's Markdown,
 // at /index.md and /<name>.md, the page a missing address gets, and the files beside them, each
-// rendered to a file at build time (react-router.config.ts). The Rust page is one only while the docs
-// show Rust (lib/languages.ts).
+// rendered to a file at build time (react-router.config.ts). The Rust page is one too, unlisted while
+// the docs leave Rust out (lib/rust-content.ts).
 const markdown = readdirSync('content/docs')
   .filter(builtPage)
   .map((name) => `${name.slice(0, -'.mdx'.length)}.md`);

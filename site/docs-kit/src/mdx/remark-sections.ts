@@ -27,8 +27,11 @@ type Node = {
 };
 type File = { value: unknown; data: Record<string, unknown> };
 
-/** A fenced code block, whole, from its opening fence to its closing one. */
-const FENCE = /^```[^\n]*\n[\s\S]*?^```$/gm;
+/**
+ * A fenced code block, whole, from its opening fence to its closing one, and the indent both fences
+ * share: a block inside a list item is indented to the item's text.
+ */
+const FENCE = /^([ \t]*)```[^\n]*\n[\s\S]*?^\1```$/gm;
 
 /** A fence's meta attribute, such as `tab="Postgres"`. */
 const attribute = (meta: string, name: string) => meta.match(new RegExp(`(?:^|\\s)${name}="([^"]*)"`))?.[1];
@@ -165,8 +168,14 @@ export function toAgentMarkdown(source: string, file?: { text: string; offset: n
   let out = '';
   let last = 0;
   for (const match of source.matchAll(FENCE)) {
-    const id = file && isQueried(match[0]) ? blockId(file.text, file.offset + match.index, match[0]) : undefined;
-    out += cleanProse(source.slice(last, match.index)) + cleanBlock(match[0], id);
+    // An indented block is cleaned without its indent and written back under it. Its id is taken
+    // from its opening backticks, where the block's node starts for `remarkQueryBlocks`.
+    const indent = match[1]!;
+    const block = match[0].slice(indent.length);
+    const start = match.index + indent.length;
+    const id = file && isQueried(block) ? blockId(file.text, file.offset + start, block) : undefined;
+    const lines = cleanBlock(block.replaceAll(`\n${indent}`, '\n'), id).split('\n');
+    out += cleanProse(source.slice(last, match.index)) + lines.map((line) => (line ? indent + line : line)).join('\n');
     last = match.index + match[0].length;
   }
   out += cleanProse(source.slice(last));

@@ -73,8 +73,6 @@ A script that runs against production is typed on your dev database, so its type
 DATABASE_URL="$PRODUCTION_URL" node --import reylo/register report.ts
 ```
 
-### TLS
-
 The type check reads TLS settings from the URL in `direct_url`:
 
 ```sh title=".env"
@@ -87,6 +85,8 @@ DATABASE_URL=mysql://…/app?ssl-mode=REQUIRED
 # mysql: the certificate and host checked
 DATABASE_URL=mysql://…/app?ssl-mode=VERIFY_IDENTITY
 ```
+
+The defaults, and the other settings each reads:
 
 - With no setting, a Postgres connection is encrypted where the server offers it, and a MySQL connection isn't.
 - Postgres also reads `sslrootcert`, `sslcert`, `sslkey` and `channel_binding`, as libpq does, and node-postgres's `ssl=true`.
@@ -139,6 +139,8 @@ Each query Reylo sends ends with a comment that names its file, in [sqlcommenter
 # the default is true
 sqlcommenter: false
 ```
+
+Each query then carries its file:
 
 ```sql title="What Postgres receives for queries/get_user.sql, by default"
 select id, name, email from users where id = $1::int /*file='queries%2Fget_user.sql'*/

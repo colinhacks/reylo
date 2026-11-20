@@ -673,8 +673,30 @@ code {
    strip, in mono, quieter than the tabs, with a file glyph, so the group has
    one bar: which variant on the left, which file on the right
    (components/code-tabs.tsx). */
+/* The tabs fill the strip's height, so the active tab's rule, which Fumadocs pins to the tab's
+   foot, sits on the strip's lower edge; the file name and the switch, taller than a tab, are what
+   set that height and stay centred in it. With the strip's items centred instead, every tab ended
+   2.5px short of the edge and its rule floated above it. */
 .dk-code-tabs [role='tablist'] {
-  align-items: center;
+  align-items: stretch;
+}
+
+.dk-code-tabs [role='tablist'] > :not([role='tab']) {
+  align-self: center;
+}
+
+/* A tab's label sat 0.36px high in its tab, in code tabs and in Fumadocs' `<Tabs>` alike
+   (ink-align.mjs, 2026-11-20): the padding moves it down by that much, and the tab, with the
+   active tab's rule at its foot, stays where it is. */
+.dk-code-tabs [role='tablist'] > [role='tab'] {
+  padding-block: calc(0.375rem + 0.2px) calc(0.375rem - 0.2px);
+}
+
+#nd-page [role='tablist']:not(.dk-code-tabs [role='tablist'], .dk-variant-switch [role='tablist']) > [role='tab'] {
+  /* Text snaps to whole pixels, so a fraction of padding moved nothing: a line a pixel taller,
+     and a pixel less padding under it, centres the label half a pixel lower at the same height. */
+  padding-block: 0.5rem calc(0.5rem - 1px);
+  line-height: calc(1.25rem + 1px);
 }
 
 /* A tab strip wraps instead of scrolling sideways when its tabs outrun the column: in the 40rem
@@ -1089,6 +1111,45 @@ code {
    its own copy icon (it was a card of its own). The code block shows six lines and scrolls: Fumadocs' scroll
    box, the code block's one `overflow-auto` child, sets each line at 1.7em of its 13px and pads
    14px above and below. */
+/* The agent card's footer: "Copy instructions" at its right, filled with the accent. */
+#nd-page .dk-agent-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.875rem;
+}
+
+#nd-page .dk-agent-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  height: 2.125rem;
+  padding: 0 0.875rem;
+  border-radius: 0.5rem;
+  background: var(--color-fd-primary);
+  color: hsl(0 0% 6%);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: filter 120ms;
+}
+
+#nd-page .dk-agent-copy:hover {
+  filter: brightness(1.08);
+}
+
+#nd-page .dk-agent-copy svg {
+  width: 0.9375rem;
+  height: 0.9375rem;
+  /* It sat 0.4px low beside its label (ink-align.mjs, 2026-11-20). */
+  translate: 0 -0.4px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 #nd-page .dk-agent .dk-callout-body figure {
   margin-bottom: 0;
 }
@@ -1674,10 +1735,13 @@ html #nd-page .prose table {
 /* A page named for a file (`code` in its entry) is a chip, as a code token in the table of contents
    is: the entry's colour on a faint wash, a stronger one where it is hovered or the page is read. */
 .dk-pages-item code {
-  border-radius: 0.3125rem;
-  padding: 0.0625rem 0.3125rem;
+  /* The table of contents' chip, 23px tall: a flex item is a block, so it takes the inline chip's
+     height from its line, and gives back the 3px it adds to its row, so every entry stays 20px. */
+  border-radius: 0.375rem;
+  padding: 0.1875rem 0.375rem;
+  margin-block: -1.5px;
   font-size: 0.9em;
-  line-height: 1;
+  line-height: 1.3;
   color: inherit;
   background-color: color-mix(in oklab, var(--dk-code-tint) var(--dk-wash-toc), transparent);
   transition: background-color 120ms;
@@ -1857,6 +1921,15 @@ html #nd-page .prose table {
   color: var(--color-fd-headings);
 }
 
+/* A page named for a file (`code` in its entry) keeps the inline code chip of the text, at the size
+   a heading's code takes: the pager sits outside the prose, whose rule paints it. */
+#nd-page .dk-pager-title code {
+  font-size: 0.86em;
+  padding: 0.15em 0.35em;
+  border-radius: 0.3125rem;
+  background-color: color-mix(in oklab, var(--dk-code-tint) var(--dk-wash-code), transparent);
+}
+
 @media (max-width: 639px) {
   #nd-page .dk-pager {
     grid-template-columns: minmax(0, 1fr);
@@ -1864,5 +1937,386 @@ html #nd-page .prose table {
 
   #nd-page .dk-pager .dk-pager-next {
     grid-column: 1;
+  }
+}
+
+/* ── Search (`DocsDocument`'s `search`) ────────────────────────────────────────
+   A site of several pages with a search index (README, "Search"). What opens it is a field under
+   the name in the left column, drawn as a button: the entries' size on the column's hairline. On a
+   phone the same field heads the list of pages, a finger tall, and the top row has an icon. */
+.dk-search-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  height: 2rem;
+  margin-bottom: 1.5rem;
+  /* The icon's ink and the keys' sit 10.5px and 10.25px in from the field's edges. */
+  padding: 0 0.5625rem 0 0.5rem;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.5rem;
+  font-size: 0.90625rem;
+  line-height: 1.25rem;
+  color: var(--color-fd-muted-foreground);
+  background: var(--color-fd-card);
+  transition: color 120ms, border-color 120ms;
+}
+
+.dk-search-field:hover {
+  color: var(--color-fd-foreground);
+  border-color: color-mix(in oklab, var(--color-fd-foreground) 24%, var(--color-fd-border));
+}
+
+.dk-search-field:focus-visible,
+.dk-search-close:focus-visible {
+  outline: 2px solid var(--color-fd-ring);
+  outline-offset: 1px;
+}
+
+/* The icon sat 0.56px low beside the label (optical-spacing, 2026-11-20). */
+.dk-search-field > svg {
+  flex: none;
+  translate: 0 -0.5px;
+}
+
+.dk-search-field > span {
+  flex: 1;
+  text-align: start;
+}
+
+.dk-search-field kbd {
+  display: flex;
+  gap: 0.125rem;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.75rem;
+  line-height: 1;
+  opacity: 0.8;
+}
+
+/* The name sits closer over the field than over the pages. */
+.dk-pages-brand:has(+ .dk-search-field) {
+  margin-bottom: 1.125rem;
+}
+
+.dk-pages-sheet .dk-search-field {
+  height: 2.5rem;
+  margin-bottom: 1.25rem;
+  padding-inline: 0.75rem;
+}
+
+.dk-pages-sheet .dk-search-field kbd {
+  display: none;
+}
+
+.dk-pages-sheet .dk-pages-scroll:has(> .dk-search-field) {
+  padding-block-start: 0.25rem;
+}
+
+/* The dialog: one field near the top of the window, the results growing down from it. The page
+   behind is dimmed and held still; the gutter keeps a classic scrollbar's room, so nothing shifts. */
+html:has(.dk-search[open]) {
+  overflow: hidden;
+  scrollbar-gutter: stable;
+}
+
+.dk-search {
+  --dk-search-top: clamp(1rem, 12vh, 7rem);
+  width: min(40rem, calc(100vw - 2rem));
+  max-width: none;
+  max-height: min(36rem, calc(100dvh - var(--dk-search-top) - 1rem));
+  margin: var(--dk-search-top) auto 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.875rem;
+  color: var(--color-fd-popover-foreground);
+  background: var(--color-fd-popover);
+  box-shadow: 0 24px 60px -20px rgb(15 23 42 / 0.3), var(--dk-popover-shadow);
+}
+
+.dark .dk-search {
+  box-shadow: 0 24px 60px -20px rgb(0 0 0 / 0.8), var(--dk-popover-shadow);
+}
+
+/* Only while open: `display` on the dialog itself would show it closed. */
+.dk-search[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.dk-search::backdrop {
+  background: rgb(15 23 42 / 0.28);
+}
+
+.dark .dk-search::backdrop {
+  background: rgb(0 0 0 / 0.62);
+}
+
+@keyframes dk-search-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.375rem) scale(0.985);
+  }
+}
+
+@keyframes dk-search-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .dk-search[open] {
+    animation: dk-search-in 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  .dk-search[open]::backdrop {
+    animation: dk-search-fade 140ms ease-out;
+  }
+}
+
+.dk-search-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  height: 3.25rem;
+  /* The icon over the results' icons and the field's text over their titles; the close button's
+     right edge over the right edge of their text. */
+  padding: 0 1.25rem 0 1.1875rem;
+  color: var(--color-fd-muted-foreground);
+}
+
+/* The field's text sits 0.44px under the middle of the row, and the icon with it. */
+.dk-search-head > svg {
+  flex: none;
+  translate: 0 0.5px;
+}
+
+/* 16px, under which a phone zooms the page in on a field as it takes the focus. */
+.dk-search-head input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  font-size: 1rem;
+  line-height: 1.5rem;
+  color: var(--color-fd-headings);
+  background: none;
+  outline: none;
+}
+
+.dk-search-head input::placeholder {
+  color: var(--color-fd-muted-foreground);
+  opacity: 0.85;
+}
+
+.dk-search-close {
+  flex: none;
+  display: flex;
+  border-radius: 0.375rem;
+  transition: color 120ms;
+}
+
+.dk-search-close:hover {
+  color: var(--color-fd-foreground);
+}
+
+.dk-search-close kbd {
+  display: flex;
+  align-items: center;
+  height: 1.375rem;
+  /* Lower case has no capitals to centre: its letters sat 0.8px low, and text moves a whole pixel. */
+  padding: 0 0.375rem 2px;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.375rem;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.dk-search-close svg {
+  display: none;
+}
+
+/* A device with no keyboard has no Escape: the button is a cross, a finger wide, its ink's right
+   edge where the chip's was. */
+@media (pointer: coarse) {
+  .dk-search-close {
+    margin-inline-end: -0.75rem;
+    padding: 0.5rem;
+  }
+
+  .dk-search-close kbd {
+    display: none;
+  }
+
+  .dk-search-close svg {
+    display: block;
+  }
+}
+
+.dk-search-note,
+.dk-search-list {
+  border-top: 1px solid var(--color-fd-border);
+}
+
+.dk-search-note {
+  padding: 1.75rem 1rem;
+  text-align: center;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--color-fd-muted-foreground);
+  overflow-wrap: anywhere;
+}
+
+/* An index that arrives at once never says it is loading: the note takes no room for its first
+   400ms, so a quick index leaves nothing to flash. */
+@keyframes dk-search-wait {
+  0%,
+  99% {
+    height: 0;
+    padding-block: 0;
+    border-top-width: 0;
+    opacity: 0;
+  }
+}
+
+.dk-search-wait {
+  overflow: hidden;
+  animation: dk-search-wait 400ms both;
+}
+
+.dk-search-list {
+  flex: 1;
+  min-height: 0;
+  padding: 0.5rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: 0.5rem;
+}
+
+.dk-search-group + .dk-search-group {
+  margin-top: 0.25rem;
+}
+
+/* A result: its icon, its title and, when the query matched under the title, that text. A page's
+   sections sit under it, their icons under the page's title. The marked row is the one Enter
+   follows; a pointer moving over a row marks it, so there is no hover of its own. */
+.dk-search-row {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  column-gap: 0.75rem;
+  padding: 0.4375rem 0.75rem;
+  border-radius: 0.5rem;
+  color: var(--color-fd-muted-foreground);
+}
+
+/* A section's icon starts where the page's title does, ink to ink. */
+.dk-search-row[data-section] {
+  padding-inline-start: 2.375rem;
+}
+
+.dk-search-row[aria-selected='true'] {
+  background: color-mix(in oklab, var(--dk-code-tint) var(--dk-wash-toc), transparent);
+}
+
+.dk-search-row > svg {
+  margin-top: 0.125rem;
+}
+
+.dk-search-title,
+.dk-search-excerpt {
+  grid-column: 2;
+}
+
+.dk-search-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.90625rem;
+  line-height: 1.25rem;
+  color: var(--color-fd-foreground);
+}
+
+.dk-search-row:not([data-section]) .dk-search-title {
+  font-weight: 600;
+  color: var(--color-fd-headings);
+}
+
+.dk-search-trail::after {
+  content: '›';
+  padding: 0 0.375rem;
+}
+
+.dk-search-trail {
+  color: var(--color-fd-muted-foreground);
+}
+
+.dk-search-excerpt {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin-top: 0.125rem;
+  font-size: 0.8125rem;
+  line-height: 1.125rem;
+}
+
+/* A line of a code block: one line, as code. */
+.dk-search-excerpt[data-code] {
+  display: block;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dk-search-row code {
+  border-radius: 0.25rem;
+  padding: 0.0625rem 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: color-mix(in oklab, var(--dk-code-tint) var(--dk-wash-toc), transparent);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.dk-search-row[aria-selected='true'] code {
+  background: color-mix(in oklab, var(--dk-code-tint) var(--dk-wash-toc-active), transparent);
+}
+
+.dk-search-excerpt[data-code] code {
+  padding: 0;
+  background: none;
+}
+
+/* What the query matched: the accent's wash, a pixel past the letters at each end. A box of its
+   own, so its height is the line's and not the face's ascent and descent, which on a face with a
+   tall line box ran the wash into the lines above and below. */
+.dk-search-row mark {
+  display: inline-block;
+  margin: 0 -1px;
+  padding: 0 1px;
+  border-radius: 0.1875rem;
+  line-height: 1.3;
+  color: inherit;
+  background: color-mix(in oklab, var(--dk-accent) 28%, transparent);
+}
+
+.dk-search-excerpt mark {
+  color: var(--color-fd-foreground);
+}
+
+/* A phone: the whole screen, so the results have all the room the keyboard leaves. */
+@media (max-width: 39.99rem) {
+  .dk-search {
+    width: 100vw;
+    height: 100dvh;
+    max-height: none;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .dk-search-head {
+    height: 3.5rem;
   }
 }

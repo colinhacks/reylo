@@ -1,0 +1,1 @@
+select math_floor(score) as a, math_ceil(score) as b, math_sqrt(score) as c, math_ln(score) as d, math_pi() as e, math_round(score, 1) as f, math_pow(score, 2) as g, math_mod(score, 3) as h, floor(score) as i, sqrt(:x) as j from people

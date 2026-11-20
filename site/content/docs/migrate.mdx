@@ -259,6 +259,14 @@ grant select on room_totals to reporting;
 comment on column users.verified_at is 'When they confirmed their email';
 ```
 
+On MySQL, an account sees only its own grants unless it may read the privilege tables. An account that isn't an administrator needs them granted:
+
+```sql
+grant select on mysql.tables_priv to 'app'@'%';
+grant select on mysql.columns_priv to 'app'@'%';
+grant select on mysql.procs_priv to 'app'@'%';
+```
+
 A change to any of them is a migration:
 
 ```sql title="schema.sql"
@@ -266,12 +274,14 @@ create policy docs_read on docs for select to reader using (owner_name = current
 create policy docs_read on docs for select to reader, writer using (owner_name = current_user or body is null); -- [!code ++]
 ```
 
+It writes this migration:
+
 ```sql title="20261106120000_writers_read.sql"
 drop policy docs_read on docs;
 create policy docs_read on docs for select to reader, writer using (owner_name = current_user or body is null);
 ```
 
-Text search configurations, security labels and a few other kinds are compared by name only, or not at all: write their changes by hand.
+Text search configurations, security labels and a few other kinds are compared by name only, or not at all: write them, and their changes, by hand. On MySQL, so is a routine, trigger or event made under another `sql_mode` than the server's.
 
 ## Schemaless mode
 
@@ -363,33 +373,46 @@ To turn the lock back on, run `reylo migrate lock`.
 
 ## CLI <code className="dk-aside">reylo migrate</code> [#cli-reylo-migrate]
 
-Every command and flag:
+The migration commands:
 
 ```terminal
-Usage: reylo <group> <command> [flags]
+Usage: reylo migrate <command> [flags]
 
 Commands:
-  migrate init             Start from this database
+  init                     Start from this database
     --schema <name>        A schema to read (Postgres; public by default)
-  migrate new <name>       Write the next migration, from schema.sql or this database
+  new <name>               Write the next migration, from schema.sql or this database
     --drop <names>         Accept what it drops: tables and columns
     --rename <old>=<new>   Say a table or column was renamed
     --blocking             Accept a statement that blocks writes while it reads every row
-  migrate dev              Take this database to the migrations, and lock them
-  migrate deploy           Run what the lock lists, with no shadow database
+  dev                      Take this database to the migrations, and lock them
+  deploy                   Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
-  migrate status           Check that this database and the files are in step
-  migrate lock             Write the lock from this database's history
-  migrate history push     Record the migrations this database's schema has
-  migrate history pull     Write the migrations this database ran into files
-  db push                  Take this database to schema.sql, unrecorded
+  status                   Check that this database and the files are in step
+  lock                     Write the lock from this database's history
+  history push             Record the migrations this database's schema has
+  history pull             Write the migrations this database ran into files
+
+Flags:
+  --url <url>              The database, in place of direct_url
+  --json                   Print the result as one JSON object
+  -h, --help               Print this help
+```
+
+And the commands that work on a development database directly:
+
+```terminal
+Usage: reylo db <command> [flags]
+
+Commands:
+  push                     Take this database to schema.sql, unrecorded
     --drop <names>         Accept what it drops: tables and columns
     --rename <old>=<new>   Say a table or column was renamed
     --force                Accept everything it drops
     --watch                Push again on each save
-  db reset                 Rebuild this database from the migrations
-  db wipe                  Delete every row, keeping the schema
-  db introspect            Print this database's schema as SQL
+  reset                    Rebuild this database from the migrations
+  wipe                     Delete every row, keeping the schema
+  introspect               Print this database's schema as SQL
     --schema <name>        A schema to read (Postgres; public by default)
 
 Flags:
@@ -397,6 +420,8 @@ Flags:
   --json                   Print the result as one JSON object
   -h, --help               Print this help
 ```
+
+Some commands only run in development:
 
 <Callout title="Development only">
 
@@ -459,6 +484,8 @@ create table users (
 );
 ```
 
+Writing its migration is refused:
+
 ```terminal
 $ reylo migrate new drop_bio
 ✗ This migration drops the column users.bio and its data
@@ -479,6 +506,8 @@ create table users (
   about text -- [!code ++]
 );
 ```
+
+Writing its migration keeps the rows:
 
 ```terminal
 $ reylo migrate new rename_bio
@@ -592,6 +621,8 @@ It needs no shadow database. It refuses to run:
 
 - **On an edited schema file.** A `schema.sql` that doesn't match the lock's checksum.
 - **On a database changed by hand.** Each migration stores a fingerprint of the schema, and a database that no longer matches it is refused, a hand-added index included.
+
+The refusal shows the change:
 
 ```terminal
 $ reylo migrate deploy
@@ -732,6 +763,8 @@ create table users (
 );
 ```
 
+Push it:
+
 ```terminal
 $ reylo db push
 Pushing reylo/schema.sql to postgres://localhost:5432/app
@@ -750,6 +783,8 @@ create table users (
   bio text -- [!code ++]
 );
 ```
+
+The push is refused:
 
 ```terminal
 $ reylo db push
@@ -872,13 +907,11 @@ Most commands use shadow databases: throwaway databases where Reylo Migrate repl
 
 Each database makes them its own way:
 
-- **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do the roles Neon and Supabase give you. Reylo Migrate keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new. On Azure Database for PostgreSQL, list each extension your migrations create in the server's `azure.extensions` parameter first, or no shadow can create it. Timescale Cloud refuses `create database`, so point `shadow_url` at a server with TimescaleDB and `timescaledb_toolkit`, such as the `timescale/timescaledb-ha` image.
+- **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do the roles Neon and Supabase give you. Reylo Migrate keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new. On Azure Database for PostgreSQL, list each extension your migrations create in the server's `azure.extensions` parameter first, or no shadow can create it. Timescale Cloud refuses `create database`, so point `shadow_url` at a server with TimescaleDB and `timescaledb_toolkit`, such as the `timescale/timescaledb-ha` image. On Supabase, each shadow also gets Supabase's extensions and schemas, such as `auth` and `storage`, so a migration that references `auth.users` replays as it runs.
 - **MySQL:** on your database's server, with `create database`, so your user needs the `CREATE` privilege on every database. PlanetScale's Vitess refuses `create database`, so point `shadow_url` at a plain MySQL 8.4 server.
 - **SQLite:** in memory. There's nothing to grant. A Turso database's shadows run on libSQL's own engine, as Turso Cloud does ([Turso](/turso#migrations)).
 
 A migration that would reach past its shadow is refused: one that changes a role, a database, a tablespace or a server setting, and on MySQL one that names a database, as in `app.users`. Code inside a `do` block or a function isn't checked, so keep it from changing those.
-
-On Supabase, each shadow also gets Supabase's extensions and schemas, such as `auth` and `storage`, so a migration that references `auth.users` replays as it runs.
 
 Where your role can't create a database, point `shadow_url` at a server that can, running the same version:
 

@@ -322,7 +322,7 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
     let list: BTreeMap<String, Row> = db.rows("select name, type, strict, wr from pragma_table_list where schema = 'main'").await?.into_iter().map(|r| (fold(r.text("name")), r)).collect();
     let shadow = |name: &str| list.get(&fold(name)).is_some_and(|r| r.text("type") == "shadow");
     let rows: Vec<Row> = db
-        .rows(&format!("select type, name, tbl_name as tbl, sql from sqlite_schema where name not like 'sqlite_%' and tbl_name <> '{HISTORY_TABLE}' and sql is not null and {} order by rowid", crate::catalog::NOT_LIBSQL_VECTOR_OWN))
+        .rows(&format!("select type, name, tbl_name as tbl, sql from sqlite_schema where name not like 'sqlite_%' and tbl_name <> '{HISTORY_TABLE}' and name {turso} and tbl_name {turso} and sql is not null and {} order by rowid", crate::catalog::NOT_LIBSQL_VECTOR_OWN, turso = crate::catalog::NOT_TURSO_OWN))
         .await?
         .into_iter()
         .filter(|r| !shadow(r.text("tbl")))
@@ -526,6 +526,15 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
     for (id, info) in infos {
         if let Some(o) = s.objects.get_mut(&id) {
             o.extra = info.lines();
+        }
+    }
+    // What the file keeps of the project's own, where it is set: `pragma user_version` and
+    // `pragma application_id`. One the target no longer sets is left as it is, as an app may set
+    // its own.
+    for pragma in ["user_version", "application_id"] {
+        let value = db.rows(&format!("select {pragma} as v from pragma_{pragma}")).await?.first().map(|r| r.text("v").to_string()).unwrap_or_default();
+        if !value.is_empty() && value != "0" {
+            s.add(Object { id: format!("pragma {pragma}"), kind: Some(Kind::ColumnSetting), def: value.clone(), create: vec![format!("pragma {pragma} = {value}")], ..Object::default() });
         }
     }
     Ok(s)

@@ -15,6 +15,8 @@ D1 is SQLite, so everything on the [SQLite](/sqlite) page holds for it. A Durabl
 | Postgres and MySQL in a Worker | Neon's serverless driver and PlanetScale's need nothing more. postgres.js, `pg`, `mysql2` and `mariadb` need Node's APIs: a compatibility date from 2026-08-04 on, or the `nodejs_compat` flag. Through Hyperdrive, which refuses prepared statements, Reylo runs [`mysql2`](/mysql#mysql2) through `query()` ([Cloudflare Hyperdrive](/hyperdrive)) |
 | Example | [cloudflare-workers](https://github.com/reylosql/reylo/tree/main/examples/cloudflare-workers), a Worker with D1 and a Durable Object that runs locally with no Cloudflare account |
 
+The examples on this page use this schema:
+
 <Details summary="View the schema behind the examples" id="schema">
 
 ```sql file="schema.sql" dialect="sqlite"
@@ -42,6 +44,8 @@ export default defineConfig({
 });
 ```
 
+Two notes on the setup:
+
 - Import each `.sql` file by a relative path. A path through an alias, such as a tsconfig `paths` entry, reaches the Cloudflare plugin's text rule before Reylo.
 - A Worker that only uses D1 needs no `nodejs_compat` flag.
 
@@ -58,6 +62,8 @@ Your [migrations](#migrations) create it:
 ```sh
 reylo migrate dev
 ```
+
+About that file:
 
 - Set it in `.reylo.yaml`, not in `.env`: Wrangler loads `.env` into the Worker as secrets.
 - Keep it apart from the local D1 database that Wrangler keeps, which Wrangler migrates itself.
@@ -85,6 +91,8 @@ export default {
 select id, name, email from users where id = :id
 ```
 
+D1 differs from SQLite in two ways:
+
 - D1 has no transaction a query can join. Its `batch()` takes D1's own prepared statements.
 - D1 rounds an integer past 2^53, so Reylo throws an error rather than return it, even for a `BIGINT` column.
 
@@ -100,6 +108,8 @@ Write your migrations with [`reylo migrate`](/migrate/docs), and let Wrangler ru
   ]
 }
 ```
+
+Then apply them:
 
 ```sh
 wrangler d1 migrations apply DB --remote
@@ -170,6 +180,8 @@ Wrangler's own bundler takes no plugins, but it runs a custom build first, on `w
   "build": { "command": "node build.ts", "watch_dir": ["src", "queries"] }
 }
 ```
+
+And the build script:
 
 ```ts title="build.ts"
 import * as esbuild from "esbuild";

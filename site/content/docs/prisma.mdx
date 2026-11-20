@@ -14,6 +14,8 @@ description: How to move a Prisma project's queries to Reylo. The schema changes
 | Needs | TypeScript 7.1 (currently in nightly builds), and a migrated database wherever the type check or the build runs |
 | Examples | Postgres |
 
+The examples on this page use this schema:
+
 <Details summary="View the schema behind the examples" id="schema">
 
 ```sql file="schema.sql" dialect="postgres"
@@ -69,6 +71,8 @@ where u.id = :id
 
 </InferenceCard>
 
+What you gain:
+
 - **A page's numbers in one row.** A dozen `count` and `aggregate` calls are a dozen round trips; as scalar subqueries, they are one statement ([Counts](#counts)).
 - **Writes that read back.** An insert, an update or an upsert returns the rows it wrote, and a `with` query runs several writes in one statement.
 - **Types from the database.** Nullability, cardinality, enum labels and JSON shapes come from the schema and the statement, so a migration that changes a column fails the type check wherever the column is read.
@@ -97,6 +101,8 @@ In one production app's migration, of about 750 Prisma Client calls, a billing r
 - **Count what moves:** every Prisma Client call, `$queryRaw`, `$executeRaw` and `$transaction`, and every folder that holds them. A folder that `tsconfig.json` leaves out is never type-checked, so check its queries with a `tsconfig` of its own.
 - **Keep the branch short.** A long-lived branch pays for `main` at each sync: new Prisma calls to convert, and re-indented code that reads as conflict. Re-apply what `main` changed onto the `.sql`, rather than taking either side.
 - **Give your pool an error listener**, on the pool and on each connection a transaction takes. Prisma's adapter had both, and without them Node exits when the database drops an idle connection.
+
+With `pg`, the listener looks like this:
 
 ```ts title="db.ts"
 import pg from "pg";
@@ -131,6 +137,8 @@ alter table "users"
   alter column "createdAt" set data type timestamptz,
   alter column "updatedAt" set data type timestamptz;
 ```
+
+Why this migration is safe:
 
 - **In UTC, no value moves.** Postgres reads each `timestamp` in the session's zone as it converts it, and Prisma wrote them in UTC. In UTC, it also rewrites no rows.
 - **Plain `timestamptz`**, not `timestamptz(3)`, which rewrites the table.
@@ -177,6 +185,8 @@ create trigger set_updated_at before update on "users"
   for each row execute function set_updated_at();
 ```
 
+How the trigger behaves:
+
 - **An update that sets `"updatedAt"` itself** keeps its value.
 - **Every `return` returns `new`**, so an upsert on the table still returns a row. A trigger that may return `null` can skip a row, and the upsert then returns a row or `null`.
 - **A new table needs its trigger** added to its migration by hand, since Prisma's schema has no triggers.
@@ -201,6 +211,8 @@ Reylo types each query against a database with your migrations applied, so every
 - **In CI**, start Postgres, run `prisma migrate deploy`, and then the type check ([In CI](/faq#in-ci)).
 - **On a host that migrates during the build**, such as Vercel, build against a fresh database: create it, run `prisma migrate deploy` into it, point [`direct_url`](/configuration#direct_url) at it for the build, and drop it. Then migrate the deployment's own database. The build types against exactly the schema the commit's migrations make, and no migration reaches production without applying cleanly first.
 - **Each query keeps the types of the schema it was built against.** A column it names that a migration retypes or makes nullable can return values those types rule out, a query naming a dropped or renamed column fails with the database's error, and a new column, a new default or a new `NOT NULL` changes nothing it reads. So add before you remove: the new column first, then the code that uses it, then the drop ([Deploying](/configuration#direct_url)).
+
+For the type check itself:
 
 ```yaml title=".reylo.yaml"
 # the type check's database; a build points it at a fresh, migrated one

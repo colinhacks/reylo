@@ -1,0 +1,1 @@
+select levenshtein(name, :q) as a, dlevenshtein(name, 'b') as b, edit_distance(name, 'ab') as c, osa_distance(name, 'ba') as d, hamming(name, 'a') as e, jaro_winkler(name, 'x') as f from people where name not glob '*[^ -~]*'

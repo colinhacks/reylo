@@ -1,0 +1,1 @@
+select name, median(score) as a, percentile(score, 50) as b, percentile_90(score) as c, stddev(score) as d, variance(score) as e, var_pop(score) as f, stddev_samp(score) as g from people group by name
