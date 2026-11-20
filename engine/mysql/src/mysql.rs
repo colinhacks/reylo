@@ -1577,6 +1577,11 @@ fn bit_results(q: &Query, raw: &MysqlDescribe, views: Option<&HashSet<String>>, 
             _ => false,
         }
     }
+    // A query in parentheses is the query inside them: its columns and their values are the same.
+    let mut q = q;
+    while let SetExpr::Query(inner) = q.body.as_ref() {
+        q = &**inner;
+    }
     let SetExpr::Select(select) = q.body.as_ref() else { return Some(Vec::new()) };
     if select.projection.len() != raw.columns.len() {
         // A wildcard's columns, which the select list's own expressions are not told from.
