@@ -1,10 +1,10 @@
 {
   "from": "/Users/colin/Documents/docs-kit",
-  "commit": "dcd1f2a",
+  "commit": "090b827",
   "files": {
     "package.json": "af6396782b451920bfadc86f431074008257e5062bb8a4a5f7408ade217bcc04",
     "README.md": "20458294b6e1cab4ab2067429eda29eada9433f343baaddfc76796bafef2e575",
-    "src/check-headings.mjs": "01f9ad56229af443710e08809540b79c66e015c4233f560dbf9cb7a7ae435aad",
+    "src/check-headings.mjs": "9aa040f1069c4213c577e6b739408dcf14ebec299ea4bf0e9996b31b8fa91786",
     "src/check-links.mjs": "583a7feb973892d8af9fb1f8d4e6a2ad3ccd3b57e2433af53df907c75870d8a2",
     "src/components/accordion.tsx": "65898714e28a656eac74f629de9973720b5f081a3ac5046d1abe2efee5f5ff3d",
     "src/components/agent-prompt.tsx": "d1e32a7e1f139785324418720f25d8a82d781eca0ff123fb8dd0bd1e4c84ca01",
