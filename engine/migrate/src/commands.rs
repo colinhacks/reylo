@@ -5735,7 +5735,11 @@ pub async fn run_sql(opts: &Options, items: &[(String, String)], log: Log<'_>) -
         }
     }
     // What ran before a statement that failed may have committed, so the sequences follow it either
-    // way; a failure of their own is reported where the SQL itself ran.
+    // way: after the transaction the failure left open is rolled back, as closing would, so that it
+    // takes nothing with it. A failure of their own is reported where the SQL itself ran.
+    if code != 0 && db.dialect() == Dialect::Sqlite {
+        let _ = db.exec("rollback").await;
+    }
     let kept = crate::catalog::keep_turso_sequences(&mut db).await;
     db.close().await;
     if code == 0 {

@@ -4765,7 +4765,7 @@ create trigger kids_note after insert on kids begin update parents set name = na
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_eq!(turso_tables(&p).await, ["events 1 0", "posts 1 0", "tags 1 0"]);
         // A run that fails partway still leaves each table it made with a sequence.
-        let code = p.run(async |o, log| reylo_migrate::run_sql(o, &[("make".into(), "create table drafts (id integer primary key autoincrement); select * from missing;".into())], log).await).await;
+        let code = p.run(async |o, log| reylo_migrate::run_sql(o, &[("make".into(), "create table drafts (id integer primary key autoincrement); begin; create table scraps (id integer primary key autoincrement); select * from missing;".into())], log).await).await;
         assert_eq!(code, 1, "{}", p.peek());
         assert_eq!(turso_tables(&p).await, ["drafts 1 0", "events 1 0", "posts 1 0", "tags 1 0"]);
         p.exec("drop table drafts").await;
