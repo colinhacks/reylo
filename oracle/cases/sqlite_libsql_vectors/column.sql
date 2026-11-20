@@ -1,0 +1,1 @@
+select emb from docs

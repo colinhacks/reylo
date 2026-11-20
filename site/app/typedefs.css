@@ -11,7 +11,7 @@
   margin-block: 0 1.875rem;
 }
 
-/* A badge in two halves, as a project's README shows its version. */
+/* A badge, as a project's README shows its version: the stage while the format is a preview, then the version. */
 #nd-page .typedef-badge {
   display: inline-flex;
   overflow: hidden;

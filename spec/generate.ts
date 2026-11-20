@@ -1,12 +1,13 @@
 // `nub run typedefs` at the root: the TypeScript of the type descriptor format, spec/index.ts,
 // generated from its JSON Schema, spec/typedefs.schema.json, which is the source of truth; the
-// schema as reylo.dev publishes it, site/public/typedefs/<version>.json, the version its `$id` names;
+// schema as reylo.dev publishes it, site/public/typedefs/<name>.json, the name its `$id` gives it;
 // and spec/examples.json, the examples of spec/examples.ts as JSON, which the engine's own tests read
-// (engine/core/src/types.rs). A version's published file stays as the newest release tag holds it,
-// so a descriptor of a released version still validates against its own: a schema that would change
-// it is refused, whether writing or checking, and needs a new version. A version no tag carries is
-// free to change. With `--check`, nothing is written, and a file that differs from what its source
-// gives fails.
+// (engine/core/src/types.rs). Until 1.0.0 the format is a preview, published as preview.json and
+// rewritten in place. From 1.0.0 a version's published file stays as the newest release tag holds
+// it, so a descriptor of a released version still validates against its own: a schema that would
+// change it is refused, whether writing or checking, and needs a new version. A version no tag
+// carries is free to change. With `--check`, nothing is written, and a file that differs from what
+// its source gives fails.
 //
 // The schema keeps to a small idiom, which this reads and refuses to go beyond: each definition is an
 // object (whose `allOf` names the definitions it extends), a union of definitions (`anyOf`), or a list
@@ -24,8 +25,8 @@ const source = path.join(root, "spec", "typedefs.schema.json");
 const check = process.argv.includes("--check");
 const schema = JSON.parse(readFileSync(source, "utf8")) as Schema;
 const defs = schema.$defs as Record<string, Schema>;
-const version = /^https:\/\/reylo\.dev\/typedefs\/(\d+\.\d+\.\d+)\.json$/.exec(String(schema.$id))?.[1];
-if (!version) throw new Error(`${source}: its $id is no https://reylo.dev/typedefs/<version>.json`);
+const published = /^https:\/\/reylo\.dev\/typedefs\/(preview|\d+\.\d+\.\d+)\.json$/.exec(String(schema.$id))?.[1];
+if (!published) throw new Error(`${source}: its $id is no https://reylo.dev/typedefs/preview.json, nor a <version>.json`);
 
 function comment(text: string | undefined, indent: string): string {
   if (!text) return "";
@@ -98,7 +99,7 @@ ts = ts.trimEnd() + "\n";
 const examples = `${JSON.stringify({ ...(await import("./examples.ts")) }, null, 2)}\n`;
 
 // Each file written, its text, and the file it is written from.
-const publishedFile = path.join(root, "site", "public", "typedefs", `${version}.json`);
+const publishedFile = path.join(root, "site", "public", "typedefs", `${published}.json`);
 const outputs: [string, string, string][] = [
   [path.join(root, "spec", "index.ts"), ts, "spec/typedefs.schema.json"],
   [publishedFile, readFileSync(source, "utf8").replaceAll("\r\n", "\n"), "spec/typedefs.schema.json"],
@@ -107,8 +108,9 @@ const outputs: [string, string, string][] = [
 // A checkout on Windows may hold any of these with CRLF line endings, which change nothing they say.
 const lf = (text: string) => text.replaceAll("\r\n", "\n");
 
-// The version's file as the newest release tag holds it, if that tag holds one. A checkout with no
-// tag (a shallow clone, a copy outside git) has nothing to compare.
+// A version's file as the newest release tag holds it, if that tag holds one. A checkout with no
+// tag (a shallow clone, a copy outside git) has nothing to compare, and neither has the preview,
+// which changes in place.
 function released(file: string): { tag: string; text: string } | undefined {
   const git = (...args: string[]) => spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
   const describe = git("describe", "--tags", "--abbrev=0");
@@ -117,9 +119,9 @@ function released(file: string): { tag: string; text: string } | undefined {
   const shown = git("show", `${tag}:./${path.relative(root, file).split(path.sep).join("/")}`);
   return shown.status === 0 ? { tag, text: shown.stdout } : undefined;
 }
-const release = released(publishedFile);
+const release = published === "preview" ? undefined : released(publishedFile);
 if (release && lf(release.text) !== lf(outputs[1]![1])) {
-  console.error(`${path.relative(root, publishedFile).split(path.sep).join("/")} is published by ${release.tag} and stays as it is there, so the schema cannot change under version ${version}: give spec/typedefs.schema.json a new version (its $id, and SCHEMA in engine/core/src/types.rs), as rule 8 of spec/README.md says.`);
+  console.error(`${path.relative(root, publishedFile).split(path.sep).join("/")} is published by ${release.tag} and stays as it is there, so the schema cannot change under version ${published}: give spec/typedefs.schema.json a new version (its $id, and SCHEMA in engine/core/src/types.rs), as rule 8 of spec/README.md says.`);
   process.exit(1);
 }
 const stale = outputs.filter(([file, text]) => !existsSync(file) || lf(readFileSync(file, "utf8")) !== lf(text));

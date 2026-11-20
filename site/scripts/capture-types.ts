@@ -23,6 +23,7 @@
 // to lib/sql-errors.json; an example the mapper finds no error in fails the run.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -251,8 +252,11 @@ async function buildClickhouse(schema: string, url = URLS.clickhouse): Promise<s
   return `clickhouse+${url}`;
 }
 
+/** A schema with a libSQL vector index is made on libSQL, through the `libsql` package `@libsql/client` opens files with: SQLite has no `libsql_vector_idx`. */
 function buildSqlite(dir: string, schema: string): string {
-  const db = new DatabaseSync(path.join(dir, 'capture.db'));
+  const file = path.join(dir, 'capture.db');
+  const require = createRequire(import.meta.url);
+  const db: { exec(sql: string): unknown; close(): void } = /libsql_vector_idx/i.test(schema) ? new (createRequire(require.resolve('@libsql/client'))('libsql'))(file) : new DatabaseSync(file);
   try {
     db.exec(schema);
   } finally {

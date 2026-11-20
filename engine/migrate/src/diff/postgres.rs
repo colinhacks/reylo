@@ -8,7 +8,7 @@
 //! the two, since the server's rendering of an expression is not always one it reads back to itself.
 
 use super::{Alterer, Change, Kind, Object, Schema, TypeClass};
-use crate::catalog::{not_extension, not_platform, HISTORY_TABLE, PG_USER_NS};
+use crate::catalog::{not_extension, not_platform, not_platform_schema, project_extension, project_relation, HISTORY_TABLE, PG_USER_NS};
 use crate::db::{Db, Row};
 use crate::{Dialect, Error};
 use regex::Regex;
@@ -240,7 +240,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             "select n.oid, format('%I', n.nspname) as name, {} as acl from pg_namespace n where {ns} and {} and {}",
             acl("n.nspacl", 'n', "n.nspowner"),
             not_extension("pg_namespace", "n"),
-            not_platform("n.nspowner")
+            not_platform_schema("n")
         ))
         .await?
     {
@@ -254,7 +254,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     for r in db
         .rows(&format!(
             "select x.oid, format('%I', x.extname) as name, format('%I', n.nspname) as schema from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {}",
-            not_platform("x.extowner")
+            project_extension("x", "n")
         ))
         .await?
     {
@@ -426,7 +426,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
               and not exists (select 1 from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'i')",
             acl_in("c.relacl", 's', "c.relowner", Some("c.relnamespace")),
             not_extension("pg_class", "c"),
-            not_platform("c.relowner")
+            project_relation("c", "n")
         ))
         .await?
     {
@@ -508,7 +508,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
               and not exists (select 1 from pg_depend e where e.classid = 'pg_type'::regclass and e.objid = c.reltype and e.deptype = 'e')",
             acl_in("c.relacl", 'r', "c.relowner", Some("c.relnamespace")),
             not_extension("pg_class", "c"),
-            not_platform("c.relowner")
+            project_relation("c", "n")
         ))
         .await?;
     // A foreign table's server and options.
@@ -549,7 +549,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             from pg_constraint co join pg_class c on c.oid = co.conrelid join pg_namespace n on n.oid = c.relnamespace
             where co.contype not in ('n', 't') and co.conislocal and {ns} and c.relname <> '{history}' and {} and {}
             order by co.contype, co.conname",
-            not_platform("c.relowner"),
+            project_relation("c", "n"),
             not_extension("pg_constraint", "co")
         ))
         .await?
@@ -624,7 +624,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             },
             acl("a.attacl", 'c', "c.relowner"),
             not_extension("pg_class", "c"),
-            not_platform("c.relowner")
+            project_relation("c", "n")
         ))
         .await?
     {
@@ -926,7 +926,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             from pg_index i join pg_class c on c.oid = i.indexrelid join pg_namespace n on n.oid = c.relnamespace join pg_class t on t.oid = i.indrelid join pg_namespace tn on tn.oid = t.relnamespace
             where {ns} and {} and {} and t.relname <> '{history}'",
             not_extension("pg_class", "c"),
-            not_platform("t.relowner")
+            project_relation("t", "n")
         ))
         .await?;
     // A partitioned table's index that every partition's index is attached to is made on the table
@@ -1210,7 +1210,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         .rows(&format!(
             "select r.oid, r.ev_class, format('%I', r.rulename) as name, format('%I.%I', n.nspname, c.relname) as rel, pg_get_ruledef(r.oid, false) as def, r.rulename = '_RETURN' as view, r.ev_enabled as enabled
             from pg_rewrite r join pg_class c on c.oid = r.ev_class join pg_namespace n on n.oid = c.relnamespace where {ns} and {}",
-            not_platform("c.relowner")
+            project_relation("c", "n")
         ))
         .await?
     {
@@ -1244,7 +1244,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         .rows(&format!(
             "select s.oid, format('%I.%I', n.nspname, s.stxname) as name, pg_get_statisticsobjdef(s.oid) as def, s.stxrelid as rel
             from pg_statistic_ext s join pg_namespace n on n.oid = s.stxnamespace where {ns} and {}",
-            not_platform("s.stxowner")
+            format!("({} or {})", not_platform("s.stxowner"), not_platform_schema("n"))
         ))
         .await?
     {
@@ -1512,9 +1512,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     } else {
         ("''", "null::json", "'[]'::json")
     };
+    // Postgres 18 publishes a table's stored generated columns where a publication says so.
+    let generated = if version >= 180000 { "p.pubgencols = 's'" } else { "false" };
     for r in db
         .rows(&format!(
-            "select p.oid, format('%I', p.pubname) as name, p.puballtables as all_tables, p.pubviaroot as via_root,
+            "select p.oid, format('%I', p.pubname) as name, p.puballtables as all_tables, p.pubviaroot as via_root, {generated} as generated,
               concat_ws(', ', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end, case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end) as publish,
               format('%s', (select json_agg(json_build_array(format('%I.%I', n.nspname, c.relname), format('%I.%I', n.nspname, c.relname) || {columns}, {listed}) order by 1) from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid)) as tables,
               format('%s', {schemas}) as schemas
@@ -1542,6 +1544,9 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         }
         if r.flag("via_root") {
             with.push("publish_via_partition_root = true".into());
+        }
+        if r.flag("generated") {
+            with.push("publish_generated_columns = stored".into());
         }
         let def = format!(
             "{}{}",
@@ -3666,8 +3671,16 @@ impl Alterer for PostgresAlterer {
                     (_, b) => out.push(format!("alter publication {name} set {b}")),
                 }
                 if part(from, "with ") != part(to, "with ") {
-                    let root = to.extra.iter().any(|l| l.starts_with("with ") && l.contains("publish_via_partition_root = true"));
-                    out.push(format!("alter publication {name} set (publish = {}, publish_via_partition_root = {root})", literal(&part(to, "publish "))));
+                    let set = |o: &Object, option: &str| o.extra.iter().any(|l| l.starts_with("with ") && l.contains(option));
+                    let root = set(to, "publish_via_partition_root = true");
+                    // Named only where either side publishes generated columns, which a server older
+                    // than Postgres 18 has no option for.
+                    let generated = match (set(from, "publish_generated_columns = stored"), set(to, "publish_generated_columns = stored")) {
+                        (_, true) => ", publish_generated_columns = stored",
+                        (true, false) => ", publish_generated_columns = none",
+                        (false, false) => "",
+                    };
+                    out.push(format!("alter publication {name} set (publish = {}, publish_via_partition_root = {root}{generated})", literal(&part(to, "publish "))));
                 }
                 Some(out)
             }

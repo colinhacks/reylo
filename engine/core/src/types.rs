@@ -561,9 +561,10 @@ pub struct Param {
 // The statement
 // ---------------------------------------------------------------------------------------------
 
-/// The URL of the JSON Schema of the format version this crate writes, which every
-/// [`StatementDescriptor`] names in `$schema`: the `$id` of `spec/typedefs.schema.json`.
-pub const SCHEMA: &str = "https://reylo.dev/typedefs/0.1.1.json";
+/// The URL of the JSON Schema of the format this crate writes, which every [`StatementDescriptor`]
+/// names in `$schema`: the `$id` of `spec/typedefs.schema.json`. Until 1.0.0 the format is a
+/// preview with no version number, which changes in place.
+pub const SCHEMA: &str = "https://reylo.dev/typedefs/preview.json";
 
 /// A column a table's rows are sorted on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -633,7 +634,7 @@ impl From<ResultRows> for Type {
 /// What introspecting one statement returns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatementDescriptor {
-    /// The format version the descriptor is written in, as the URL of its JSON Schema ([`SCHEMA`]).
+    /// The format the descriptor is written in, as the URL of its JSON Schema ([`SCHEMA`]).
     #[serde(rename = "$schema")]
     pub schema: String,
     pub dialect: DialectVersion,

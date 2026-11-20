@@ -101,12 +101,12 @@ function renderAnalyzed(card: AnalyzedCard, json: string) {
   card.node.children = [code('sql', card.query, `title="${card.file}"`), code('terminal', `$ ${command}\n${shown}`)];
 }
 
-/** The format's version, from its JSON Schema's `$id`, and the path reylo.dev serves that schema at. */
-function version(): { version: string; href: string } {
+/** The format's version, from its JSON Schema's `$id` (none while it is a preview, before 1.0.0), and the path reylo.dev serves that schema at. */
+function version(): { version: string | undefined; href: string } {
   const id = String(JSON.parse(readFileSync(path.join(SPEC, 'typedefs.schema.json'), 'utf8')).$id);
-  const m = /^https:\/\/reylo\.dev(\/typedefs\/(\d+\.\d+\.\d+)\.json)$/.exec(id);
-  if (!m) throw new Error(`spec/typedefs.schema.json: its $id, ${id}, is no https://reylo.dev/typedefs/<version>.json`);
-  return { version: m[2]!, href: m[1]! };
+  const m = /^https:\/\/reylo\.dev(\/typedefs\/(preview|\d+\.\d+\.\d+)\.json)$/.exec(id);
+  if (!m) throw new Error(`spec/typedefs.schema.json: its $id, ${id}, is no https://reylo.dev/typedefs/preview.json, nor a <version>.json`);
+  return { version: m[2] === 'preview' ? undefined : m[2]!, href: m[1]! };
 }
 
 /** spec/index.ts without its doc comments and its banner: every type and field, as TypeScript. */
@@ -153,8 +153,8 @@ export function remarkTypedefs() {
     }
     replace('TypeDefsVersion', () => {
       const { version: at, href } = version();
-      const [major, minor] = at.split('.');
-      const badge = jsx('span', [['className', 'typedef-badge']], [span('typedef-badge-stage', 'preview'), span('typedef-badge-version', `v${major}.${minor}`)]);
+      // A preview has no version to show; a version shows as itself.
+      const badge = jsx('span', [['className', 'typedef-badge']], [at === undefined ? span('typedef-badge-stage', 'preview') : span('typedef-badge-version', `v${at}`)]);
       return [jsx('p', [['className', 'typedef-version not-prose']], [badge, link(href, 'typedef-schema-button', 'View JSON Schema')])];
     });
     replace('TypeDefsSpec', () => {

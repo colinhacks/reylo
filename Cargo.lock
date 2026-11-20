@@ -2266,6 +2266,7 @@ version = "0.0.0"
 dependencies = [
  "boon",
  "bytes",
+ "cc",
  "futures-util",
  "mysql_async",
  "regex",

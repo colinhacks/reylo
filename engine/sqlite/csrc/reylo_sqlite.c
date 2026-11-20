@@ -14,7 +14,8 @@
 ** and the replay registers a stub for each, so a statement calling one prepares here as it does
 ** there. A host that lists the functions of its own SQLite (pragma_function_list) decides which
 ** functions exist: one it has and this build lacks gets a stub too, and one this build has and it
-** lacks is refused.
+** lacks is refused. libSQL's vector functions and its vector_top_k are on every replay, whatever
+** the host lists (openLibsql).
 */
 #include <stdio.h>
 #include <string.h>
@@ -136,6 +137,7 @@ static const char *opName(int op){
 }
 
 static void selectJson(sqlite3_str *s, Select *p);
+static const char *vectorTopKTable(SrcItem *pItem);
 static void expr(sqlite3_str *s, Expr *p, Select *pSel);
 
 static void exprList(sqlite3_str *s, ExprList *pList, Select *pSel){
@@ -369,6 +371,7 @@ static void selectJson(sqlite3_str *s, Select *pTop){
     kv_bool(s, "leftOfRight", (pItem->fg.jointype & JT_LTORJ)!=0);
     kv_bool(s, "tabFunc", pItem->fg.isTabFunc);
     key(s, "args"); exprList(s, pItem->fg.isTabFunc ? pItem->u1.pFuncArg : 0, p); sqlite3_str_appendchar(s, 1, ',');
+    kv_str(s, "vectorTable", vectorTopKTable(pItem));
     kv_bool(s, "cte", pItem->fg.isCte);
     /* A recursive WITH query's read of itself, inside the query: it has no subquery of its own. */
     kv_bool(s, "recursive", pItem->fg.isRecursive);
@@ -593,6 +596,7 @@ static void tables(sqlite3_str *s){
     Index *pIdx;
     key(s, pTab->zName); sqlite3_str_appendchar(s, 1, '{');
     kv_bool(s, "strict", (pTab->tabFlags & TF_Strict)!=0);
+    kv_bool(s, "withoutRowid", (pTab->tabFlags & TF_WithoutRowid)!=0);
     kv_str(s, "rowidAlias", pTab->iPKey>=0 ? pTab->aCol[pTab->iPKey].zCnName : 0);
     kv_bool(s, "ignores", ignoresConflict(pTab));
     kv_bool(s, "replaces", replacesConflict(pTab));
@@ -652,6 +656,111 @@ static void hostFunctionStub(sqlite3_context *ctx, int argc, sqlite3_value **arg
   sqlite3_result_null(ctx);
 }
 static void hostFinalStub(sqlite3_context *ctx){ sqlite3_result_null(ctx); }
+
+/* ---- libSQL's own SQL ------------------------------------------------------------------------ */
+
+/* libSQL, Turso's fork of SQLite, adds vectors: these scalar functions, under these names and
+** argument counts (libSQL 0.10.0's vector.c and vectorIndex.c), and the table-valued
+** vector_top_k below. A libSQL database file reads as SQLite's, with nothing in it to say whose it
+** is, so the replay has them on every database, as it has every optional family of SQLite's, and
+** the SQLite the application runs on decides: the type check also prepares each statement on the
+** application's own drivers (src/sqlite-drivers.ts), and one whose SQLite lacks them refuses it.
+** The analysis only prepares, so a stand-in under libSQL's name, argument count and flags
+** (deterministic and innocuous, as libSQL registers them) resolves as libSQL's own does. */
+static const char *const azLibsql[] = {
+  "vector", "vector32", "vector64", "vector1bit", "vector8", "vector16", "vectorb16", "vector_extract",
+  "vector_distance_cos", "vector_distance_l2", "libsql_vector_idx",
+};
+static const int aLibsqlArg[] = { 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, -1 };
+
+static int isLibsqlFunction(const char *zName){
+  int i;
+  for(i=0; i<(int)(sizeof(azLibsql)/sizeof(azLibsql[0])); i++) if( sqlite3StrICmp(azLibsql[i], zName)==0 ) return 1;
+  return 0;
+}
+
+/* vector_top_k(index, vector, k): the rows of a libSQL vector index nearest the vector, each by
+** the key of the table's row, as libSQL 0.10.0's vectorvtab.c declares it, with its planning:
+** every argument is an equality constraint on a hidden column, which the plan consumes. It is
+** only ever prepared here, so a scan of it has no rows. */
+static int vectorTopKConnect(sqlite3 *db, void *pAux, int argc, const char *const *argv, sqlite3_vtab **ppVtab, char **pzErr){
+  int rc;
+  (void)pAux; (void)argc; (void)argv; (void)pzErr;
+  rc = sqlite3_declare_vtab(db, "CREATE TABLE x(idx hidden, vector hidden, k hidden, id);");
+  if( rc!=SQLITE_OK ) return rc;
+  *ppVtab = sqlite3_malloc(sizeof(sqlite3_vtab));
+  if( *ppVtab==0 ) return SQLITE_NOMEM;
+  memset(*ppVtab, 0, sizeof(sqlite3_vtab));
+  return SQLITE_OK;
+}
+static int vectorTopKDisconnect(sqlite3_vtab *pVtab){ sqlite3_free(pVtab); return SQLITE_OK; }
+static int vectorTopKBestIndex(sqlite3_vtab *pVtab, sqlite3_index_info *pInfo){
+  int i;
+  (void)pVtab;
+  pInfo->estimatedCost = 1.0;
+  pInfo->estimatedRows = 100;
+  pInfo->idxNum = 1;
+  for(i=0; i<pInfo->nConstraint; i++){
+    const struct sqlite3_index_constraint *p = &pInfo->aConstraint[i];
+    if( !p->usable || p->op!=SQLITE_INDEX_CONSTRAINT_EQ || p->iColumn<0 || p->iColumn>2 ) continue;
+    pInfo->aConstraintUsage[i].argvIndex = p->iColumn + 1;
+    pInfo->aConstraintUsage[i].omit = 1;
+  }
+  return SQLITE_OK;
+}
+static int vectorTopKOpen(sqlite3_vtab *pVtab, sqlite3_vtab_cursor **ppCursor){
+  (void)pVtab;
+  *ppCursor = sqlite3_malloc(sizeof(sqlite3_vtab_cursor));
+  if( *ppCursor==0 ) return SQLITE_NOMEM;
+  memset(*ppCursor, 0, sizeof(sqlite3_vtab_cursor));
+  return SQLITE_OK;
+}
+static int vectorTopKClose(sqlite3_vtab_cursor *pCursor){ sqlite3_free(pCursor); return SQLITE_OK; }
+static int vectorTopKFilter(sqlite3_vtab_cursor *pCursor, int idxNum, const char *idxStr, int argc, sqlite3_value **argv){
+  (void)pCursor; (void)idxNum; (void)idxStr; (void)argc; (void)argv;
+  return SQLITE_OK;
+}
+static int vectorTopKNext(sqlite3_vtab_cursor *pCursor){ (void)pCursor; return SQLITE_OK; }
+static int vectorTopKEof(sqlite3_vtab_cursor *pCursor){ (void)pCursor; return 1; }
+static int vectorTopKColumn(sqlite3_vtab_cursor *pCursor, sqlite3_context *ctx, int iCol){
+  (void)pCursor; (void)iCol;
+  sqlite3_result_null(ctx);
+  return SQLITE_OK;
+}
+static int vectorTopKRowid(sqlite3_vtab_cursor *pCursor, sqlite_int64 *pRowid){ (void)pCursor; *pRowid = 0; return SQLITE_OK; }
+static sqlite3_module vectorTopKModule = {
+  0, 0, vectorTopKConnect, vectorTopKBestIndex, vectorTopKDisconnect, 0, vectorTopKOpen, vectorTopKClose,
+  vectorTopKFilter, vectorTopKNext, vectorTopKEof, vectorTopKColumn, vectorTopKRowid,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+
+static void functionError(sqlite3_str *errors, const char *zName);
+
+/* libSQL's functions and vector_top_k on the replay, unless this build has its own of a name. */
+static void openLibsql(sqlite3_str *errors){
+  const int flags = SQLITE_UTF8|SQLITE_DETERMINISTIC|SQLITE_INNOCUOUS;
+  int i;
+  for(i=0; i<(int)(sizeof(azLibsql)/sizeof(azLibsql[0])); i++){
+    if( sqlite3FindFunction(gDb, azLibsql[i], -2, SQLITE_UTF8, 0)!=0 ) continue;
+    if( sqlite3_create_function_v2(gDb, azLibsql[i], aLibsqlArg[i], flags, 0, hostFunctionStub, 0, 0, 0)!=SQLITE_OK ) functionError(errors, azLibsql[i]);
+  }
+  if( sqlite3_create_module(gDb, "vector_top_k", &vectorTopKModule, 0)!=SQLITE_OK ) functionError(errors, "vector_top_k");
+}
+
+/* For vector_top_k('docs_emb', …), the table whose rows its index holds, as its DDL spells the name,
+** which "tables" then describes: what the call returns is that table's key. 0 where the index is
+** not written as a string or names no index. */
+static const char *vectorTopKTable(SrcItem *pItem){
+  ExprList *pArgs;
+  Index *pIdx;
+  if( !pItem->fg.isTabFunc || pItem->zName==0 || sqlite3StrICmp(pItem->zName, "vector_top_k")!=0 ) return 0;
+  pArgs = pItem->u1.pFuncArg;
+  if( pArgs==0 || pArgs->nExpr<1 || pArgs->a[0].pExpr==0 || pArgs->a[0].pExpr->op!=TK_STRING ) return 0;
+  pIdx = sqlite3FindIndex(gDb, pArgs->a[0].pExpr->u.zToken, 0);
+  if( pIdx==0 || pIdx->pTable==0 ) return 0;
+  tableSeen(pIdx->pTable);
+  return pIdx->pTable->zName;
+}
 
 static void functionError(sqlite3_str *errors, const char *zName){
   sqlite3_str_appendchar(errors, 1, '{');
@@ -750,6 +859,7 @@ static int openSchema(
   ** reported in errors as any failed step is ("not authorized"). */
   sqlite3_limit(gDb, SQLITE_LIMIT_ATTACHED, 0);
   installHooks(0);
+  openLibsql(errors);
   for(i=0; i<nFn; i++){
     /* Deterministic and innocuous: whatever the host's own flags, the replay accepts every place
     ** the host's schema could already call it from. */
@@ -829,6 +939,10 @@ static int functionAuth(void *pArg, int code, const char *z1, const char *zFn, c
   if( code!=SQLITE_FUNCTION || zFn==0 ) return SQLITE_OK;
   for(i=0; i<gnHost; i++) if( sqlite3StrICmp(gHost[i], zFn)==0 ) return SQLITE_OK;
   for(i=0; i<gnExtra; i++) if( sqlite3StrICmp(gExtra[i], zFn)==0 ) return SQLITE_OK;
+  /* libSQL's are refused by no host's list: the SQLite that reads the database file reads a
+  ** libSQL file as its own and lists none of them, and the application's drivers decide whether
+  ** its SQLite has them (openLibsql). */
+  if( isLibsqlFunction(zFn) ) return SQLITE_OK;
   pDef = sqlite3FindFunction(gDb, zFn, -2, SQLITE_UTF8, 0);
   if( pDef==0 || (pDef->funcFlags & SQLITE_FUNC_INTERNAL)!=0 ) return SQLITE_OK;
   if( gnDenied++==0 && zInside ){
@@ -883,7 +997,7 @@ static char *missingSchema(const char *zSql, const char *zMsg, int *piOfst, int 
 /* The version of the tree's format, reylo_sqlite_analyze's first member: TREE_VERSION in
 ** src/sqlite_tree.rs, which refuses a tree of another. A change to what either side reads or writes
 ** moves both. */
-#define REYLO_TREE_VERSION 1
+#define REYLO_TREE_VERSION 2
 
 /* How deep the user's statement may nest: see reylo_sqlite_analyze. */
 #define REYLO_SQLITE_EXPR_DEPTH 350

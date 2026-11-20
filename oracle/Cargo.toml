@@ -28,3 +28,7 @@ mysql_async = { version = "0.37", default-features = false, features = ["minimal
 boon = "0.6"
 # A text's pattern, an I-Regexp, matched as the ECMAScript expression it maps to.
 regex = "1"
+
+[build-dependencies]
+# libSQL's engine, for the libSQL cases (`build.rs`).
+cc = "1"
