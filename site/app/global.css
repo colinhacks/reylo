@@ -473,7 +473,8 @@
   display: inline-block;
   margin-left: 0.6rem;
   padding: 0.1rem 0.5rem;
-  vertical-align: 0.15em;
+  /* Centred on the heading's capitals: at 0.15em it sat 1.2 to 1.7px low (ink-align.mjs, 2026-11-20). */
+  vertical-align: calc(0.15em + 1.45px);
   border: 1px solid var(--color-fd-border);
   border-radius: 999px;
   font-size: 0.7rem;

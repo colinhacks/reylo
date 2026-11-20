@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/playground-engine.ts && react-router dev",
-    "build": "node scripts/playground-engine.ts && react-router typegen && tsc && react-router build && vite build --config vite.api.config.ts && vite build --config vite.share.config.ts",
+    "build": "node scripts/playground-engine.ts && react-router typegen && tsc && react-router build && vite build --config vite.api.config.ts && vite build --config vite.share.config.ts && node docs-kit/src/check-links.mjs build/client --site https://reylo.dev --redirect-anchors / --ignore /play/api/",
     "start": "vite preview --outDir build/client --port 3311",
     "capture": "nub scripts/capture-types.ts",
     "capture-typedefs": "nub scripts/capture-typedefs.ts",

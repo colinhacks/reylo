@@ -1,5 +1,6 @@
 import { ThemeSwitch } from 'fumadocs-ui/layouts/shared/slots/theme-switch';
 import type { ReactNode } from 'react';
+import { SearchButton } from './search-trigger';
 
 /*
  * The page has no bar that stays on screen, as on nub's docs: the name sits at the top of the left
@@ -92,6 +93,8 @@ export function TopRow({ brand, github, centered, paged }: { brand: ReactNode; g
     <div className={`[grid-area:header] mx-auto flex w-full items-center gap-3 px-4 pt-4 md:px-6 ${shape}`}>
       {brand}
       <div className="flex-1" />
+      {/* A finger's room around the icon, taken back from the row; 2px more on the right, where the glass's handle stops short of its box. */}
+      <SearchButton className={`${linkClass} -my-2 -ml-2 -mr-2.5 p-2`} />
       <a href={github} rel="noreferrer noopener" target="_blank" className={linkClass} aria-label="GitHub">
         <GitHubIcon className="size-4" />
       </a>

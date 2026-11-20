@@ -9,6 +9,7 @@
     "./vite": "./src/vite.ts",
     "./mdx": "./src/mdx/index.ts",
     "./remark-sections": "./src/mdx/remark-sections.ts",
+    "./search": "./src/search/index.ts",
     "./diagnostics": "./src/mdx/diagnostics.ts",
     "./shell": "./src/components/shell.tsx",
     "./document": "./src/components/document.tsx",
