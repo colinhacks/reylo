@@ -373,33 +373,46 @@ To turn the lock back on, run `reylo migrate lock`.
 
 ## CLI <code className="dk-aside">reylo migrate</code> [#cli-reylo-migrate]
 
-Every command and flag:
+The migration commands:
 
 ```terminal
-Usage: reylo <group> <command> [flags]
+Usage: reylo migrate <command> [flags]
 
 Commands:
-  migrate init             Start from this database
+  init                     Start from this database
     --schema <name>        A schema to read (Postgres; public by default)
-  migrate new <name>       Write the next migration, from schema.sql or this database
+  new <name>               Write the next migration, from schema.sql or this database
     --drop <names>         Accept what it drops: tables and columns
     --rename <old>=<new>   Say a table or column was renamed
     --blocking             Accept a statement that blocks writes while it reads every row
-  migrate dev              Take this database to the migrations, and lock them
-  migrate deploy           Run what the lock lists, with no shadow database
+  dev                      Take this database to the migrations, and lock them
+  deploy                   Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
-  migrate status           Check that this database and the files are in step
-  migrate lock             Write the lock from this database's history
-  migrate history push     Record the migrations this database's schema has
-  migrate history pull     Write the migrations this database ran into files
-  db push                  Take this database to schema.sql, unrecorded
+  status                   Check that this database and the files are in step
+  lock                     Write the lock from this database's history
+  history push             Record the migrations this database's schema has
+  history pull             Write the migrations this database ran into files
+
+Flags:
+  --url <url>              The database, in place of direct_url
+  --json                   Print the result as one JSON object
+  -h, --help               Print this help
+```
+
+And the commands that work on a development database directly:
+
+```terminal
+Usage: reylo db <command> [flags]
+
+Commands:
+  push                     Take this database to schema.sql, unrecorded
     --drop <names>         Accept what it drops: tables and columns
     --rename <old>=<new>   Say a table or column was renamed
     --force                Accept everything it drops
     --watch                Push again on each save
-  db reset                 Rebuild this database from the migrations
-  db wipe                  Delete every row, keeping the schema
-  db introspect            Print this database's schema as SQL
+  reset                    Rebuild this database from the migrations
+  wipe                     Delete every row, keeping the schema
+  introspect               Print this database's schema as SQL
     --schema <name>        A schema to read (Postgres; public by default)
 
 Flags:

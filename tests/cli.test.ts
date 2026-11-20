@@ -53,11 +53,20 @@ test("the migration commands and reylo run are the binary's, with their output a
   for (const usage of ["  migrate <command>", "  db <command>", "  run \"<sql>\""]) assert.ok(help.out.includes(usage), usage);
   const migrate = reylo(root, ["migrate", "--help"]);
   assert.equal(migrate.status, 0, migrate.err);
-  assert.match(migrate.out, /^Usage: reylo <group> <command> \[flags\]\n/);
-  assert.equal(reylo(root, ["db", "--help"]).out, migrate.out);
-  // The docs show the help as it is.
-  // A checkout on Windows may write the page with CRLF line endings.
-  assert.ok(readFileSync(join(import.meta.dirname, "..", "site", "content", "docs", "migrate.mdx"), "utf8").replaceAll("\r\n", "\n").includes(`\`\`\`terminal\n${migrate.out}\`\`\``));
+  assert.match(migrate.out, /^Usage: reylo migrate <command> \[flags\]\n/);
+  assert.match(migrate.out, /\n  history push  /);
+  assert.doesNotMatch(migrate.out, /\n  (push|reset|wipe|introspect)  /);
+  const dbHelp = reylo(root, ["db", "--help"]);
+  assert.equal(dbHelp.status, 0, dbHelp.err);
+  assert.match(dbHelp.out, /^Usage: reylo db <command> \[flags\]\n/);
+  assert.match(dbHelp.out, /\n  introspect  /);
+  assert.doesNotMatch(dbHelp.out, /\n  (init|new|dev|deploy|status|lock|history)\b/);
+  // The docs show each group's help as it is.
+  // A checkout on Windows may write a page with CRLF line endings.
+  for (const page of ["migrate.mdx", "cli.mdx"]) {
+    const text = readFileSync(join(import.meta.dirname, "..", "site", "content", "docs", page), "utf8").replaceAll("\r\n", "\n");
+    for (const help of [migrate.out, dbHelp.out]) assert.ok(text.includes(`\`\`\`terminal\n${help}\`\`\``), `${page}: ${help.split("\n")[0]}`);
+  }
   const run = reylo(root, ["run", "insert into users (name) values ('ada')", "insert into users (name) values ('grace')"]);
   assert.equal(run.status, 0, run.err);
   const db = new DatabaseSync(join(root, "app.db"));
@@ -103,7 +112,8 @@ test("the migration commands and reylo run are the binary's, with their output a
     assert.equal(r.status, 2, args.join(" "));
     assert.match(r.err, said);
   }
-  assert.match(reylo(root, ["migrate", "deploy", "--help"]).out, /^Usage: reylo <group> <command> \[flags\]\n/);
+  assert.match(reylo(root, ["migrate", "deploy", "--help"]).out, /^Usage: reylo migrate <command> \[flags\]\n/);
+  assert.match(reylo(root, ["db", "push", "--help"]).out, /^Usage: reylo db <command> \[flags\]\n/);
 });
 
 test("reylo migrate init starts a project, and needs nothing in the project file", () => {
