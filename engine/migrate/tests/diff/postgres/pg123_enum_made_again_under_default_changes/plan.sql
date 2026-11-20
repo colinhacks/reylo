@@ -1,3 +1,4 @@
+set check_function_bodies = off;
 alter type e rename to e__old;
 create type e as enum ('b', 'a');
 alter table t alter column v drop default;
@@ -11,3 +12,4 @@ drop type g__old;
 alter table t alter column v drop default;
 create function f() returns text language sql immutable as $$ select 'a'::text $$;
 alter table u alter column v set default f()::g;
+reset check_function_bodies;
