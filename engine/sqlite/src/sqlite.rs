@@ -1505,6 +1505,8 @@ impl Analyzer<'_> {
             "collate" => n.left.as_deref().is_some_and(|l| self.truth(l, scope, declared)),
             "function" if !n.agg && !n.window => match n.name.as_deref().unwrap_or("") {
                 "like" | "glob" | "regexp" | "match" => self.extras.function(n.name.as_deref().unwrap_or(""), n.args.len()).is_none(),
+                // sqlean's tests, which answer 1 or 0.
+                "starts_with" | "text_has_prefix" | "text_has_suffix" | "text_contains" | "text_like" | "regexp_like" => self.extras.function(n.name.as_deref().unwrap_or(""), n.args.len()).is_none(),
                 "likely" | "unlikely" | "likelihood" => n.args.first().is_some_and(|a| self.truth(a, scope, declared)),
                 "coalesce" | "ifnull" => every(&mut n.args.iter()),
                 "iif" | "if" => every(&mut iif_values(n.args.len()).into_iter().filter_map(|i| n.args.get(i))),
@@ -1641,6 +1643,9 @@ impl Analyzer<'_> {
                 let index = n.index.max(0) as usize;
                 let inner = match (&f.subquery, f.table.as_deref()) {
                     (None, Some("vector_top_k")) if f.tab_func && n.column.as_deref().is_some_and(|c| c.eq_ignore_ascii_case("id")) => self.vector_key(f),
+                    // sqlean's series, which Turso Cloud loads: an integer per row, wrapping round
+                    // past the largest one rather than stopping.
+                    (None, Some("generate_series" | "stats_seq")) if f.tab_func && n.column.as_deref().is_some_and(|c| c.eq_ignore_ascii_case("value")) => Some(Fact::new("integer", true)),
                     (Some(sub), Some(name)) if f.cte && reads_itself(sub) => Some(self.recursive_column(name, sub, index, scope)),
                     (Some(sub), _) => Some(self.select_column(sub, index, scope)),
                     // A recursive WITH query's read of itself, inside the query: what it is taken to be.
@@ -1800,6 +1805,7 @@ impl Analyzer<'_> {
                 return done(f.returns.name(), Nulls::IfArgs);
             }
         }
+        let name = sqlean_alias(name);
         if n.window {
             // A frame that always holds the current row has that row, so there `min` and `max`
             // follow their argument, as under a plain GROUP BY; `sum` and `avg` stay nullable as
@@ -1836,6 +1842,11 @@ impl Analyzer<'_> {
                 "group_concat" | "string_agg" => done("text", if grouped { Nulls::IfArgs } else { Nulls::Always }),
                 "json_group_array" | "json_group_object" => done("text", Nulls::Never),
                 "jsonb_group_array" | "jsonb_group_object" => done("blob", Nulls::Never),
+                // A percentile, SQLite's (`SQLITE_ENABLE_PERCENTILE`) or sqlean's, which Turso
+                // Cloud loads: NULL over no rows or nothing but NULLs, and an error on text.
+                "median" | "percentile" | "percentile_25" | "percentile_75" | "percentile_90" | "percentile_95" | "percentile_99" => done("real", Nulls::Always),
+                // sqlean's spread: 0.0 over no rows, NULL where the sum overflows to NaN.
+                "stddev" | "stddev_pop" | "stddev_samp" | "variance" | "var_pop" | "var_samp" => done("real", Nulls::Always),
                 _ => Fact::unknown(),
             };
         }
@@ -1903,7 +1914,10 @@ impl Analyzer<'_> {
             "strftime" => Fact::new("text", n.args.first().and_then(literal_text).is_some_and(strftime_format) && current_time(n.args.get(1..).unwrap_or_default())),
             "timediff" => Fact::new("text", n.args.len() == 2 && current_time(&n.args[..1]) && current_time(&n.args[1..])),
             // `soundex(NULL)` is '?000'.
-            "hex" | "quote" | "typeof" | "soundex" => done("text", Nulls::Never),
+            "hex" | "quote" | "typeof" => done("text", Nulls::Never),
+            // SQLite's `soundex(NULL)` is '?000', and sqlean's, which Turso Cloud loads in its
+            // place, is NULL.
+            "soundex" => done("text", Nulls::IfArgs),
             "sqlite_version" | "sqlite_source_id" | "current_date" | "current_time" | "current_timestamp" => done("text", Nulls::Never),
             "random" | "last_insert_rowid" | "changes" | "total_changes" => done("integer", Nulls::Never),
             "randomblob" | "zeroblob" => done("blob", Nulls::IfArgs),
@@ -1938,6 +1952,39 @@ impl Analyzer<'_> {
             // The marker a vector index is made with returns its argument, whatever a vector column
             // holds: a vector index takes a vector's text as well as its blob.
             "libsql_vector_idx" => Fact { ty: Ty::Unknown, non_null: first.non_null },
+            // The sqlean extensions Turso Cloud loads (`csrc/reylo_sqlite.c`, `aTurso`), as
+            // libsql-ffi 0.10.0 builds them, each by its own name ([`sqlean_alias`]).
+            // uuid: a new identifier every call, and a malformed one read as NULL.
+            "uuid4" | "gen_random_uuid" | "uuid7" => done("text", Nulls::Never),
+            "uuid_str" => done("text", Nulls::Always),
+            "uuid_blob" => done("blob", Nulls::Always),
+            "uuid7_timestamp_ms" => done("integer", Nulls::Always),
+            // crypto: a digest of text or bytes; `encode` and `decode` NULL only for a NULL value,
+            // and an error for one they cannot read or a format they do not know.
+            "md5" | "sha1" | "sha256" | "sha384" | "sha512" | "blake3" => done("blob", Nulls::IfArgs),
+            "encode" => Fact::new("text", first.non_null),
+            "decode" => Fact::new("blob", first.non_null),
+            // fuzzy: a distance is an error on NULL and on text that is not ASCII, never NULL; a
+            // phonetic code follows its argument.
+            "levenshtein" | "dlevenshtein" | "edit_distance" | "osa_distance" | "hamming" => done("integer", Nulls::Never),
+            "jaro_winkler" => done("real", Nulls::Never),
+            "caverphone" | "phonetic_hash" | "rsoundex" => done("text", Nulls::IfArgs),
+            "translit" => done("text", Nulls::Never),
+            "script_code" => done("integer", Nulls::Never),
+            // text: NULL where a text argument is (a count or a length is an error there).
+            "bit_length" | "char_length" | "character_length" | "text_size" | "text_bitsize" | "text_length" => done("integer", Nulls::IfArgs),
+            "strpos" | "text_index" | "text_last_index" | "text_count" => done("integer", Nulls::IfArgs),
+            "starts_with" | "text_has_prefix" | "text_has_suffix" | "text_contains" | "text_like" => done("integer", Nulls::IfArgs),
+            "btrim" | "left" | "right" | "lpad" | "rpad" | "repeat" | "reverse" | "split_part" | "translate" | "text_trim" | "text_ltrim" | "text_rtrim" | "text_left" | "text_right"
+            | "text_lpad" | "text_rpad" | "text_repeat" | "text_reverse" | "text_split" | "text_translate" | "text_title" | "text_casefold" | "text_lower" | "text_upper"
+            | "text_replace" | "text_slice" | "text_substring" => done("text", Nulls::IfArgs),
+            // Like `concat` and `concat_ws`, they skip a NULL value.
+            "text_concat" => done("text", Nulls::Never),
+            "text_join" => Fact::new("text", first.non_null),
+            // regexp: a match of NULL text is 0, and a NULL pattern an error.
+            "regexp_like" => done("integer", Nulls::Never),
+            "regexp_substr" | "regexp_capture" => done("text", Nulls::Always),
+            "regexp_replace" => Fact::new("text", first.non_null),
             _ => Fact::unknown(),
         }
     }
@@ -2515,10 +2562,13 @@ impl Analyzer<'_> {
             // refuses as a real or as text.
             let json = f.tab_func && matches!(f.table.as_deref(), Some("json_each" | "json_tree"));
             let top_k = f.tab_func && f.table.as_deref() == Some("vector_top_k");
+            // sqlean's `generate_series(start, stop, step)`, integers all.
+            let series = f.tab_func && matches!(f.table.as_deref(), Some("generate_series" | "stats_seq"));
             for (i, a) in f.args.iter().enumerate() {
                 let ctx = match i {
                     0 | 1 if json || top_k => Ctx::Typed(Some(Fact::new("text", true))),
                     2 if top_k => Ctx::Typed(Some(Fact::new("integer", true))),
+                    _ if series => Ctx::Typed(Some(Fact::new("integer", true))),
                     _ => Ctx::None,
                 };
                 self.walk(a, ctx, &inner, found);
@@ -2777,7 +2827,26 @@ impl Analyzer<'_> {
             "bm25" if i > 0 => real(),
             // libSQL takes a vector as its text (`'[1,2,3]'`) or its blob: a parameter is the text.
             "vector" | "vector32" | "vector64" | "vector1bit" | "vector8" | "vector16" | "vectorb16" | "vector_extract" | "vector_distance_cos" | "vector_distance_l2" => text(),
-            _ => Ctx::None,
+            // sqlean's, by the name each alias stands for ([`sqlean_alias`]).
+            _ => match sqlean_alias(name) {
+                // A count or a length after the text: `left(s, n)`, `lpad(s, n, fill)`,
+                // `split_part(s, sep, n)`, `text_slice(s, from, to)`, `regexp_capture(s, re, group)`.
+                "left" | "right" | "text_left" | "text_right" | "repeat" | "text_repeat" | "lpad" | "rpad" | "text_lpad" | "text_rpad" if i == 1 => integer(),
+                "split_part" | "text_split" | "regexp_capture" if i == 2 => integer(),
+                "text_slice" | "text_substring" if i > 0 => integer(),
+                "text_replace" if i == 3 => integer(),
+                // A value to encode is bytes; a digest takes text as well, and is given text here.
+                "encode" if i == 0 => Ctx::None,
+                "uuid_str" | "uuid_blob" | "uuid7_timestamp_ms" | "md5" | "sha1" | "sha256" | "sha384" | "sha512" | "blake3" | "encode" | "decode" | "levenshtein" | "dlevenshtein"
+                | "edit_distance" | "osa_distance" | "hamming" | "jaro_winkler" | "caverphone" | "phonetic_hash" | "rsoundex" | "translit" | "script_code" | "bit_length"
+                | "char_length" | "character_length" | "btrim" | "left" | "right" | "lpad" | "rpad" | "repeat" | "reverse" | "split_part" | "starts_with" | "strpos" | "translate"
+                | "regexp_like" | "regexp_substr" | "regexp_capture" | "regexp_replace" => text(),
+                t if t.starts_with("text_") => text(),
+                // A percentile's value and its rank, between 0 and 100.
+                "median" | "percentile" | "percentile_25" | "percentile_75" | "percentile_90" | "percentile_95" | "percentile_99" | "stddev" | "stddev_pop" | "stddev_samp" | "variance"
+                | "var_pop" | "var_samp" => real(),
+                _ => Ctx::None,
+            },
         }
     }
 
@@ -3462,6 +3531,46 @@ fn strftime_format(format: &str) -> bool {
         }
     }
     true
+}
+
+/// The function a sqlean alias stands for, as the extensions Turso Cloud loads register both:
+/// `math_floor` is `floor`, `fuzzy_leven` is `levenshtein`, `stats_p90` is `percentile_90`.
+fn sqlean_alias(name: &str) -> &str {
+    match name {
+        "fuzzy_caver" => "caverphone",
+        "fuzzy_damlev" => "dlevenshtein",
+        "fuzzy_editdist" => "edit_distance",
+        "fuzzy_hamming" => "hamming",
+        "fuzzy_jarowin" => "jaro_winkler",
+        "fuzzy_leven" => "levenshtein",
+        "fuzzy_osadist" => "osa_distance",
+        "fuzzy_phonetic" => "phonetic_hash",
+        "fuzzy_rsoundex" => "rsoundex",
+        "fuzzy_script" => "script_code",
+        "fuzzy_soundex" => "soundex",
+        "fuzzy_translit" => "translit",
+        "stats_median" => "median",
+        "stats_perc" => "percentile",
+        "stats_p25" => "percentile_25",
+        "stats_p75" => "percentile_75",
+        "stats_p90" => "percentile_90",
+        "stats_p95" => "percentile_95",
+        "stats_p99" => "percentile_99",
+        "stats_stddev" => "stddev",
+        "stats_stddev_pop" => "stddev_pop",
+        "stats_stddev_samp" => "stddev_samp",
+        "stats_var" => "variance",
+        "stats_var_pop" => "var_pop",
+        "stats_var_samp" => "var_samp",
+        _ => match name.strip_prefix("crypto_").or_else(|| name.strip_prefix("math_")) {
+            Some(base @ ("md5" | "sha1" | "sha256" | "sha384" | "sha512" | "blake3" | "encode" | "decode")) if name.starts_with("crypto_") => base,
+            Some(
+                base @ ("acos" | "acosh" | "asin" | "asinh" | "atan" | "atan2" | "atanh" | "ceil" | "cos" | "cosh" | "degrees" | "exp" | "floor" | "ln" | "log" | "log10" | "log2" | "mod" | "pi"
+                | "pow" | "radians" | "round" | "sin" | "sinh" | "sqrt" | "tan" | "tanh" | "trunc"),
+            ) if name.starts_with("math_") => base,
+            _ => name,
+        },
+    }
 }
 
 /// SQLite's built-in scalar functions the engine's table reads, by name.
@@ -4167,6 +4276,48 @@ mod tests {
     /// The SQLite that reads the file lists none of libSQL's functions, as the engine's program's does.
     fn sqlite_host() -> Extras {
         Extras { total: vec![], host: Some(["lower", "upper", "length", "count"].map(|name| HostFunction { name: name.into(), arity: -1, kind: 's' }).to_vec()) }
+    }
+
+    #[test]
+    fn the_sqlean_functions_turso_cloud_loads_are_typed_whatever_the_host_lists() {
+        // Measured on libSQL 0.10.0 with the sqlean extensions libsql-ffi builds.
+        let ddl = vec!["create table people (id integer primary key, name text not null, nick text, score real not null) strict".to_string()];
+        for extras in [Extras::default(), sqlite_host()] {
+            let a = |sql: &str| {
+                let a = analyze_ddl(sql, &ddl, &extras).analysis;
+                assert!(a.diagnostics.is_empty(), "{sql}: {:?}", a.diagnostics);
+                a
+            };
+            let fresh = a("select uuid4() as a, uuid7() as b, gen_random_uuid() as c, uuid_str(:id) as d, uuid_blob(:raw) as e, uuid7_timestamp_ms(:at) as f");
+            assert_eq!(["a", "b", "c", "d", "e", "f"].map(|c| col(&fresh, c)), [("text", false), ("text", false), ("text", false), ("text", true), ("blob", true), ("integer", true)].map(|(t, n)| (t.to_string(), n)));
+            assert_eq!(param(&fresh, "id"), "text");
+            let digest = a("select md5(name) as a, sha256(nick) as b, crypto_sha1(name) as c, encode(md5(name), 'hex') as d, decode(nick, 'base64') as e from people");
+            assert_eq!(["a", "b", "c", "d", "e"].map(|c| col(&digest, c)), [("blob", false), ("blob", true), ("blob", false), ("text", false), ("blob", true)].map(|(t, n)| (t.to_string(), n)));
+            let fuzzy = a("select levenshtein(name, :q) as a, fuzzy_leven(nick, :q2) as b, jaro_winkler(name, :q3) as c, caverphone(nick) as d, translit(nick) as e, script_code(name) as f from people");
+            assert_eq!(["a", "b", "c", "d", "e", "f"].map(|c| col(&fuzzy, c)), [("integer", false), ("integer", false), ("real", false), ("text", true), ("text", false), ("integer", false)].map(|(t, n)| (t.to_string(), n)));
+            assert_eq!(param(&fuzzy, "q"), "text");
+            let text = a("select left(name, :n) as a, lpad(nick, 5) as b, split_part(name, ',', 2) as c, text_title(name) as d, strpos(name, 'a') as e, char_length(nick) as f, text_concat(name, nick) as g, text_join(',', name, nick) as h from people");
+            assert_eq!(["a", "b", "c", "d", "e", "f", "g", "h"].map(|c| col(&text, c)), [("text", false), ("text", true), ("text", false), ("text", false), ("integer", false), ("integer", true), ("text", false), ("text", false)].map(|(t, n)| (t.to_string(), n)));
+            assert_eq!(param(&text, "n"), "integer");
+            // sqlean's tests answer 1 or 0.
+            let tests = a("select starts_with(name, 'a') as a, text_contains(name, :part) as b, regexp_like(nick, '^a') as c from people");
+            assert_eq!(["a", "b", "c"].map(|c| col(&tests, c)), [("bool", false), ("bool", false), ("bool", false)].map(|(t, n)| (t.to_string(), n)));
+            let re = a("select regexp_substr(name, 'a+') as a, regexp_capture(name, 'b(a+)', 1) as b, regexp_replace(name, 'a', 'b') as c, regexp_replace(nick, 'a', 'b') as d from people where name regexp 'a'");
+            assert_eq!(["a", "b", "c", "d"].map(|c| col(&re, c)), [("text", true), ("text", true), ("text", false), ("text", true)].map(|(t, n)| (t.to_string(), n)));
+            // `math_floor` is `floor`, read by SQLite's own rules, which sqlean's keep.
+            let math = a("select math_floor(score) as a, math_sqrt(score) as b, math_pi() as c from people");
+            assert_eq!(["a", "b", "c"].map(|c| col(&math, c)), [("real", false), ("real", true), ("real", false)].map(|(t, n)| (t.to_string(), n)));
+            let stats = a("select stddev(score) as a, stats_p90(score) as b, variance(score) as c from people group by name");
+            assert_eq!(["a", "b", "c"].map(|c| col(&stats, c)), [("real", true), ("real", true), ("real", true)].map(|(t, n)| (t.to_string(), n)));
+            let series = a("select value from generate_series(1, :stop)");
+            assert_eq!((col(&series, "value"), param(&series, "stop")), (("integer".to_string(), false), "integer".to_string()));
+            assert_eq!(col(&a("select value from stats_seq(1, 3)"), "value"), ("integer".to_string(), false));
+            assert!(!analyze_ddl("select value from generate_series", &ddl, &extras).analysis.diagnostics.is_empty());
+        }
+        // Names this build has of its own keep its function, typed for sqlean's too: `soundex(NULL)`
+        // is NULL on Turso Cloud, and `median` a nullable real on both.
+        let own = analyze_ddl("select soundex(nick) as a, soundex(name) as b, median(score) as c from people group by name", &ddl, &Extras::default()).analysis;
+        assert_eq!(["a", "b", "c"].map(|c| col(&own, c)), [("text", true), ("text", false), ("real", true)].map(|(t, n)| (t.to_string(), n)));
     }
 
     #[test]
