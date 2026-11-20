@@ -58,6 +58,10 @@ export const pageGroups = [
     ],
   },
   {
+    label: 'Migrations',
+    items: [{ title: 'Reylo Migrate', href: '/migrate', external: true }],
+  },
+  {
     label: 'Deployment',
     items: [
       { title: 'Cloudflare D1', href: '/d1' },
@@ -84,7 +88,6 @@ export const pageGroups = [
 ];
 
 export const pageLinks = [
-  { title: 'Reylo Migrate', href: '/migrate' },
   { title: 'Playground', href: '/play' },
   { title: 'npm', href: 'https://www.npmjs.com/package/reylo' },
 ];
