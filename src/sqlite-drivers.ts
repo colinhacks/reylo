@@ -41,17 +41,141 @@ interface SyncDatabase {
   close(): void;
 }
 
-function sync(name: string, db: SyncDatabase): SqliteDriver {
+/**
+ * The functions of the sqlean extensions Turso Cloud loads into every connection (uuid, crypto,
+ * fuzzy, math, stats, text, regexp), as libsql-ffi 0.10.0 builds them, with their table-valued
+ * `generate_series` and `stats_seq`: every name their sources register, which the engine's SQLite
+ * also knows (`aTurso` in engine/sqlite/csrc/reylo_sqlite.c).
+ */
+export const SQLEAN_FUNCTIONS: ReadonlySet<string> = new Set([
+  "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh", "bit_length", "blake3", "btrim", "caverphone", "ceil", "ceiling", "char_length",
+  "character_length", "concat", "concat_ws", "cos", "cosh", "crypto_blake3", "crypto_decode", "crypto_encode", "crypto_md5", "crypto_sha1",
+  "crypto_sha256", "crypto_sha384", "crypto_sha512", "decode", "degrees", "dlevenshtein", "edit_distance", "encode", "exp", "floor", "fuzzy_caver",
+  "fuzzy_damlev", "fuzzy_editdist", "fuzzy_hamming", "fuzzy_jarowin", "fuzzy_leven", "fuzzy_osadist", "fuzzy_phonetic", "fuzzy_rsoundex",
+  "fuzzy_script", "fuzzy_soundex", "fuzzy_translit", "gen_random_uuid", "generate_series", "hamming", "jaro_winkler", "left", "levenshtein", "ln",
+  "log", "log10", "log2", "lpad", "ltrim", "math_acos", "math_acosh", "math_asin", "math_asinh", "math_atan", "math_atan2", "math_atanh", "math_ceil",
+  "math_cos", "math_cosh", "math_degrees", "math_exp", "math_floor", "math_ln", "math_log", "math_log10", "math_log2", "math_mod", "math_pi",
+  "math_pow", "math_radians", "math_round", "math_sin", "math_sinh", "math_sqrt", "math_tan", "math_tanh", "math_trunc", "md5", "median", "mod",
+  "octet_length", "osa_distance", "percentile", "percentile_25", "percentile_75", "percentile_90", "percentile_95", "percentile_99", "phonetic_hash",
+  "pi", "pow", "power", "radians", "regexp", "regexp_capture", "regexp_like", "regexp_replace", "regexp_substr", "repeat", "reverse", "right", "rpad",
+  "rsoundex", "rtrim", "script_code", "sha1", "sha256", "sha384", "sha512", "sin", "sinh", "soundex", "split_part", "sqrt", "starts_with",
+  "stats_median", "stats_p25", "stats_p75", "stats_p90", "stats_p95", "stats_p99", "stats_perc", "stats_seq", "stats_stddev", "stats_stddev_pop",
+  "stats_stddev_samp", "stats_var", "stats_var_pop", "stats_var_samp", "stddev", "stddev_pop", "stddev_samp", "strpos", "tan", "tanh", "text_bitsize",
+  "text_casefold", "text_concat", "text_contains", "text_count", "text_has_prefix", "text_has_suffix", "text_index", "text_join", "text_last_index",
+  "text_left", "text_length", "text_like", "text_lower", "text_lpad", "text_ltrim", "text_repeat", "text_replace", "text_reverse", "text_right",
+  "text_rpad", "text_rtrim", "text_size", "text_slice", "text_split", "text_substring", "text_title", "text_translate", "text_trim", "text_upper",
+  "translate", "translit", "trunc", "uuid4", "uuid7", "uuid7_timestamp_ms", "uuid_blob", "uuid_str", "var_pop", "var_samp", "variance"
+]);
+
+/** sqlean's aggregates, by the number of arguments each takes: every other function of `SQLEAN_FUNCTIONS` is scalar or table-valued. */
+export const SQLEAN_AGGREGATES: ReadonlyMap<string, number> = new Map([
+  ...["median", "percentile_25", "percentile_75", "percentile_90", "percentile_95", "percentile_99", "stddev", "stddev_pop", "stddev_samp", "variance", "var_pop", "var_samp"].map((n) => [n, 1] as const),
+  ...["stats_median", "stats_p25", "stats_p75", "stats_p90", "stats_p95", "stats_p99", "stats_stddev", "stats_stddev_pop", "stats_stddev_samp", "stats_var", "stats_var_pop", "stats_var_samp"].map((n) => [n, 1] as const),
+  ["percentile", 2],
+  ["stats_perc", 2],
+]);
+
+/**
+ * A driver over libSQL's engine, `@libsql/client` and the `libsql` package, runs a statement on a
+ * local file with the SQLite it carries, which loads no extension, and on Turso Cloud, or any libSQL
+ * server, with the server's, which loads sqlean's. So the check reads a call of a sqlean function
+ * its SQLite lacks as a call of one it has, of the same kind, and checks the rest of the statement:
+ * a scalar function as `char`, which takes any number of arguments, an aggregate as `total` or, of
+ * two arguments, `group_concat`, and `stats_seq` as `generate_series`. A statement that only such a
+ * call keeps from preparing is refused by neither, and fails on a local file when it runs. The
+ * statement runs as written; only the check reads it so.
+ */
+export function withoutSqlean(sql: string, name: string): string | undefined {
+  const lower = name.toLowerCase();
+  const stand = lower === "stats_seq" ? "generate_series" : SQLEAN_AGGREGATES.get(lower) === 2 ? "group_concat" : SQLEAN_AGGREGATES.has(lower) ? "total" : "char";
+  // Where the next thing after `at` is an opening parenthesis, past spaces and comments.
+  const opens = (at: number): boolean => {
+    let j = at;
+    for (;;) {
+      while (j < sql.length && /\s/.test(sql[j]!)) j++;
+      if (sql.startsWith("--", j)) {
+        const end = sql.indexOf("\n", j);
+        if (end < 0) return false;
+        j = end + 1;
+      } else if (sql.startsWith("/*", j)) {
+        const end = sql.indexOf("*/", j + 2);
+        if (end < 0) return false;
+        j = end + 2;
+      } else {
+        return sql[j] === "(";
+      }
+    }
+  };
+  let out = "";
+  let changed = false;
+  let i = 0;
+  while (i < sql.length) {
+    const c = sql[i]!;
+    const close = c === "'" || c === '"' || c === "`" ? c : c === "[" ? "]" : undefined;
+    if (close) {
+      // A quote written twice inside is the quote itself; a bracket ends at the first `]`.
+      let j = i + 1;
+      let inner = "";
+      while (j < sql.length) {
+        if (sql[j] === close) {
+          if (close !== "]" && sql[j + 1] === close) {
+            inner += close;
+            j += 2;
+            continue;
+          }
+          break;
+        }
+        inner += sql[j];
+        j++;
+      }
+      // A quoted name that is called, never a string.
+      if (close !== "'" && inner.toLowerCase() === lower && opens(j + 1)) {
+        out += stand;
+        changed = true;
+      } else {
+        out += sql.slice(i, j + 1);
+      }
+      i = j + 1;
+    } else if (sql.startsWith("--", i) || sql.startsWith("/*", i)) {
+      const end = sql.startsWith("--", i) ? sql.indexOf("\n", i) : sql.indexOf("*/", i + 2) + 1;
+      const j = end <= 0 ? sql.length : end + 1;
+      out += sql.slice(i, j);
+      i = j;
+    } else if (/[A-Za-z_]/.test(c)) {
+      const word = /^[A-Za-z_][\w$]*/.exec(sql.slice(i))![0];
+      if (word.toLowerCase() === lower && opens(i + word.length)) {
+        out += stand;
+        changed = true;
+      } else {
+        out += word;
+      }
+      i += word.length;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return changed ? out : undefined;
+}
+
+function sync(name: string, db: SyncDatabase, server = false): SqliteDriver {
   const row = db.prepare("select sqlite_version() as v").get() as { v: string };
   return {
     name,
     says: (refusal) => `${name} runs SQLite ${row.v}, which refuses this statement: ${refusal}`,
     async refuses(sql) {
-      try {
-        db.prepare(sql);
-        return undefined;
-      } catch (e) {
-        return (e as Error).message;
+      let text = sql;
+      for (;;) {
+        try {
+          db.prepare(text);
+          return undefined;
+        } catch (e) {
+          const message = (e as Error).message;
+          const missing = /^no such (?:function|table): (\w+)$/.exec(message)?.[1];
+          const next = server && missing !== undefined && SQLEAN_FUNCTIONS.has(missing.toLowerCase()) ? withoutSqlean(text, missing) : undefined;
+          if (next === undefined) return message;
+          text = next;
+        }
       }
     },
     async close() {
@@ -74,14 +198,14 @@ const DRIVERS: [string, Open][] = [
     "@libsql/client",
     async (require, path) => {
       const Database = createRequire(require.resolve("@libsql/client"))("libsql") as new (path: string, options: object) => SyncDatabase;
-      return sync("@libsql/client", new Database(path, { readonly: true }));
+      return sync("@libsql/client", new Database(path, { readonly: true }), true);
     },
   ],
   [
     "libsql",
     async (require, path) => {
       const Database = require("libsql") as new (path: string, options: object) => SyncDatabase;
-      return sync("libsql", new Database(path, { readonly: true }));
+      return sync("libsql", new Database(path, { readonly: true }), true);
     },
   ],
   [

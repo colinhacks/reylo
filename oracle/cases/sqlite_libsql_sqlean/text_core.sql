@@ -1,0 +1,1 @@
+select left(name, :n) as a, right(name, 2) as b, lpad(nick, 5) as c, rpad(name, 4, '.') as d, repeat(name, 2) as e, reverse(nick) as f, split_part(name, ',', 1) as g, translate(name, 'a', 'b') as h, btrim(nick) as i from people
