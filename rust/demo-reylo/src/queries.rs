@@ -68,6 +68,13 @@ pub mod planned_states {}
 #[reylo::query("update tasks set state = :state where id = :id")]
 pub mod set_task_state {}
 
+/// A column a CHECK lists 200 values for, whose enum casts into the crate's.
+#[reylo::query("select code from codes")]
+pub mod all_codes {}
+
+#[reylo::reflect("codes.code")]
+pub enum ReflectedCode {}
+
 /// A plain enum of the crate's own, with nothing on it for Reylo: a query's module names it for a
 /// column or a parameter, and matches its variants by name.
 #[derive(Debug, Clone, Copy, PartialEq)]

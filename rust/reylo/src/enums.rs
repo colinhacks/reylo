@@ -59,8 +59,10 @@ pub trait Enum: Copy + 'static {
 #[doc(hidden)]
 pub struct EnumId<const HASH: u64>;
 
-/// A list of values, as a type: each value's [`Label`], first to last, as nested pairs ending in
-/// `()`, which [`Enum::Id`] names.
+/// A list of values, as a type, which [`Enum::Id`] names: each value's [`Label`], first to last, in
+/// a balanced tree of pairs (one value is its `Label` alone, and more are a pair of the first half's
+/// tree and the rest's). Proving a cast walks the tree, so its depth, about log2 of the count, is
+/// what counts against the compiler's recursion limit, not the count.
 #[doc(hidden)]
 pub struct Labels<L>(core::marker::PhantomData<L>);
 
@@ -94,12 +96,13 @@ pub trait Covers<Id> {}
 impl<T: Enum<Id = EnumId<HASH>>, const HASH: u64> Covers<EnumId<HASH>> for T {}
 impl<T: Enum + HasLabels<L>, L> Covers<Labels<L>> for T {}
 
-/// An enum with a variant for each [`Label`] of `L`, a list as [`Labels`] holds it.
+/// An enum with a variant for each [`Label`] of `L`, a tree as [`Labels`] holds it.
 #[doc(hidden)]
 pub trait HasLabels<L> {}
 
 impl<T> HasLabels<()> for T {}
-impl<T: HasLabel<HASH> + HasLabels<Rest>, const HASH: u64, Rest> HasLabels<(Label<HASH>, Rest)> for T {}
+impl<T: HasLabel<HASH>, const HASH: u64> HasLabels<Label<HASH>> for T {}
+impl<T: HasLabels<A> + HasLabels<B>, A, B> HasLabels<(A, B)> for T {}
 
 /// A statement returned a second row where Reylo inferred it returns one row, or at most one:
 /// `.run()` returns it as `sqlx::Error::Decode`. It means a statement's cardinality was inferred

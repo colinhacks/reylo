@@ -93,7 +93,9 @@ async fn main() -> Result<(), sqlx::Error> {
     let sad = users_by_mood::Query { mood: planned[0].mood.cast() }.run(&pool).await?;
     let reflected: Mood = planned[1].mood.cast();
     assert_eq!((changed, reflected), (0, Mood::Ok));
-    println!("17. widen       {planned:?} {changed} changed, {sad:?}");
+    let code: ReflectedCode = all_codes::Code::V199.cast();
+    assert_eq!(code.label(), "v199");
+    println!("17. widen       {planned:?} {changed} changed, {sad:?}, {} of 200", code.label());
 
     let mut titles = titles_by_author::Query { author: 1 }.stream(&pool);
     let mut streamed = Vec::new();
