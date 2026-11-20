@@ -872,8 +872,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     let attached = |s: &Schema| -> BTreeMap<(String, String), String> { s.objects.values().filter(|o| o.kind == Some(Kind::Index)).filter_map(|o| Some(((o.goes_with.clone()?, o.owner.clone()?), o.id.clone()))).collect() };
     let (was_attached, is_attached) = (attached(from), attached(to));
     for (key, old_id) in &was_attached {
-        // Not under an index made again, which drops it: the target's is made then under its name.
-        let Some(new_id) = is_attached.get(key).filter(|n| *n != old_id && to.objects.contains_key(&key.0) && from.objects.contains_key(&key.0) && !drops.contains(&key.0)) else { continue };
+        let Some(new_id) = is_attached.get(key).filter(|n| *n != old_id && to.objects.contains_key(&key.0) && from.objects.contains_key(&key.0)) else { continue };
         if renames.contains_key(new_id) || !alterer.renames_as(&from.objects[old_id], &to.objects[new_id]) {
             continue;
         }
@@ -915,92 +914,62 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     remade.extend(remade_along.iter().cloned());
     let mut queue: Vec<String> = drops.iter().cloned().chain(blocking.iter().cloned()).chain(left_by_change.iter().cloned()).chain(remade_along.iter().cloned()).collect();
     let mut seen: BTreeSet<String> = queue.iter().cloned().collect();
-    while let Some(id) = queue.pop() {
-        let replaced = drops.contains(&id) && creates.contains(&id);
-        let gone = (drops.contains(&id) && !creates.contains(&id)) || left_by_change.contains(&id);
-        if replaced {
-            for goer in goers.get(id.as_str()).into_iter().flatten() {
-                if to.objects.contains_key(*goer) && !(drops.contains(*goer) && creates.contains(*goer)) && !renames.contains_key(*goer) && !renames.values().any(|(old, _)| old == goer) {
-                    alters.remove(*goer);
-                    drops.insert(goer.to_string());
-                    creates.insert(goer.to_string());
-                    if seen.insert(goer.to_string()) {
-                        queue.push(goer.to_string());
-                    }
-                }
-            }
-        }
-        for dependent in dependents.get(id.as_str()).into_iter().flatten() {
-            let d = &from.objects[*dependent];
-            let owned = d.owner.as_deref() == Some(id.as_str());
-            // A column whose default calls a function that goes has its default taken off first.
-            if gone && from.objects[&id].kind == Some(Kind::Function) && d.kind == Some(Kind::Column) && !owned && !d.extra.iter().any(|l| l == GENERATED) && !drops.contains(*dependent) {
-                if let Some(hook) = to.objects.get(*dependent).and_then(|t| alterer.unhook(d, t)) {
-                    hooks.insert(dependent.to_string(), hook);
-                    continue;
-                }
-            }
-            // A column another table takes from a column that goes, which the target keeps, is kept
-            // before it goes.
-            let source = &from.objects[&id];
-            if gone && d.kind == Some(Kind::Column) && source.kind == Some(Kind::Column) && d.owner != source.owner && !drops.contains(*dependent) && source.owner.as_ref().is_some_and(|w| to.objects.contains_key(w)) {
-                if let Some(keep) = to.objects.get(*dependent).and_then(|t| alterer.kept_from(d, t, source)) {
-                    // Once for its table, however many of its columns it keeps.
-                    let held = hooks.entry(d.owner.clone().unwrap_or_else(|| dependent.to_string())).or_default();
-                    for s in keep.0 {
-                        if !held.0.contains(&s) {
-                            held.0.push(s);
+    loop {
+        while let Some(id) = queue.pop() {
+            let replaced = drops.contains(&id) && creates.contains(&id);
+            let gone = (drops.contains(&id) && !creates.contains(&id)) || left_by_change.contains(&id);
+            if replaced {
+                for goer in goers.get(id.as_str()).into_iter().flatten() {
+                    if to.objects.contains_key(*goer) && !(drops.contains(*goer) && creates.contains(*goer)) && !renames.contains_key(*goer) && !renames.values().any(|(old, _)| old == goer) {
+                        alters.remove(*goer);
+                        drops.insert(goer.to_string());
+                        creates.insert(goer.to_string());
+                        if seen.insert(goer.to_string()) {
+                            queue.push(goer.to_string());
                         }
                     }
-                    for s in keep.1 {
-                        if !held.1.contains(&s) {
-                            held.1.push(s);
-                        }
-                    }
-                    continue;
                 }
             }
-            // What the target keeps but depends on an object it drops (a foreign key on a unique
-            // constraint the target makes a primary key) goes and comes back, depending on what the
-            // target has instead. What holds rows (a table, a column, a type its columns have) is
-            // never made again for it: it changes in place, as its own definition says, or the
-            // drop fails on the database.
-            if gone {
-                let holds_nothing = matches!(d.kind, Some(Kind::Constraint | Kind::Index | Kind::View | Kind::Trigger | Kind::Policy | Kind::Rule | Kind::Statistics | Kind::Function | Kind::Operator | Kind::Cast | Kind::Comment));
-                if owned || !holds_nothing || drops.contains(*dependent) || alters.contains_key(*dependent) || !to.objects.contains_key(*dependent) {
-                    continue;
-                }
-                alters.remove(*dependent);
-                drops.insert(dependent.to_string());
-                creates.insert(dependent.to_string());
-                if seen.insert(dependent.to_string()) {
-                    queue.push(dependent.to_string());
-                }
-                continue;
-            }
-            // A column whose default calls a function made again keeps its rows: the default goes
-            // before the function, and comes back after.
-            let generated = d.extra.iter().any(|l| l == GENERATED);
-            if replaced && d.kind == Some(Kind::Column) && !owned && !generated && from.objects[&id].kind == Some(Kind::Function) && !drops.contains(*dependent) {
-                if let Some(hook) = to.objects.get(*dependent).and_then(|t| alterer.unhook(d, t)) {
-                    hooks.insert(dependent.to_string(), hook);
-                    continue;
-                }
-            }
-            // A blocking change refuses only views, rules, policies and triggers on it; the server
-            // rebuilds an index or a constraint itself. A column of a type changed so changes
-            // type too, and so blocks what is on it.
-            if !replaced && d.kind == Some(Kind::Column) && !owned {
-                // What the column takes off around the change (a child's own default under its
-                // parent's retype) and puts back.
-                if !drops.contains(*dependent) {
-                    if let Some(hook) = to.objects.get(*dependent).and_then(|t| alterer.around(d, t, &from.objects[&id])) {
+            for dependent in dependents.get(id.as_str()).into_iter().flatten() {
+                let d = &from.objects[*dependent];
+                let owned = d.owner.as_deref() == Some(id.as_str());
+                // A column whose default calls a function that goes has its default taken off first.
+                if gone && from.objects[&id].kind == Some(Kind::Function) && d.kind == Some(Kind::Column) && !owned && !d.extra.iter().any(|l| l == GENERATED) && !drops.contains(*dependent) {
+                    if let Some(hook) = to.objects.get(*dependent).and_then(|t| alterer.unhook(d, t)) {
                         hooks.insert(dependent.to_string(), hook);
+                        continue;
                     }
                 }
-                // A generated column reading the column is made again around the change, which
-                // the server refuses under it: it holds nothing of its own.
-                if d.extra.iter().any(|l| l == GENERATED) && to.objects.contains_key(*dependent) && !drops.contains(*dependent) {
+                // A column another table takes from a column that goes, which the target keeps, is kept
+                // before it goes.
+                let source = &from.objects[&id];
+                if gone && d.kind == Some(Kind::Column) && source.kind == Some(Kind::Column) && d.owner != source.owner && !drops.contains(*dependent) && source.owner.as_ref().is_some_and(|w| to.objects.contains_key(w)) {
+                    if let Some(keep) = to.objects.get(*dependent).and_then(|t| alterer.kept_from(d, t, source)) {
+                        // Once for its table, however many of its columns it keeps.
+                        let held = hooks.entry(d.owner.clone().unwrap_or_else(|| dependent.to_string())).or_default();
+                        for s in keep.0 {
+                            if !held.0.contains(&s) {
+                                held.0.push(s);
+                            }
+                        }
+                        for s in keep.1 {
+                            if !held.1.contains(&s) {
+                                held.1.push(s);
+                            }
+                        }
+                        continue;
+                    }
+                }
+                // What the target keeps but depends on an object it drops (a foreign key on a unique
+                // constraint the target makes a primary key) goes and comes back, depending on what the
+                // target has instead. What holds rows (a table, a column, a type its columns have) is
+                // never made again for it: it changes in place, as its own definition says, or the
+                // drop fails on the database.
+                if gone {
+                    let holds_nothing = matches!(d.kind, Some(Kind::Constraint | Kind::Index | Kind::View | Kind::Trigger | Kind::Policy | Kind::Rule | Kind::Statistics | Kind::Function | Kind::Operator | Kind::Cast | Kind::Comment));
+                    if owned || !holds_nothing || drops.contains(*dependent) || alters.contains_key(*dependent) || !to.objects.contains_key(*dependent) {
+                        continue;
+                    }
                     alters.remove(*dependent);
                     drops.insert(dependent.to_string());
                     creates.insert(dependent.to_string());
@@ -1009,54 +978,100 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                     }
                     continue;
                 }
-                // A column of a type made again changes type, under what reads it.
-                if remade.contains(&id) {
-                    remade.insert(dependent.to_string());
+                // A column whose default calls a function made again keeps its rows: the default goes
+                // before the function, and comes back after.
+                let generated = d.extra.iter().any(|l| l == GENERATED);
+                if replaced && d.kind == Some(Kind::Column) && !owned && !generated && from.objects[&id].kind == Some(Kind::Function) && !drops.contains(*dependent) {
+                    if let Some(hook) = to.objects.get(*dependent).and_then(|t| alterer.unhook(d, t)) {
+                        hooks.insert(dependent.to_string(), hook);
+                        continue;
+                    }
                 }
-                if seen.insert(dependent.to_string()) {
-                    queue.push(dependent.to_string());
-                }
-                continue;
-            }
-            // A type made again takes the functions that take or give it along, and a column's
-            // new type those whose bodies read it: each is made again around the change, as what
-            // is on a column is.
-            let made_again = remade.contains(&id) && d.kind == Some(Kind::Function);
-            // What takes its column off and puts it back around the change keeps itself.
-            if !replaced && !owned && !drops.contains(*dependent) {
-                if let Some(hook) = to.objects.get(*dependent).and_then(|t| alterer.around(d, t, &from.objects[&id])) {
-                    // Taken off one column after another (a publication's tables), it comes back once.
-                    let held = hooks.entry(dependent.to_string()).or_default();
-                    for s in hook.0 {
-                        if !held.0.contains(&s) {
-                            held.0.push(s);
+                // A blocking change refuses only views, rules, policies and triggers on it; the server
+                // rebuilds an index or a constraint itself. A column of a type changed so changes
+                // type too, and so blocks what is on it.
+                if !replaced && d.kind == Some(Kind::Column) && !owned {
+                    // What the column takes off around the change (a child's own default under its
+                    // parent's retype) and puts back.
+                    if !drops.contains(*dependent) {
+                        if let Some(hook) = to.objects.get(*dependent).and_then(|t| alterer.around(d, t, &from.objects[&id])) {
+                            hooks.insert(dependent.to_string(), hook);
                         }
                     }
-                    for s in hook.1 {
-                        if !held.1.contains(&s) {
-                            held.1.push(s);
+                    // A generated column reading the column is made again around the change, which
+                    // the server refuses under it: it holds nothing of its own.
+                    if d.extra.iter().any(|l| l == GENERATED) && to.objects.contains_key(*dependent) && !drops.contains(*dependent) {
+                        alters.remove(*dependent);
+                        drops.insert(dependent.to_string());
+                        creates.insert(dependent.to_string());
+                        if seen.insert(dependent.to_string()) {
+                            queue.push(dependent.to_string());
                         }
+                        continue;
+                    }
+                    // A column of a type made again changes type, under what reads it.
+                    if remade.contains(&id) {
+                        remade.insert(dependent.to_string());
+                    }
+                    if seen.insert(dependent.to_string()) {
+                        queue.push(dependent.to_string());
                     }
                     continue;
                 }
+                // A type made again takes the functions that take or give it along, and a column's
+                // new type those whose bodies read it: each is made again around the change, as what
+                // is on a column is.
+                let made_again = remade.contains(&id) && d.kind == Some(Kind::Function);
+                // What takes its column off and puts it back around the change keeps itself.
+                if !replaced && !owned && !drops.contains(*dependent) {
+                    if let Some(hook) = to.objects.get(*dependent).and_then(|t| alterer.around(d, t, &from.objects[&id])) {
+                        // Taken off one column after another (a publication's tables), it comes back once.
+                        let held = hooks.entry(dependent.to_string()).or_default();
+                        for s in hook.0 {
+                            if !held.0.contains(&s) {
+                                held.0.push(s);
+                            }
+                        }
+                        for s in hook.1 {
+                            if !held.1.contains(&s) {
+                                held.1.push(s);
+                            }
+                        }
+                        continue;
+                    }
+                }
+                if !replaced && !owned && !made_again && !matches!(d.kind, Some(Kind::View | Kind::Rule | Kind::Policy | Kind::Trigger)) {
+                    continue;
+                }
+                if !replaced && owned {
+                    continue;
+                }
+                if drops.contains(*dependent) && !creates.contains(*dependent) {
+                    continue;
+                }
+                if !to.objects.contains_key(*dependent) {
+                    continue;
+                }
+                alters.remove(*dependent);
+                drops.insert(dependent.to_string());
+                creates.insert(dependent.to_string());
+                if seen.insert(dependent.to_string()) {
+                    queue.push(dependent.to_string());
+                }
             }
-            if !replaced && !owned && !made_again && !matches!(d.kind, Some(Kind::View | Kind::Rule | Kind::Policy | Kind::Trigger)) {
-                continue;
-            }
-            if !replaced && owned {
-                continue;
-            }
-            if drops.contains(*dependent) && !creates.contains(*dependent) {
-                continue;
-            }
-            if !to.objects.contains_key(*dependent) {
-                continue;
-            }
-            alters.remove(*dependent);
-            drops.insert(dependent.to_string());
-            creates.insert(dependent.to_string());
-            if seen.insert(dependent.to_string()) {
-                queue.push(dependent.to_string());
+        }
+        // An index renamed under one the plan makes again goes with it, as the server drops a
+        // partition's index with its table's: the target's is made then, under its name.
+        let undone: Vec<String> = renames.iter().filter(|(_, (old, _))| from.objects[old].kind == Some(Kind::Index) && from.objects[old].goes_with.as_ref().is_some_and(|w| drops.contains(w))).map(|(new, _)| new.clone()).collect();
+        if undone.is_empty() {
+            break;
+        }
+        for new_id in undone {
+            let Some((old_id, _)) = renames.remove(&new_id) else { continue };
+            drops.insert(old_id.clone());
+            creates.insert(new_id);
+            if seen.insert(old_id.clone()) {
+                queue.push(old_id);
             }
         }
     }

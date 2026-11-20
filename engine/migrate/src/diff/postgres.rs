@@ -3801,7 +3801,18 @@ impl Alterer for PostgresAlterer {
         if kept.is_empty() {
             return None;
         }
-        Some((kept.iter().map(|p| format!("alter table {table} no inherit {p}")).collect(), kept.iter().map(|p| format!("alter table {table} inherit {p}")).collect()))
+        // Taken again after the table's own change, which took the rest: each parent the target
+        // lists after one of these is left and taken again too, to keep the target's order.
+        let has = parents(to);
+        let first = has.iter().position(|p| kept.contains(p)).unwrap_or(0);
+        let mut back = Vec::new();
+        for p in &has[first..] {
+            if !kept.contains(p) {
+                back.push(format!("alter table {table} no inherit {p}"));
+            }
+            back.push(format!("alter table {table} inherit {p}"));
+        }
+        Some((kept.iter().map(|p| format!("alter table {table} no inherit {p}")).collect(), back))
     }
 
     fn waits_for(&self, from: &Object, to: &Object) -> Vec<String> {
