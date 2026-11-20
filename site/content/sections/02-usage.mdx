@@ -780,6 +780,15 @@ await db.transaction(async (trx) => {
 
 For databases that support synchronous operations, you can use `.runSync()`.
 
+```ts twoslash dialect="sqlite"
+import Database from "better-sqlite3";
+import getUser from "./get_user.sql";
+
+const db = new Database("app.db");
+const user = getUser.runSync(db, { id: 1 });
+//    ^?
+```
+
 <Callout title="Supported drivers">
 
 - `better-sqlite3`
@@ -791,15 +800,6 @@ For databases that support synchronous operations, you can use `.runSync()`.
 - a Durable Object's `ctx.storage.sql`
 
 </Callout>
-
-```ts twoslash dialect="sqlite"
-import Database from "better-sqlite3";
-import getUser from "./get_user.sql";
-
-const db = new Database("app.db");
-const user = getUser.runSync(db, { id: 1 });
-//    ^?
-```
 
 ### `.try()`
 
