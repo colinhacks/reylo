@@ -864,7 +864,7 @@ async fn new_without_schema_sql_writes_what_the_database_has(mut p: P) {
     // With nothing changed, the migration is empty, to write by hand: a change of data or of schema.
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "backfill", &Default::default(), log).await).await, 0, "{}", p.peek());
     let out = p.output();
-    assert_has!(&out, r"✓ Wrote \S*_backfill\.sql, empty, to write by hand: this database has nothing new");
+    assert_has!(&out, r"✓ Wrote \S*_backfill\.sql\n» Empty, to write by hand: this database has nothing new");
     assert!(!out.contains("change to data"), "{out}");
 }
 
@@ -2631,7 +2631,7 @@ async fn wipe_deletes_rows_and_keeps_the_schema(mut p: P) {
     p.exec("insert into users (name) values ('a'), ('b'); insert into posts values (1, 1)").await;
     p.output();
     assert_eq!(p.run(async |o, log| reylo_migrate::db_wipe(o, false, log).await).await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"Deleted every row of 2 tables on \S+[^;]*; the schema and the history stay");
+    assert_has!(p.output(), r"Deleted every row of 2 tables on \S+[^\n]*\n» The schema and the history stay");
     assert!(p.rows("select * from users").await.is_empty() && p.rows("select * from posts").await.is_empty());
     assert_eq!(p.history().await, ["20261027100000_users.sql", "20261027110000_posts.sql"]);
     // Identities start again.

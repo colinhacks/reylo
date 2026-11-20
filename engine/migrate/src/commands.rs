@@ -2234,7 +2234,8 @@ pub async fn db_wipe(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, E
         0 => " (none had rows)".to_string(),
         n => format!(" ({n} had rows)"),
     };
-    log(&format!("{} Deleted every row of {} table{} on {}{had}; the schema and the history stay", paint("green", "✓"), tables, if tables == 1 { "" } else { "s" }, shown_url(&opts.url)));
+    log(&format!("{} Deleted every row of {} table{} on {}{had}", paint("green", "✓"), tables, if tables == 1 { "" } else { "s" }, shown_url(&opts.url)));
+    log(&note("The schema and the history stay"));
     Ok(0)
 }
 
@@ -3148,8 +3149,14 @@ pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>)
     match written.as_slice() {
         // With schema.sql, any schema change goes there, so an empty migration is for data; with
         // none, it is as much for a schema change written by hand.
-        [one] if drafted.empty && drafted.target.ends_with(".sql") => log(&format!("{} Wrote {one}, empty: {} has nothing new, so it's for a change to data", paint("green", "✓"), drafted.target)),
-        [one] if drafted.empty => log(&format!("{} Wrote {one}, empty, to write by hand: {} has nothing new", paint("green", "✓"), drafted.target)),
+        [one] if drafted.empty && drafted.target.ends_with(".sql") => {
+            log(&format!("{} Wrote {one}", paint("green", "✓")));
+            log(&note(format!("Empty: {} has nothing new, so it's for a change to data", drafted.target)));
+        }
+        [one] if drafted.empty => {
+            log(&format!("{} Wrote {one}", paint("green", "✓")));
+            log(&note(format!("Empty, to write by hand: {} has nothing new", drafted.target)));
+        }
         [one] => log(&format!("{} Wrote {one}", paint("green", "✓"))),
         many => {
             if drafted.lock_safe {
