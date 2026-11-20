@@ -75,11 +75,19 @@ pub fn identity(url: &str) -> String {
 /// alone is no call, and nor is a name a statement gives a table (`create table vector (…)`,
 /// `insert into vector (…)`, `references vector (id)`): only those stay SQLite's.
 pub fn uses_own_sql(sql: &str) -> bool {
-    use crate::sql::TokenKind::{Symbol, Word};
+    use crate::sql::TokenKind::{Quoted, Symbol, Word};
     const CALLS: [&str; 14] = ["libsql_vector_idx", "vector", "vector32", "vector64", "vector16", "vectorb16", "vector8", "vector1bit", "vector_extract", "vector_distance_cos", "vector_distance_l2", "vector_top_k", "vector_concat", "vector_slice"];
     const TYPES: [&str; 12] = ["f32_blob", "f64_blob", "f16_blob", "fb16_blob", "f8_blob", "f1bit_blob", "float32", "float64", "float16", "floatb16", "float8", "float1bit"];
     let tokens = crate::sql::tokenize(sql, crate::Dialect::Sqlite);
     let word = |i: usize| tokens.get(i).filter(|t| t.kind == Word).map(|t| t.text.to_ascii_lowercase());
+    // A name as SQLite reads it, quoted or not: `"vector"(…)` is the same call as `vector(…)`.
+    let name = |i: usize| {
+        tokens.get(i).and_then(|t| match t.kind {
+            Word => Some(t.text.to_ascii_lowercase()),
+            Quoted if t.text.len() >= 2 => Some(t.text[1..t.text.len() - 1].to_ascii_lowercase()),
+            _ => None,
+        })
+    };
     let open = |i: usize| tokens.get(i).is_some_and(|t| t.kind == Symbol && t.text == "(");
     // The words after which a name followed by `(` is a table's or a query's, not a call's.
     const NAMES: [&str; 11] = ["table", "into", "references", "exists", "view", "trigger", "index", "from", "join", "update", "with"];
@@ -89,7 +97,7 @@ pub fn uses_own_sql(sql: &str) -> bool {
         (0..i).rev().filter_map(word).find(|w| matches!(w.as_str(), "index" | "trigger" | "join" | "select" | "where" | "from")).is_some_and(|w| w == "index" || w == "trigger")
     };
     (0..tokens.len()).any(|i| {
-        let Some(w) = word(i) else { return false };
+        let Some(w) = name(i) else { return false };
         // `vector_top_k` is a table-valued function, called where a table is named (`from`, `join`).
         // A name after a schema (`main.vector`) is a table's: SQLite never qualifies a function.
         let qualified = i > 0 && tokens[i - 1].kind == Symbol && tokens[i - 1].text == ".";
@@ -442,6 +450,8 @@ mod tests {
         assert!(!uses_own_sql("create table t (v integer references main.vector(id)); insert into main.vector (x) values (1); create index i on main.vector (x);"));
         assert!(uses_own_sql("create table vector (emb F32_BLOB(3)); insert into vector values (vector('[1]'));"));
         assert!(uses_own_sql("insert into near select a.id from a join b on vector_distance_cos(a.x, b.x) < 0.5;"));
+        assert!(uses_own_sql("insert into docs (emb) values (\"vector\"('[1,2,3]'));"));
+        assert!(!uses_own_sql("create table \"vector\" (x integer); insert into \"vector\" (x) values (1);"));
         assert!(uses_own_sql("create view near as select id from vector_top_k('docs_emb', :q, 5);"));
         assert!(uses_own_sql("create view near as select d.id from docs d join vector_top_k('docs_emb', :q, 5) k on k.id = d.rowid;"));
         assert!(!uses_own_sql("create trigger t after insert on vector (x) begin select 1; end; create unique index if not exists i on vector (x);"));

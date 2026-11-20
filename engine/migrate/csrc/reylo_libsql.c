@@ -40,8 +40,12 @@ int reylo_libsql_extra_init(const char *unused) {
   return sqlite3_auto_extension((void (*)(void))reylo_libsql_sqlean);
 }
 
+/* A connection waits up to five seconds for a lock another connection holds, as rusqlite's do, so
+ * that a migration meeting an app's brief write waits for it rather than failing at once. */
 int reylo_libsql_open(const char *path, sqlite3 **db) {
-  return sqlite3_open_v2(path, db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI, 0);
+  int rc = sqlite3_open_v2(path, db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI, 0);
+  if (rc == SQLITE_OK) sqlite3_busy_timeout(*db, 5000);
+  return rc;
 }
 int reylo_libsql_close(sqlite3 *db) { return sqlite3_close_v2(db); }
 const char *reylo_libsql_errmsg(sqlite3 *db) { return sqlite3_errmsg(db); }

@@ -206,6 +206,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn waits_for_a_brief_lock() {
+        let path = std::env::temp_dir().join(format!("reylo-libsql-lock-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let path = path.to_string_lossy().into_owned();
+        let mut a = Local::open(&path).unwrap();
+        a.exec("create table t (x integer); begin immediate; insert into t values (1)").unwrap();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            a.exec("commit").unwrap();
+        });
+        let mut b = Local::open(&path).unwrap();
+        b.exec("insert into t values (2)").unwrap();
+        writer.join().unwrap();
+        assert_eq!(b.rows("select count(*) as n from t").unwrap()[0].text("n"), "2");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn runs_libsqls_own_sql() {
         let mut db = Local::memory().unwrap();
         assert_eq!(version(), "3.47.0");
