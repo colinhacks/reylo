@@ -3,10 +3,11 @@
 //! `libsql://<host>` (HTTPS, or HTTP with `?tls=0`), or `https://`, `http://`, `wss://` and `ws://`,
 //! with the auth token in `?authToken=`. The connection is one stream on the server, held from
 //! request to request by the baton each response hands back, so a transaction and a pragma last as
-//! they do on a connection to a file. A server ends a stream left idle for a few seconds: one that
-//! ended outside a transaction is opened again, with every pragma the connection set run on it again,
-//! so that a migration that turned foreign keys off finds them off; one inside a transaction ended
-//! it, which the server rolled back, and is an error.
+//! they do on a connection to a file. A server ends a stream left idle: `sqld` after a few seconds,
+//! Turso Cloud a transaction's after about twenty. One that ended outside a transaction is opened
+//! again, with every pragma the connection set run on it again, so that a migration that turned
+//! foreign keys off finds them off; one inside a transaction ended it, which the server rolled back,
+//! and is an error.
 
 use crate::db::Row;
 use crate::Error;
@@ -143,12 +144,13 @@ impl Remote {
 
     /// The requests' results, in order, sent as one pipeline on the stream. A stream the server
     /// ended outside a transaction is opened again, and the requests sent on it, since none of them
-    /// ran, after the pragmas the connection set: one of those that fails fails the requests, which
-    /// would otherwise run on a connection set otherwise.
+    /// ran. A request that opens a stream runs the pragmas the connection set first, whether the
+    /// server said the last one expired or handed back no baton for it: one of those that fails
+    /// fails the requests, which would otherwise run on a connection set otherwise.
     fn pipeline(&mut self, requests: Vec<Value>) -> Result<Vec<Result<Value, Error>>, Error> {
         let mut retried = false;
         loop {
-            let restore: Vec<Value> = if retried { self.pragmas.iter().map(|(_, sql)| json!({ "type": "sequence", "sql": sql })).collect() } else { vec![] };
+            let restore: Vec<Value> = if self.baton.is_none() { self.pragmas.iter().map(|(_, sql)| json!({ "type": "sequence", "sql": sql })).collect() } else { vec![] };
             let sent: Vec<&Value> = restore.iter().chain(requests.iter()).collect();
             let body = json!({ "baton": self.baton, "requests": sent }).to_string();
             let url = format!("{}/v3/pipeline", self.base_url.as_deref().unwrap_or(&self.target.base));
@@ -161,8 +163,10 @@ impl Remote {
             let text = response.body_mut().with_config().limit(1 << 30).read_to_string().map_err(|e| Error(format!("the libSQL server at {} answered unreadably: {e}", self.target.base)))?;
             let answer: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
             if status != 200 {
-                let message = answer["message"].as_str().map(String::from).unwrap_or_else(|| text.trim().to_string());
-                let expired = answer["code"] == "STREAM_EXPIRED" || message == "Received an invalid baton";
+                // sqld puts its message in `message`, Turso Cloud in `error`.
+                let message = answer["message"].as_str().or_else(|| answer["error"].as_str()).map(String::from).unwrap_or_else(|| text.trim().to_string());
+                // sqld says a stream it ended expired; Turso Cloud answers 404, that it has no such stream.
+                let expired = answer["code"] == "STREAM_EXPIRED" || message == "Received an invalid baton" || (status == 404 && message.starts_with("stream not found"));
                 if expired && self.baton.is_some() && !retried {
                     if self.autocommit {
                         self.baton = None;
@@ -172,8 +176,10 @@ impl Remote {
                     }
                     return Err(Error("the libSQL server ended this connection inside a transaction, which it rolled back: it was idle too long".into()));
                 }
+                // Turso Cloud refuses a token it can't read with a 400, which names the JWT.
+                let refused = matches!(status, 401 | 403) || message.starts_with("JWT error");
                 return Err(Error(match status {
-                    401 | 403 => format!("the libSQL server at {} refused the auth token: {message}. Put the database's token in the URL, as ?authToken=…", self.target.base),
+                    _ if refused => format!("the libSQL server at {} refused the auth token: {message}. Put the database's token in the URL, as ?authToken=…", self.target.base),
                     404 => format!("no libSQL server answers at {} (its Hrana 3 pipeline answered 404)", self.target.base),
                     _ => format!("the libSQL server at {} answered {status}: {message}", self.target.base),
                 }));
@@ -277,6 +283,116 @@ mod tests {
         assert!(names("insert into log values ('note; pragma user_version = 42; end')").is_empty());
         assert!(names("select 1; -- pragma user_version = 42;\n/* pragma user_version = 7; */ select 2").is_empty());
         assert!(names("pragma foreign_key_check").is_empty());
+    }
+
+    /// A stand-in libSQL server: answers each request in turn with the next of `answers`, a status
+    /// and a body, and keeps each request's body.
+    #[cfg(feature = "cli")]
+    fn stand_in(answers: Vec<(u16, Value)>) -> (String, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+        use std::io::{BufRead, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("libsql://127.0.0.1:{}?tls=0&authToken=secret-token", listener.local_addr().unwrap().port());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = seen.clone();
+        std::thread::spawn(move || {
+            for (status, body) in answers {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = std::io::BufReader::new(stream);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    if let Some((_, value)) = line.split_once(':').filter(|(name, _)| name.eq_ignore_ascii_case("content-length")) {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                let mut request = vec![0; length];
+                reader.read_exact(&mut request).unwrap();
+                kept.lock().unwrap().push(serde_json::from_slice(&request).unwrap());
+                let body = body.to_string();
+                write!(reader.get_mut(), "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        (url, seen)
+    }
+
+    /// A response on stream `baton`, with `results` and then the stream's state.
+    #[cfg(feature = "cli")]
+    fn answer(baton: Option<&str>, autocommit: bool, mut results: Vec<Value>) -> (u16, Value) {
+        results.push(json!({ "type": "ok", "response": { "type": "get_autocommit", "is_autocommit": autocommit } }));
+        (200, json!({ "baton": baton, "base_url": null, "results": results }))
+    }
+
+    #[cfg(feature = "cli")]
+    fn one_row() -> Value {
+        json!({ "type": "ok", "response": { "type": "execute", "result": { "cols": [{ "name": "x" }], "rows": [[{ "type": "integer", "value": "1" }]] } } })
+    }
+
+    #[cfg(feature = "cli")]
+    fn ran() -> Value {
+        json!({ "type": "ok", "response": { "type": "sequence" } })
+    }
+
+    /// Turso Cloud says a stream it ended is not found, with a 404: outside a transaction, the
+    /// connection opens a new one, with its pragmas set first.
+    #[cfg(feature = "cli")]
+    #[test]
+    fn a_stream_turso_cloud_no_longer_has_opens_again_with_its_pragmas() {
+        let (url, seen) = stand_in(vec![
+            answer(Some("b1"), true, vec![one_row()]),
+            answer(Some("b2"), true, vec![ran()]),
+            (404, json!({ "error": "stream not found: d41fd8ff:7aaaaa" })),
+            answer(Some("b3"), true, vec![ran(), one_row()]),
+        ]);
+        let mut remote = Remote::open(&url).unwrap();
+        remote.exec("pragma foreign_keys = off").unwrap();
+        let rows = remote.rows("select 1 as x").unwrap();
+        assert_eq!(rows.len(), 1);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[2]["baton"], "b2");
+        assert_eq!(seen[3]["baton"], Value::Null);
+        assert_eq!(seen[3]["requests"][0]["sql"], "pragma foreign_keys = off");
+        assert_eq!(seen[3]["requests"][1]["stmt"]["sql"], "select 1 as x");
+    }
+
+    /// A response that hands back no baton ends the stream: the next request opens one, with the
+    /// connection's pragmas set first.
+    #[cfg(feature = "cli")]
+    #[test]
+    fn a_stream_ended_with_no_baton_opens_again_with_its_pragmas() {
+        let (url, seen) = stand_in(vec![answer(Some("b1"), true, vec![one_row()]), answer(None, true, vec![ran()]), answer(Some("b2"), true, vec![ran(), one_row()])]);
+        let mut remote = Remote::open(&url).unwrap();
+        remote.exec("pragma foreign_keys = off").unwrap();
+        remote.rows("select 1 as x").unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[2]["baton"], Value::Null);
+        assert_eq!(seen[2]["requests"][0]["sql"], "pragma foreign_keys = off");
+    }
+
+    /// Inside a transaction, a stream Turso Cloud no longer has is an error that says the
+    /// transaction was rolled back, not that no server answers.
+    #[cfg(feature = "cli")]
+    #[test]
+    fn a_stream_turso_cloud_no_longer_has_inside_a_transaction_is_said_to_be_rolled_back() {
+        let (url, _) = stand_in(vec![answer(Some("b1"), true, vec![one_row()]), answer(Some("b2"), false, vec![ran()]), (404, json!({ "error": "stream not found: d41fd8ff:7aaaaa" }))]);
+        let mut remote = Remote::open(&url).unwrap();
+        remote.exec("begin").unwrap();
+        let error = remote.rows("select 1 as x").unwrap_err().0;
+        assert!(error.contains("inside a transaction, which it rolled back"), "{error}");
+    }
+
+    /// Turso Cloud refuses a token it can't read with a 400 naming the JWT: the message says the
+    /// token was refused, and shows neither the token nor the server's JSON.
+    #[cfg(feature = "cli")]
+    #[test]
+    fn a_token_turso_cloud_cannot_read_is_said_to_be_refused() {
+        let (url, _) = stand_in(vec![(400, json!({ "error": "JWT error: InvalidToken" }))]);
+        let error = Remote::open(&url).err().unwrap().0;
+        assert!(error.contains("refused the auth token: JWT error: InvalidToken."), "{error}");
+        assert!(!error.contains("secret-token") && !error.contains('{'), "{error}");
     }
 
     #[test]
