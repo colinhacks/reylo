@@ -15,6 +15,8 @@ Your server code imports `.sql` files, and the build checks their types. [Usage]
 | Edge runtime | A driver that connects over HTTP or WebSockets, such as Neon's |
 | Example | [nextjs](https://github.com/reylosql/reylo/tree/main/examples/nextjs), a Next.js 16.4 app on Postgres with a page, a server action and a route handler |
 
+The examples on this page use this schema:
+
 <Details summary="View the schema behind the examples" id="schema">
 
 ```sql file="schema.sql" dialect="postgres"
@@ -254,6 +256,8 @@ export function PostList({ posts }: { posts: Posts }) {
 }
 ```
 
+Queries stay on the server:
+
 - A type-only import, as in `post-list.tsx`, leaves nothing for the bundler to load.
 - A client component that imports a query fails `next build`, and its page in `next dev`. Turbopack reports an "Unknown module type", and webpack that the file needs "an appropriate loader".
 - The type check doesn't catch it, since types don't know which side of the boundary a module runs on.
@@ -289,6 +293,8 @@ $ next build
 app/page.tsx(10,33): error TS2551: Property 'authr' does not exist on type '{ id: number; title: string; author: string; }'. Did you mean 'author'?
 ⨯ Failed to run runAfterProductionCompile: Failed to type check (tsc --runExternalCode).
 ```
+
+How the build checks types:
 
 - Next.js's own check runs without `--runExternalCode`, so `withReylo` turns it off and runs Reylo's instead. The build still prints "Skipping validation of types" for Next.js's check.
 - Setting `typescript.ignoreBuildErrors` in your config turns Reylo's check off too.

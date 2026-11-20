@@ -81,6 +81,8 @@ DATABASE_URL=mysql://…/app?ssl-mode=REQUIRED
 DATABASE_URL=mysql://…/app?ssl-mode=VERIFY_IDENTITY
 ```
 
+The defaults, and the other settings each reads:
+
 - With no setting, a Postgres connection is encrypted where the server offers it, and a MySQL connection isn't.
 - Postgres also reads `sslrootcert`, `sslcert`, `sslkey` and `channel_binding`, as libpq does, and node-postgres's `ssl=true`.
 - MySQL also reads mysql2's `ssl` setting, as JSON with `rejectUnauthorized`, `ca`, `cert` and `key`, and Prisma's `sslaccept=strict`.
@@ -132,6 +134,8 @@ Each query Reylo sends ends with a comment that names its file, in [sqlcommenter
 # the default is true
 sqlcommenter: false
 ```
+
+Each query then carries its file:
 
 ```sql title="What Postgres receives for queries/get_user.sql, by default"
 select id, name, email from users where id = $1::int /*file='queries%2Fget_user.sql'*/

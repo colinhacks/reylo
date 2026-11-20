@@ -22,6 +22,8 @@ select verified from users where id = :id
 
 </Analyzed>
 
+Each field of the result:
+
 | Field | What it holds |
 | --- | --- |
 | `file` | The file `reylo analyze` read the statement from. Only the CLI adds it: the format has no such field, and a statement given with `--sql` has none |
@@ -231,6 +233,8 @@ where name like concat('%', :q::text, '%')
 ```
 
 </InferenceCard>
+
+Where nothing gives a parameter a type:
 
 <Details summary="When a parameter's type cannot be inferred" id="a-parameter-nothing-types">
 
@@ -512,6 +516,8 @@ where email = :email::text
 ```
 
 </InferenceCard>
+
+What counts as a key:
 
 <Details summary="Which matches count as a key, in each dialect" id="key-matches">
 

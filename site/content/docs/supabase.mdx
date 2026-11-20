@@ -15,6 +15,8 @@ A Supabase project is a Postgres database, so everything on the [Postgres](/post
 | Migrations | The Supabase CLI's, in `supabase/migrations`, applied to the local database, or [`reylo migrate`](/migrate/docs) through the session pooler or the direct connection, never port 6543 |
 | JavaScript client | Calls Supabase's REST API, so `.run()` doesn't take it ([Drivers](#drivers)) |
 
+The examples on this page use this schema:
+
 <Details summary="View the schema behind the examples" id="schema">
 
 ```sql file="schema.sql" dialect="postgres"
@@ -40,10 +42,14 @@ DATABASE_URL=postgresql://postgres.<ref>:…@<pooler host>:6543/postgres
 DIRECT_URL=postgresql://postgres.<ref>:…@<pooler host>:5432/postgres
 ```
 
+Then point Reylo at the direct connection:
+
 ```yaml title=".reylo.yaml"
 # the direct connection or the session pooler, never port 6543
 direct_url: ${DIRECT_URL:-${DATABASE_URL}}
 ```
+
+Why not the transaction pooler:
 
 - The type check prepares each query on its connection. The transaction pooler keeps nothing on a connection from one transaction to the next, so describing a query through it can fail.
 - Copy each connection string from the Connect panel of your project's dashboard.
@@ -80,6 +86,8 @@ const note = await getNote.run(db, { id: noteId });
 select id, body, created_at from notes where id = :id::uuid
 ```
 
+Through the transaction pooler:
+
 - Reylo prepares its queries on postgres.js as postgres.js prepares its own, so with `prepare: false` they run unprepared too.
 - Reylo's queries on `pg` are unnamed statements, which the transaction pooler runs with no setting.
 - Supabase's [Postgres.js guide](https://supabase.com/docs/guides/database/postgres-js) notes that postgres.js pipelines queries, which the transaction pooler can answer out of order.
@@ -104,6 +112,8 @@ supabase migration up
 # or the whole database again, from every migration and supabase/seed.sql
 supabase db reset
 ```
+
+About the local database:
 
 - The local database has Supabase's own schemas, such as `auth` and `storage`, so a query that reads `auth.users` or calls `auth.uid()` is typed as it is on your project.
 - The type check reads every `.sql` file that `tsconfig.json` takes in, and a migration of several statements is an error. If your `include` takes in `supabase/`, as `**/*` does, add `"exclude": ["supabase"]`.
@@ -139,6 +149,8 @@ Supabase's Postgres prints floats rounded, so `0.1::float8 + 0.2` comes back `0.
 ```sql
 alter role postgres set extra_float_digits = 1;
 ```
+
+Once that runs:
 
 - Connections that start after it read exact values.
 - The local database rounds floats the same way. Put the statement in a migration, so that it reaches your project, the local database and CI.
