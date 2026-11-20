@@ -37,6 +37,8 @@ To get the file's contents as written, before Reylo compiles its [parameters](/i
 
 ### `.run()`
 
+To run a query, pass your database client and the query's parameters to `.run()`:
+
 ```ts twoslash dialect="postgres"
 import postgres from "postgres";
 import getUser from "./get_user.sql";
@@ -47,18 +49,298 @@ const user = await getUser.run(db, { id: 1 });
 //    ^?
 ```
 
-Await each query in turn, since a connection runs one statement at a time; on Postgres an error aborts the transaction, so every later statement in it fails until it rolls back ([Database errors](/postgres#database-errors)).
+The example above is showing usage with the postgres.js driver, but the `.run()` method accepts connections from all major drivers across the supported dialects.
 
 #### Postgres [#postgres-drivers]
 
 ```ts twoslash tab="pg" dialect="postgres" tab-group="postgres-driver"
 import pg from "pg";
-import createUser from "./create_user.sql";
 import getUser from "./get_user.sql";
 
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 
 const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="postgres.js" dialect="postgres"
+import postgres from "postgres";
+import getUser from "./get_user.sql";
+
+const db = postgres(process.env.DATABASE_URL);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="Bun.sql" dialect="postgres"
+import { SQL } from "bun";
+import getUser from "./get_user.sql";
+
+const db = new SQL(process.env.DATABASE_URL);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="PGlite" dialect="postgres"
+import { PGlite } from "@electric-sql/pglite";
+import getUser from "./get_user.sql";
+
+const db = new PGlite("./pgdata");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="Neon" dialect="postgres"
+import { neon } from "@neondatabase/serverless";
+import getUser from "./get_user.sql";
+
+// a query over HTTP
+const db = neon(process.env.DATABASE_URL);
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="pg-promise" dialect="postgres"
+import pgPromise from "pg-promise";
+import getUser from "./get_user.sql";
+
+const pgp = pgPromise();
+const db = pgp(process.env.DATABASE_URL);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="Slonik" dialect="postgres"
+import { createPool } from "slonik";
+import getUser from "./get_user.sql";
+
+const db = await createPool(process.env.DATABASE_URL!);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="@vercel/postgres" dialect="postgres"
+// deprecated on npm; type-checked against Reylo, not run in its tests
+import { sql } from "@vercel/postgres";
+import getUser from "./get_user.sql";
+
+const user = await getUser.run(sql, { id: 1 });
+```
+
+```ts twoslash tab="Drizzle" dialect="postgres"
+import { drizzle } from "drizzle-orm/node-postgres";
+import getUser from "./get_user.sql";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="Knex" dialect="postgres"
+import knex from "knex";
+import getUser from "./get_user.sql";
+
+const db = knex({ client: "pg", connection: process.env.DATABASE_URL });
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+#### MySQL [#mysql-drivers]
+
+```ts twoslash tab="mysql2" dialect="mysql" tab-group="mysql-driver"
+import mysql from "mysql2/promise";
+import getUser from "./get_user.sql";
+
+const db = mysql.createPool(process.env.DATABASE_URL);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="mariadb" dialect="mysql"
+// mariadb takes only a mariadb:// URL, which Reylo reads as MySQL
+import mariadb from "mariadb";
+import getUser from "./get_user.sql";
+
+const db = mariadb.createPool(process.env.DATABASE_URL);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="PlanetScale" dialect="mysql"
+// @planetscale/database 1.x: a 2.0 client is a type error
+import { connect } from "@planetscale/database";
+import getUser from "./get_user.sql";
+
+const db = connect({ url: process.env.DATABASE_URL });
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="Bun.sql" dialect="mysql"
+import { SQL } from "bun";
+import getUser from "./get_user.sql";
+
+const db = new SQL(process.env.DATABASE_URL);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="Drizzle" dialect="mysql"
+import { drizzle } from "drizzle-orm/mysql2";
+import getUser from "./get_user.sql";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="Knex" dialect="mysql"
+import knex from "knex";
+import getUser from "./get_user.sql";
+
+const db = knex({ client: "mysql2", connection: process.env.DATABASE_URL });
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+#### SQLite [#sqlite-drivers]
+
+```ts twoslash tab="better-sqlite3" dialect="sqlite" tab-group="sqlite-driver"
+import Database from "better-sqlite3";
+import getUser from "./get_user.sql";
+
+const db = new Database("app.db");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="node:sqlite" dialect="sqlite"
+import { DatabaseSync } from "node:sqlite";
+import getUser from "./get_user.sql";
+
+const db = new DatabaseSync("app.db");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="bun:sqlite" dialect="sqlite"
+import { Database } from "bun:sqlite";
+import getUser from "./get_user.sql";
+
+const db = new Database("app.db");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="Bun.sql" dialect="sqlite"
+import { SQL } from "bun";
+import getUser from "./get_user.sql";
+
+const db = new SQL({ adapter: "sqlite", filename: "app.db" });
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="libSQL" dialect="sqlite"
+import { createClient } from "@libsql/client";
+import getUser from "./get_user.sql";
+
+const db = createClient({ url: "file:app.db" });
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="Turso engine" dialect="sqlite"
+import { connect } from "@tursodatabase/database";
+import getUser from "./get_user.sql";
+
+const db = await connect("app.db");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="SQLite Wasm" dialect="sqlite"
+import sqlite3InitModule from "@sqlite.org/sqlite-wasm";
+import getUser from "./get_user.sql";
+
+const sqlite3 = await sqlite3InitModule();
+const db = new sqlite3.oo1.OpfsDb("/app.db");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="Cloudflare D1" dialect="sqlite"
+import type { D1Database } from "@cloudflare/workers-types";
+import getUser from "./get_user.sql";
+
+export default {
+  async fetch(request: Request, env: { DB: D1Database }) {
+    const user = await getUser.run(env.DB, { id: 1 });
+    return Response.json(user);
+  },
+};
+```
+
+```ts twoslash tab="Durable Objects" dialect="sqlite"
+/// <reference types="@cloudflare/workers-types" />
+// ---cut---
+import { DurableObject } from "cloudflare:workers";
+import getUser from "./get_user.sql";
+
+export class Board extends DurableObject {
+  user(id: number) {
+    return getUser.runSync(this.ctx.storage.sql, { id });
+  }
+}
+```
+
+```ts twoslash tab="sqlite3" dialect="sqlite"
+import { promisify } from "node:util";
+import sqlite3 from "sqlite3";
+import getUser from "./get_user.sql";
+
+const db = new sqlite3.Database("app.db");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="sqlite" dialect="sqlite"
+import { open } from "sqlite";
+import sqlite3 from "sqlite3";
+import getUser from "./get_user.sql";
+
+const db = await open({ filename: "app.db", driver: sqlite3.Database });
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="Drizzle" dialect="sqlite"
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import getUser from "./get_user.sql";
+
+const db = drizzle("app.db");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="Knex" dialect="sqlite"
+import knex from "knex";
+import getUser from "./get_user.sql";
+
+const db = knex({ client: "better-sqlite3", connection: { filename: "app.db" } });
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+#### Transactions
+
+Pass a transaction's client to `.run()`, as you pass the database:
+
+**Postgres**
+
+```ts twoslash tab="pg" dialect="postgres" tab-group="postgres-driver"
+import pg from "pg";
+import createUser from "./create_user.sql";
+
+const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 
 // two inserts in one transaction: both land, or neither
 const client = await db.connect();
@@ -78,11 +360,8 @@ try {
 ```ts twoslash tab="postgres.js" dialect="postgres"
 import postgres from "postgres";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = postgres(process.env.DATABASE_URL);
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 await db.begin(async (tx) => {
@@ -94,11 +373,8 @@ await db.begin(async (tx) => {
 ```ts twoslash tab="Bun.sql" dialect="postgres"
 import { SQL } from "bun";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = new SQL(process.env.DATABASE_URL);
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 await db.begin(async (tx) => {
@@ -110,11 +386,8 @@ await db.begin(async (tx) => {
 ```ts twoslash tab="PGlite" dialect="postgres"
 import { PGlite } from "@electric-sql/pglite";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = new PGlite("./pgdata");
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 await db.transaction(async (tx) => {
@@ -124,13 +397,8 @@ await db.transaction(async (tx) => {
 ```
 
 ```ts twoslash tab="Neon" dialect="postgres"
-import { neon, Pool } from "@neondatabase/serverless";
+import { Pool } from "@neondatabase/serverless";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
-
-// a query over HTTP
-const db = neon(process.env.DATABASE_URL);
-const user = await getUser.run(db, { id: 1 });
 
 // a transaction takes a Pool, over a WebSocket: both inserts land, or neither
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -151,12 +419,9 @@ try {
 ```ts twoslash tab="pg-promise" dialect="postgres"
 import pgPromise from "pg-promise";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const pgp = pgPromise();
 const db = pgp(process.env.DATABASE_URL);
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 await db.tx(async (tx) => {
@@ -168,11 +433,8 @@ await db.tx(async (tx) => {
 ```ts twoslash tab="Slonik" dialect="postgres"
 import { createPool } from "slonik";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = await createPool(process.env.DATABASE_URL!);
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 await db.transaction(async (tx) => {
@@ -185,9 +447,6 @@ await db.transaction(async (tx) => {
 // deprecated on npm; type-checked against Reylo, not run in its tests
 import { sql } from "@vercel/postgres";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
-
-const user = await getUser.run(sql, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 const client = await sql.connect();
@@ -207,11 +466,8 @@ try {
 ```ts twoslash tab="Drizzle" dialect="postgres"
 import { drizzle } from "drizzle-orm/node-postgres";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = drizzle(process.env.DATABASE_URL!);
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 await db.transaction(async (tx) => {
@@ -223,11 +479,8 @@ await db.transaction(async (tx) => {
 ```ts twoslash tab="Knex" dialect="postgres"
 import knex from "knex";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = knex({ client: "pg", connection: process.env.DATABASE_URL });
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 await db.transaction(async (trx) => {
@@ -236,16 +489,13 @@ await db.transaction(async (trx) => {
 });
 ```
 
-#### MySQL [#mysql-drivers]
+**MySQL**
 
 ```ts twoslash tab="mysql2" dialect="mysql" tab-group="mysql-driver"
 import mysql from "mysql2/promise";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = mysql.createPool(process.env.DATABASE_URL);
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 const conn = await db.getConnection();
@@ -266,11 +516,8 @@ try {
 // mariadb takes only a mariadb:// URL, which Reylo reads as MySQL
 import mariadb from "mariadb";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = mariadb.createPool(process.env.DATABASE_URL);
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 const conn = await db.getConnection();
@@ -291,11 +538,8 @@ try {
 // @planetscale/database 1.x: a 2.0 client is a type error
 import { connect } from "@planetscale/database";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = connect({ url: process.env.DATABASE_URL });
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 await db.transaction(async (tx) => {
@@ -307,11 +551,8 @@ await db.transaction(async (tx) => {
 ```ts twoslash tab="Bun.sql" dialect="mysql"
 import { SQL } from "bun";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = new SQL(process.env.DATABASE_URL);
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 await db.begin(async (tx) => {
@@ -323,11 +564,8 @@ await db.begin(async (tx) => {
 ```ts twoslash tab="Drizzle" dialect="mysql"
 import { drizzle } from "drizzle-orm/mysql2";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = drizzle(process.env.DATABASE_URL!);
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 await db.transaction(async (tx) => {
@@ -339,11 +577,8 @@ await db.transaction(async (tx) => {
 ```ts twoslash tab="Knex" dialect="mysql"
 import knex from "knex";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = knex({ client: "mysql2", connection: process.env.DATABASE_URL });
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 await db.transaction(async (trx) => {
@@ -352,16 +587,13 @@ await db.transaction(async (trx) => {
 });
 ```
 
-#### SQLite [#sqlite-drivers]
+**SQLite**
 
 ```ts twoslash tab="better-sqlite3" dialect="sqlite" tab-group="sqlite-driver"
 import Database from "better-sqlite3";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = new Database("app.db");
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 // the function must not await, so it runs .runSync()
@@ -374,11 +606,8 @@ db.transaction(() => {
 ```ts twoslash tab="node:sqlite" dialect="sqlite"
 import { DatabaseSync } from "node:sqlite";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = new DatabaseSync("app.db");
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 db.exec("begin");
@@ -395,11 +624,8 @@ try {
 ```ts twoslash tab="bun:sqlite" dialect="sqlite"
 import { Database } from "bun:sqlite";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = new Database("app.db");
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 // the function must not await, so it runs .runSync()
@@ -412,11 +638,8 @@ db.transaction(() => {
 ```ts twoslash tab="Bun.sql" dialect="sqlite"
 import { SQL } from "bun";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = new SQL({ adapter: "sqlite", filename: "app.db" });
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 await db.begin(async (tx) => {
@@ -428,11 +651,8 @@ await db.begin(async (tx) => {
 ```ts twoslash tab="libSQL" dialect="sqlite"
 import { createClient } from "@libsql/client";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = createClient({ url: "file:app.db" });
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 const tx = await db.transaction("write");
@@ -448,11 +668,8 @@ try {
 ```ts twoslash tab="Turso engine" dialect="sqlite"
 import { connect } from "@tursodatabase/database";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = await connect("app.db");
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 await db.transactionAsync(async (tx) => {
@@ -464,12 +681,9 @@ await db.transactionAsync(async (tx) => {
 ```ts twoslash tab="SQLite Wasm" dialect="sqlite"
 import sqlite3InitModule from "@sqlite.org/sqlite-wasm";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const sqlite3 = await sqlite3InitModule();
 const db = new sqlite3.oo1.OpfsDb("/app.db");
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 // the function must not await, so it runs .runSync()
@@ -479,32 +693,13 @@ db.transaction(() => {
 });
 ```
 
-```ts twoslash tab="Cloudflare D1" dialect="sqlite"
-import type { D1Database } from "@cloudflare/workers-types";
-import getUser from "./get_user.sql";
-
-export default {
-  async fetch(request: Request, env: { DB: D1Database }) {
-    const user = await getUser.run(env.DB, { id: 1 });
-    return Response.json(user);
-  },
-};
-
-// D1 has no transaction a query can join: its batch() takes D1's own prepared statements
-```
-
 ```ts twoslash tab="Durable Objects" dialect="sqlite"
 /// <reference types="@cloudflare/workers-types" />
 // ---cut---
 import { DurableObject } from "cloudflare:workers";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 export class Board extends DurableObject {
-  user(id: number) {
-    return getUser.runSync(this.ctx.storage.sql, { id });
-  }
-
   // two inserts in one transaction: both land, or neither
   addPair() {
     const sql = this.ctx.storage.sql;
@@ -520,11 +715,8 @@ export class Board extends DurableObject {
 import { promisify } from "node:util";
 import sqlite3 from "sqlite3";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = new sqlite3.Database("app.db");
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 const exec = promisify(db.exec.bind(db));
@@ -543,11 +735,8 @@ try {
 import { open } from "sqlite";
 import sqlite3 from "sqlite3";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = await open({ filename: "app.db", driver: sqlite3.Database });
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 await db.exec("begin");
@@ -564,11 +753,8 @@ try {
 ```ts twoslash tab="Drizzle" dialect="sqlite"
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = drizzle("app.db");
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 db.transaction((tx) => {
@@ -580,11 +766,8 @@ db.transaction((tx) => {
 ```ts twoslash tab="Knex" dialect="sqlite"
 import knex from "knex";
 import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
 
 const db = knex({ client: "better-sqlite3", connection: { filename: "app.db" } });
-
-const user = await getUser.run(db, { id: 1 });
 
 // two inserts in one transaction: both land, or neither
 await db.transaction(async (trx) => {
