@@ -5,8 +5,11 @@ export const githubUrl = 'https://github.com/reylosql/reylo';
 /** Reylo Migrate's docs: content/docs/migrate.mdx, at an address of its own under its landing page, /migrate (components/migrate-landing.tsx). */
 export const migrateDocsUrl = '/migrate/docs';
 
-/** A page's address: its file's name, but Reylo Migrate's docs, which sit under its landing page. */
-export const docsUrl = (url: string) => (url === '/migrate' ? migrateDocsUrl : url);
+/** The docs' intro, content/docs/index.mdx, at an address of its own under the homepage, / (components/home-landing.tsx). */
+export const introUrl = '/docs';
+
+/** A page's address: its file's name, but the intro and Reylo Migrate's docs, which sit under their landing pages. */
+export const docsUrl = (url: string) => (url === '/' ? introUrl : url === '/migrate' ? migrateDocsUrl : url);
 
 /** The docs site's address: reylo.dev, which every other Reylo domain redirects to (wiki/docs-site.md). */
 export const siteUrl = 'https://reylo.dev';
@@ -46,7 +49,7 @@ export const pageGroups = [
   {
     label: 'Docs',
     items: [
-      { title: 'Intro', href: '/' },
+      { title: 'Intro', href: introUrl },
       { title: SHOW_RUST ? 'Usage with TypeScript' : 'Usage', href: '/typescript' },
       ...(SHOW_RUST ? [{ title: 'Usage with Rust', href: '/rust' }] : []),
       { title: 'Inference engine', href: '/inference' },

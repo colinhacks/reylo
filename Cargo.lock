@@ -2244,6 +2244,7 @@ dependencies = [
 name = "reylo-migrate"
 version = "0.8.0"
 dependencies = [
+ "cc",
  "libc",
  "mysql_async",
  "prost",

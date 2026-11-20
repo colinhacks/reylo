@@ -141,7 +141,7 @@ The run time, the mapper, the adapters and the CLI live in `src/` (the table abo
 
 ### A docs change
 
-The docs are `site/content/docs/`, one file per page: `index.mdx` is the intro, at `/`, and each dialect has a reference page (`postgres.mdx`, `mysql.mdx`, `sqlite.mdx`, `clickhouse.mdx`) with every rule and edge case of its database. The intro, Usage, Inference, Configuration, Observability and the FAQ go on in numbered files in `site/content/sections/`, listed in `site/lib/page-sections.ts`; those files share one schema and one namespace of statements (`site/lib/page-files.ts`). The sidebar is `pageGroups` in `site/lib/layout.shared.tsx`. Links from when the docs were one page keep working through `site/lib/moved-anchors.ts`, a script on `/` that sends each old `/#heading` to its page; a new heading needs no entry. Rust's content shows only while `SHOW_RUST` in `site/lib/languages.ts` is on: `rust.mdx` is built only then, and on every other page a passage only Rust needs goes inside `<Rust>…</Rust>`, a phrase within a line or blocks between tags on lines of their own, and the wording that stands in for it while Rust is off inside `<NoRust>…</NoRust>` (`site/lib/rust-content.ts`, which also drops each `<LanguagePanel value="Rust">`). reylo.dev serves the `release` branch, which each release moves to its tagged commit, so the docs describe what npm serves; a push to `main` builds a preview. A docs change that holds for the released version (a typo, a clearer sentence, a missing example) can go live before the next release: after it lands on `main`, cherry-pick its commit onto `release` and push, which only ever moves forward.
+The docs are `site/content/docs/`, one file per page: `index.mdx` is the intro, at `/docs`, under the homepage at `/` (`site/components/home-landing.tsx`, whose examples are the Inference section's, captured), and each dialect has a reference page (`postgres.mdx`, `mysql.mdx`, `sqlite.mdx`, `clickhouse.mdx`) with every rule and edge case of its database. The intro, Usage, Inference, Configuration, Observability and the FAQ go on in numbered files in `site/content/sections/`, listed in `site/lib/page-sections.ts`; those files share one schema and one namespace of statements (`site/lib/page-files.ts`). The sidebar is `pageGroups` in `site/lib/layout.shared.tsx`. Links from when the docs were one page keep working through `site/lib/moved-anchors.ts`, a script on the homepage that sends each old `/#heading` to its page, or to the intro's; a new heading needs no entry. Rust's content shows only while `SHOW_RUST` in `site/lib/languages.ts` is on: `rust.mdx` is built only then, and on every other page a passage only Rust needs goes inside `<Rust>…</Rust>`, a phrase within a line or blocks between tags on lines of their own, and the wording that stands in for it while Rust is off inside `<NoRust>…</NoRust>` (`site/lib/rust-content.ts`, which also drops each `<LanguagePanel value="Rust">`). reylo.dev serves the `release` branch, which each release moves to its tagged commit, so the docs describe what npm serves; a push to `main` builds a preview. A docs change that holds for the released version (a typo, a clearer sentence, a missing example) can go live before the next release: after it lands on `main`, cherry-pick its commit onto `release` and push, which only ever moves forward.
 
 1. Every type and error shown on the page is captured, never typed by hand. After changing a `.sql` block or a page's schema, run `nub run capture` in `site/` with throwaway servers of each kind: `REYLO_CAPTURE_POSTGRES=postgres://postgres@localhost:<pg port>/reylo_capture REYLO_CAPTURE_MYSQL=mysql://root@127.0.0.1:<mysql port>/reylo_capture REYLO_CAPTURE_CLICKHOUSE=http://default:<password>@127.0.0.1:<http port>/reylo_capture` (the database is dropped and made again, so its name must start with `reylo_capture`). It rewrites `site/lib/sql-modules.json` and `site/lib/sql-errors.json`.
 2. `nub run build` in `site/` type-checks and builds the site to `site/build/client`, and fails on a stale capture. `nub run dev --port <port> --strictPort` in `site/` serves it (3311 by default).
@@ -189,9 +189,9 @@ Everything `reylo` prints for a person follows one set of marks and one layout. 
 ```
 ✓ The migration files match reylo/reylo.lock
 » This database hasn't run 2 migrations
-  Run them in development:
+  To run them in development:
     reylo migrate dev
-  Run them in production:
+  To run them in production:
     reylo migrate deploy
 ```
 
@@ -200,15 +200,16 @@ Everything `reylo` prints for a person follows one set of marks and one layout. 
 | ✓ | green | done, or matches |
 | ✗ | red, with its title | refused or failed |
 | ! | yellow | a risk: data lost, a rename taken for granted, a run cut off, a statement that blocks writes |
-| » | dim | a note: something to know, and maybe act on |
+| » | dim, the whole line | a note: something to know, and maybe act on |
 | + and - | green and red | added and removed |
 | ↺ | yellow | rewound |
 | ↓ | green | pulled |
 | · | dim | a pending migration's row, and the separator before a timing |
 
-- A command never sits inside a sentence. It goes on its own line, cyan, two spaces in from a lead that names the act and ends in a colon. In `engine/migrate/src/commands.rs`, `then` and `steps` write this layout, as a refusal's `fix` does.
-- Leads that offer alternatives are parallel, as "Run them in development:" and "Run them in production:" are, and none starts with "Or".
-- Every line opens with a capitalized word, never a digit, a path, a command or a migration's name. A count or a name goes later in the line: "This database hasn't run 2 migrations". A row in a table of migrations opens with its name, which is the row.
+- A command never sits inside a sentence. It goes on its own line, cyan, two spaces in from a lead that names the act and ends in a colon, dim, so the command stands out. In `engine/migrate/src/commands.rs`, `then` and `steps` write this layout, as a refusal's `fix` does.
+- A note's leads offer the next step for when the reader is ready, in the form "To run them in development:", since nothing needs fixing. A refusal's or a risk's leads say what to do, in the imperative.
+- Leads that offer alternatives are parallel, as "To run them in development:" and "To run them in production:" are, and none starts with "Or".
+- Every line opens with a capitalized word, never a digit, a path, a command or a migration's name, and says what it means at a glance: as short as it can be without losing a fact, and never a phrase the reader has to work out ("The schema is ahead of the migrations", not "Changes in reylo/schema.sql that no migration makes yet"). A count or a name goes later in the line: "This database hasn't run 2 migrations". A row in a table of migrations opens with its name, which is the row.
 - Colour never carries a meaning alone, so the text reads the same where colour is off: a pipe, a file, `NO_COLOR`. Dim is for what a reader may skip.
 - A SQL comment a plan carries is shown as the migration file has it, under a `!`.
 - A usage error is one line on stderr, `reylo <group>: <message>`, as other command-line tools print theirs.

@@ -5,8 +5,8 @@ import { source } from '@/lib/source';
 // build/client/sitemap.xml.
 export function loader() {
   const lastmod = new Date().toISOString();
-  // Reylo Migrate's docs sit under its landing page, /migrate, which is a page too.
-  const urls = [...source.getPages().map((page) => docsUrl(page.url)), '/migrate'].map((url) => `<url>
+  // The homepage, /, and Reylo Migrate's landing page, /migrate, are pages too, each over its docs.
+  const urls = ['/', ...source.getPages().map((page) => docsUrl(page.url)), '/migrate'].map((url) => `<url>
 <loc>${new URL(url, siteUrl).href}</loc>
 <lastmod>${lastmod}</lastmod>
 <changefreq>weekly</changefreq>

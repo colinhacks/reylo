@@ -1,0 +1,11 @@
+create table t (a int not null, b int primary key, c int);
+comment on constraint t_a_not_null on t is 'never missing';
+comment on index t_pkey is 'the key''s index';
+create statistics s on a, c from t;
+comment on statistics s is 'a with c';
+create domain d1 as int constraint d1_check check (value > 0);
+comment on constraint d1_check on domain d1 is 'positive';
+create domain d2 as int constraint d2_check check (value > 1);
+comment on constraint d2_check on domain d2 is 'positive';
+create table x (c int, d int, constraint x_c_key unique (c, d));
+comment on index x_c_key is 'the index of a key';

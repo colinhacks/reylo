@@ -1,0 +1,2 @@
+insert into t (id, n) values (1, 'a');
+insert into t (id, n) values (3, 'b');

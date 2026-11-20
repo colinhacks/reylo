@@ -256,9 +256,9 @@ pub fn old_lock(home: &Path, shown: &str) -> Option<String> {
         return None;
     }
     Some(if home.join("reylo.lock").is_file() {
-        format!("{shown}/reylo-lock.yaml and {shown}/reylo.lock are both here: {shown}/reylo.lock is the lock, and {shown}/reylo-lock.yaml its name before 0.8.0, so keep {shown}/reylo.lock and delete the other, with git rm {shown}/reylo-lock.yaml")
+        format!("Both {shown}/reylo-lock.yaml and {shown}/reylo.lock are here: {shown}/reylo.lock is the lock, and {shown}/reylo-lock.yaml its name before 0.8.0, so keep {shown}/reylo.lock and delete the other, with git rm {shown}/reylo-lock.yaml")
     } else {
-        format!("{shown}/reylo-lock.yaml is the lock's old name: rename it to {shown}/reylo.lock, with git mv {shown}/reylo-lock.yaml {shown}/reylo.lock")
+        format!("The lock's old name is {shown}/reylo-lock.yaml: rename it to {shown}/reylo.lock, with git mv {shown}/reylo-lock.yaml {shown}/reylo.lock")
     })
 }
 
@@ -604,9 +604,9 @@ mod tests {
         std::fs::write(home.join("reylo.lock"), "migrations:\n").unwrap();
         assert_eq!(old_lock(&home, "reylo"), None);
         std::fs::rename(home.join("reylo.lock"), home.join("reylo-lock.yaml")).unwrap();
-        assert_eq!(old_lock(&home, "reylo").as_deref(), Some("reylo/reylo-lock.yaml is the lock's old name: rename it to reylo/reylo.lock, with git mv reylo/reylo-lock.yaml reylo/reylo.lock"));
+        assert_eq!(old_lock(&home, "reylo").as_deref(), Some("The lock's old name is reylo/reylo-lock.yaml: rename it to reylo/reylo.lock, with git mv reylo/reylo-lock.yaml reylo/reylo.lock"));
         std::fs::write(home.join("reylo.lock"), "migrations:\n").unwrap();
-        assert!(old_lock(&home, "reylo").is_some_and(|e| e.starts_with("reylo/reylo-lock.yaml and reylo/reylo.lock are both here: ") && e.ends_with("with git rm reylo/reylo-lock.yaml")));
+        assert!(old_lock(&home, "reylo").is_some_and(|e| e.starts_with("Both reylo/reylo-lock.yaml and reylo/reylo.lock are here: ") && e.ends_with("with git rm reylo/reylo-lock.yaml")));
         std::fs::remove_dir_all(&home).unwrap();
     }
 }

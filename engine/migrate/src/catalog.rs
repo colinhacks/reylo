@@ -55,13 +55,14 @@ fn children(lines: &[String]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The qualified name `text` opens with, as `format('%I.%I')` writes it: quoted parts keep their spaces.
+/// The qualified name `text` opens with, as `format('%I.%I')` writes it: quoted parts keep their
+/// spaces, and a comma outside quotes ends it, as in a list of the tables a child inherits from.
 fn name_at(text: &str) -> &str {
     let mut quoted = false;
     for (k, c) in text.char_indices() {
         match c {
             '"' => quoted = !quoted,
-            ' ' if !quoted => return &text[..k],
+            ' ' | ',' if !quoted => return &text[..k],
             _ => {}
         }
     }
@@ -469,11 +470,12 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         .rows(&format!(
             "select format('%I.%I', n.nspname, c.relname) as name, c.relkind as kind, c.relpersistence as persistence,
               c.relrowsecurity as rls, c.relforcerowsecurity as force,
-              (select string_agg(o, ', ' order by o) from unnest(c.reloptions) o) as options,
+              (select string_agg(o, ', ' order by o) from (select unnest(c.reloptions) as o union all select 'toast.' || unnest(tc.reloptions) from pg_class tc where tc.oid = c.reltoastrelid) x) as options,
               (select nullif(a.amname, 'heap') from pg_am a where a.oid = c.relam) as am,
               pg_get_expr(c.relpartbound, c.oid) as bound,
-              (select format('%I.%I', pn.nspname, pc.relname) from pg_inherits i join pg_class pc on pc.oid = i.inhparent join pg_namespace pn on pn.oid = pc.relnamespace where i.inhrelid = c.oid limit 1) as parent,
+              (select string_agg(format('%I.%I', pn.nspname, pc.relname), ', ' order by i.inhseqno) from pg_inherits i join pg_class pc on pc.oid = i.inhparent join pg_namespace pn on pn.oid = pc.relnamespace where i.inhrelid = c.oid) as parent,
               case when c.relkind = 'p' then pg_get_partkeydef(c.oid) end as partkey,
+              (select format('%I.%I', tn.nspname, ty.typname) from pg_type ty join pg_namespace tn on tn.oid = ty.typnamespace where ty.oid = c.reloftype) as of_type,
               (select string_agg(distinct format('%s:%s%s', case when x.grantee = 0 then 'PUBLIC' else pg_get_userbyid(x.grantee) end, x.privilege_type, case when x.is_grantable then '*' else '' end), ',')
                  from aclexplode(c.relacl) x where x.grantee <> c.relowner) as acl,
               {} as owner_lacks,
@@ -507,6 +509,10 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             (Some(bound), _) => parts.push(format!("partition of {} {bound}", r.text("parent"))),
             (None, Some(parent)) if kind == "table" => parts.push(format!("inherits {parent}")),
             _ => {}
+        }
+        // A typed table, whose columns are its type's attributes.
+        if let Some(ty) = r.get("of_type") {
+            parts.push(format!("of {ty}"));
         }
         if r.text("persistence") == "u" {
             parts.push("unlogged".into());
@@ -653,6 +659,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     for r in db
         .rows(&format!(
             "select pg_get_indexdef(i.indexrelid) as def, i.indisvalid as valid, i.indisready as ready, i.indisclustered as clustered,
+              (select string_agg(a.attnum || '=' || a.attstattarget, ',' order by a.attnum) from pg_attribute a where a.attrelid = i.indexrelid and coalesce(a.attstattarget, -1) >= 0) as stattargets,
               (select format('%I.%I', pn.nspname, pc.relname) from pg_inherits h join pg_class pc on pc.oid = h.inhparent join pg_namespace pn on pn.oid = pc.relnamespace where h.inhrelid = i.indexrelid) as parent
             from pg_index i join pg_class c on c.oid = i.indexrelid join pg_namespace n on n.oid = c.relnamespace join pg_class t on t.oid = i.indrelid
             where {ns} and {} and {} and t.relname <> '{history}'
@@ -664,7 +671,9 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     {
         // A partition's index attached to its table's, as every partition's must be for that one to be valid.
         let attached = r.get("parent").map(|p| format!(" attached to {p}")).unwrap_or_default();
-        lines.push(format!("index {}{}{}{attached}{}", r.text("def"), if r.flag("valid") { "" } else { " (invalid)" }, if r.flag("ready") { "" } else { " (not ready)" }, if r.flag("clustered") { " (clustered)" } else { "" }));
+        // How closely the planner samples an expression column of it, where set.
+        let statistics = r.get("stattargets").map(|t| format!(" statistics ({t})")).unwrap_or_default();
+        lines.push(format!("index {}{}{}{attached}{}{statistics}", r.text("def"), if r.flag("valid") { "" } else { " (invalid)" }, if r.flag("ready") { "" } else { " (not ready)" }, if r.flag("clustered") { " (clustered)" } else { "" }));
     }
 
     for r in db
@@ -803,7 +812,8 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         ))
         .await?
     {
-        lines.push(r.text("line").to_string());
+        let line = r.text("line");
+        lines.push(line.strip_prefix("statistics ").map(|d| format!("statistics {}", statistics_def(d))).unwrap_or_else(|| line.to_string()));
     }
 
     // Privileges on sequences, functions and types, and comments on what is not a relation.
@@ -814,13 +824,15 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             union all select 'function ' || format('%s', p.oid::regprocedure), {}, obj_description(p.oid, 'pg_proc'), {}
             from pg_proc p join pg_namespace n on n.oid = p.pronamespace where {ns} and {} and {}
             union all select 'type ' || format('%I.%I', n.nspname, t.typname), {}, obj_description(t.oid, 'pg_type'), {}
-            from pg_type t join pg_namespace n on n.oid = t.typnamespace where t.typtype in ('e', 'd', 'r', 'b') and t.typelem = 0 and {ns} and {} and {}
+            from pg_type t join pg_namespace n on n.oid = t.typnamespace where (t.typtype in ('e', 'd', 'r', 'b') or exists (select 1 from pg_class ct where ct.oid = t.typrelid and ct.relkind = 'c')) and t.typelem = 0 and {ns} and {} and {}
             union all select 'index ' || format('%I.%I', n.nspname, c.relname), null, obj_description(c.oid, 'pg_class'), null
             from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('i', 'I') and {ns} and {} and {}
             union all select 'constraint ' || format('%I', co.conname) || ' on ' || case when cc.oid is not null then format('%I.%I', cn.nspname, cc.relname) else format('%I.%I', tn.nspname, ct.typname) end, null, obj_description(co.oid, 'pg_constraint'), null
             from pg_constraint co left join pg_class cc on cc.oid = co.conrelid left join pg_namespace cn on cn.oid = cc.relnamespace
               left join pg_type ct on ct.oid = co.contypid left join pg_namespace tn on tn.oid = ct.typnamespace
-            where co.contype <> 'n' and coalesce(cn.nspname, tn.nspname) not in ('pg_catalog', 'information_schema') and coalesce(cc.relname, '') <> '{history}'
+            where coalesce(cn.nspname, tn.nspname) not in ('pg_catalog', 'information_schema') and coalesce(cc.relname, '') <> '{history}'
+            union all select 'statistics ' || format('%I.%I', n.nspname, sx.stxname), null, obj_description(sx.oid, 'pg_statistic_ext'), null
+            from pg_statistic_ext sx join pg_namespace n on n.oid = sx.stxnamespace where {ns}
             union all select 'trigger ' || format('%I', tg.tgname) || ' on ' || format('%I.%I', n.nspname, c.relname), null, obj_description(tg.oid, 'pg_trigger'), null
             from pg_trigger tg join pg_class c on c.oid = tg.tgrelid join pg_namespace n on n.oid = c.relnamespace where not tg.tgisinternal and {ns}
             union all select 'policy ' || format('%I', po.polname) || ' on ' || format('%I.%I', n.nspname, c.relname), null, obj_description(po.oid, 'pg_policy'), null
@@ -872,14 +884,15 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     for r in db
         .rows(&format!(
             "select format('publication %I%s%s operations=%s%s', p.pubname, case when p.puballtables then ' all tables' else '' end,
-              coalesce(' tables=' || (select string_agg(format('%I.%I', n.nspname, c.relname){}, ', ' order by 1)
+              coalesce(' tables=' || (select string_agg(format('%I.%I', n.nspname, c.relname){}, ', ' order by format('%I.%I', n.nspname, c.relname))
                 from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid), ''),
               concat_ws(',', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end, case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end),
               case when p.pubviaroot then ' via root' else '' end) || {} || {} as line
             from pg_publication p where {}
             union all select format('base type %I.%I input=%s output=%s receive=%s send=%s typmod_in=%s typmod_out=%s analyze=%s length=%s byval=%s align=%s storage=%s category=%s preferred=%s delimiter=%s collatable=%s default=%s',
               n.nspname, t.typname, t.typinput, t.typoutput, t.typreceive, t.typsend, t.typmodin, t.typmodout, t.typanalyze, t.typlen, t.typbyval, t.typalign, t.typstorage, t.typcategory, t.typispreferred, t.typdelim, t.typcollation <> 0, coalesce(t.typdefault, ''))
-            from pg_type t join pg_namespace n on n.oid = t.typnamespace where t.typtype = 'b' and t.typelem = 0 and t.typarray <> 0 and {ns} and {} and {}",
+            from pg_type t join pg_namespace n on n.oid = t.typnamespace where t.typtype = 'b' and t.typelem = 0 and t.typarray <> 0 and {ns} and {} and {}
+            union all select format('shell type %I.%I', n.nspname, t.typname) from pg_type t join pg_namespace n on n.oid = t.typnamespace where t.typtype = 'p' and not t.typisdefined and {ns} and {} and {}",
             // A table's row filter and column list, and a publication's schemas, are Postgres 15's.
             if version >= 150000 {
                 " || coalesce(' where (' || pg_get_expr(pr.prqual, pr.prrelid) || ')', '')
@@ -895,6 +908,8 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             // Whether it publishes its tables' stored generated columns is Postgres 18's.
             if version >= 180000 { "case when p.pubgencols = 's' then ' generated columns stored' else '' end" } else { "''" },
             not_platform("p.pubowner"),
+            not_extension("pg_type", "t"),
+            not_platform("t.typowner"),
             not_extension("pg_type", "t"),
             not_platform("t.typowner"),
         ))
@@ -1005,6 +1020,29 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
 
 /// An identity column's sequence options where they aren't the defaults, as `generated … as
 /// identity (…)` writes them, or null: SQL for the column whose `pg_attribute` row is `att`.
+/// An extended statistics object's definition with its columns as a set: the server writes them in
+/// the table's order of its columns, which a table that starts inheriting keeps otherwise.
+pub(crate) fn statistics_def(def: &str) -> String {
+    let Some((head, rest)) = def.split_once(" ON ") else { return def.to_string() };
+    let Some((list, tail)) = rest.rsplit_once(" FROM ") else { return def.to_string() };
+    let (mut items, mut item, mut depth, mut quoted) = (Vec::new(), String::new(), 0, false);
+    for ch in list.chars().chain([',']) {
+        match ch {
+            '"' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => depth -= 1,
+            ',' if !quoted && depth == 0 => {
+                items.push(std::mem::take(&mut item).trim().to_string());
+                continue;
+            }
+            _ => {}
+        }
+        item.push(ch);
+    }
+    items.sort();
+    format!("{head} ON {} FROM {tail}", items.join(", "))
+}
+
 pub(crate) fn identity_options(att: &str) -> String {
     format!(
         "(select nullif(concat_ws(' ',
@@ -1573,6 +1611,10 @@ mod tests {
         let live = vec![reference[0].clone(), "table public.p partition of public.t FOR VALUES FROM (0) TO (10)".into(), "owner public.p lacks SELECT".into()];
         assert_eq!(without_extra_children(&live, &reference), reference);
         assert_eq!(without_children(&live), reference);
+        // A child of several tables is one of its first's.
+        let reference = vec!["table public.a".to_string(), "table public.b".into()];
+        let live = [reference.clone(), vec!["table public.c inherits public.a, public.b".into(), "column public.c.x integer".into()]].concat();
+        assert_eq!(without_extra_children(&live, &reference), reference);
     }
 
     #[test]

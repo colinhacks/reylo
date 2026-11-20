@@ -7,5 +7,5 @@ alter type item drop attribute b;
 alter type item drop attribute a;
 alter type item add attribute b integer;
 alter type item add attribute a integer;
-alter table t alter column v type item using case when v is null then null else row((v).b::integer, (v).a::integer)::item end;
+alter table t alter column v type item using case when num_nulls(v) = 1 then null else row((v).b::integer, (v).a::integer)::item end;
 drop type item__old;

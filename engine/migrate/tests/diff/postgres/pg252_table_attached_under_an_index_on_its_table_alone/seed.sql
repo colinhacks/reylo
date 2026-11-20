@@ -1,0 +1,12 @@
+insert into "t0""x" (id) values (1);
+insert into "t0""x" (id) values (2);
+insert into "t0""x" (id) values (3);
+insert into t1 (id, parent, "n0 x") values (1, 1, '{"k": 1}');
+insert into t1 (id, parent, "n0 x") values (2, 2, '{"k": 2}');
+insert into t1 (id, parent, "n0 x") values (3, 3, '{"k": 3}');
+insert into t2 (c2, parent) values (1.5, 1);
+insert into t2 (c2, parent) values (2.5, 2);
+insert into t2 (c2, parent) values (3.5, 3);
+insert into x0 (id, n1) values (101, row(1, 1)::"p0.x");
+insert into x0 (id, n1) values (102, row(2, 2)::"p0.x");
+insert into x0 (id, n1) values (103, row(3, 3)::"p0.x");

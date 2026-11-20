@@ -96,3 +96,17 @@ if grep -q 'panicked' "${RUNNER_TEMP:-/tmp}/build-script.log"; then
   exit 1
 fi
 echo '::endgroup::'
+
+echo '::group::a cast into an enum that cannot hold the value fails to compile'
+# A list of three values into one of two, and a Postgres enum type into a list: each a type error,
+# which cargo check and the editor see, not one that waits for the code to be generated.
+cp "$queries" "${RUNNER_TEMP:-/tmp}/queries.rs"
+printf '\n#[allow(dead_code)]\nfn narrower(state: set_task_state::State) -> planned_states::State {\n    reylo::Enum::cast(state)\n}\n\n#[allow(dead_code)]\nfn into_a_list(mood: users_by_mood::Mood) -> planned_states::Mood {\n    reylo::Enum::cast(mood)\n}\n' >> "$queries"
+refused=0
+DATABASE_URL="$server/rust_demo" cargo check -q -p demo-reylo --features live 2> "${RUNNER_TEMP:-/tmp}/casts.log" || refused=$?
+mv "${RUNNER_TEMP:-/tmp}/queries.rs" "$queries"
+cat "${RUNNER_TEMP:-/tmp}/casts.log"
+[ "$refused" -ne 0 ] || { echo '::error::demo-reylo compiled with a cast into an enum that cannot hold the value'; exit 1; }
+grep -q 'planned_states::State` has no variant for one of the values of the enum cast into it' "${RUNNER_TEMP:-/tmp}/casts.log" || { echo '::error::a cast of a list into an enum lacking one of its values does not say so'; exit 1; }
+grep -qE 'error\[E0271\]: type mismatch resolving `<[^`]*Mood as [^`]*Enum>::Id == [^`]*EnumId<' "${RUNNER_TEMP:-/tmp}/casts.log" || { echo '::error::a cast of a Postgres enum type into a list does not fail on the type'; exit 1; }
+echo '::endgroup::'
