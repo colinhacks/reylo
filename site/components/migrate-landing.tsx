@@ -296,11 +296,12 @@ function usePlayer(script: Script, onEdit?: (edited: boolean) => void): Line[] {
   return lines;
 }
 
-/** A printed line's marks in their colours, as the CLI paints them: ✓ and + green, ✗ red, ! and ↺ yellow, a » note's mark dim; a command on its own line cyan. */
+/** A printed line in the CLI's colours: ✓ and + green, ✗ red, ! and ↺ yellow; a » note and the lead over a command (an indented line from a capital to a colon) dim whole; the command on its own line cyan. */
 function paint(line: string): ReactNode {
-  const m = line.match(/^(\s*)(✓|✗|!|\+|↺|»)(\s.*)?$/);
+  if (/^\s*» /.test(line) || /^\s+[A-Z].*:$/.test(line)) return <span className="ml-mu">{line}</span>;
+  const m = line.match(/^(\s*)(✓|✗|!|\+|↺)(\s.*)?$/);
   if (m) {
-    const cls = m[2] === '✓' || m[2] === '+' ? 'ml-ok' : m[2] === '✗' ? 'ml-er' : m[2] === '»' ? 'ml-mu' : 'ml-wn';
+    const cls = m[2] === '✓' || m[2] === '+' ? 'ml-ok' : m[2] === '✗' ? 'ml-er' : 'ml-wn';
     return (
       <>
         {m[1]}
