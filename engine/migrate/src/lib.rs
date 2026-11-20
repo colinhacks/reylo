@@ -27,6 +27,8 @@ pub mod db;
 #[cfg(feature = "cli")]
 pub mod diff;
 pub mod libsql;
+#[cfg(feature = "cli")]
+pub mod libsql_local;
 pub mod lock;
 #[cfg(feature = "cli")]
 pub mod locks;

@@ -55,6 +55,17 @@ impl Options {
         }
     }
 
+    /// Whether a SQLite project runs on libSQL's engine: its target is a libSQL server's (Turso's),
+    /// or its migrations or schema.sql use SQL of libSQL's own (a vector index, `alter table …
+    /// alter column`), which Reylo's SQLite refuses, so that its development file opens there too.
+    pub fn libsql_engine(&self) -> bool {
+        if crate::libsql::is_url(&self.url) {
+            return true;
+        }
+        let files = self.migrations().map(|(files, _)| files).unwrap_or_default();
+        files.iter().any(|m| crate::libsql::uses_own_sql(&m.sql)) || self.schema_text().is_some_and(|s| crate::libsql::uses_own_sql(&s))
+    }
+
     fn lock_state(&self) -> lock::State {
         match &self.embedded {
             Some(e) => e.lock.as_deref().map_or(lock::State::Missing, lock::of_text),
@@ -1766,7 +1777,7 @@ fn extensions_in(text: &str) -> Vec<String> {
 /// are out of the role's reach ([`out_of_reach`]), as the code to exit with.
 #[cfg(feature = "cli")]
 async fn open(opts: &Options, log: Log<'_>) -> Result<Result<(Db, Server, usize), i32>, Error> {
-    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let mut db = Db::open(opts).await?;
     match out_of_reach(&mut db, &opts.url).await {
         Ok(problems) if problems.is_empty() => Ok(Ok(with_shadows(db, opts).await?)),
         Ok(problems) => {
@@ -1968,7 +1979,7 @@ pub async fn deploy(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     if let Some(code) = refuse_lock_file(opts, log) {
         return Ok(code);
     }
-    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let mut db = Db::open(opts).await?;
     let result = deploy_on(&mut db, opts, log).await;
     db.close().await;
     result
@@ -2271,7 +2282,7 @@ pub async fn db_wipe(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, E
     if let Some(m) = missing(opts)? {
         return Ok(refuse(&[Problem::new("no-database", format!("N{}", &m[1..]))], log));
     }
-    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let mut db = Db::open(opts).await?;
     let had = table_rows(&mut db).await.map(|counts| counts.values().filter(|n| **n > 0).count());
     let result = wipe_rows_on(&mut db).await;
     db.close().await;
@@ -2740,7 +2751,7 @@ pub async fn status(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
         return Ok(code);
     }
     there(opts)?;
-    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let mut db = Db::open(opts).await?;
     let result = status_on(&mut db, opts, log).await;
     db.close().await;
     result
@@ -3254,7 +3265,7 @@ pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>)
 /// each as it now reads, since one it hasn't run would read as something to drop.
 #[cfg(feature = "cli")]
 async fn as_its_migrations_leave_it(opts: &Options, files: &[Migration]) -> Result<Result<String, Vec<Problem>>, Error> {
-    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let mut db = Db::open(opts).await?;
     let result = async {
         let d = db.dialect();
         let history = if has_history(&mut db).await? { read_history(&mut db).await? } else { vec![] };
@@ -3283,7 +3294,7 @@ async fn as_its_migrations_leave_it(opts: &Options, files: &[Migration]) -> Resu
 /// it ran, one query on a database the shadows are made beside. Nothing where it has no history.
 #[cfg(feature = "cli")]
 async fn ran_as_written(opts: &Options, files: &[Migration]) -> Result<Vec<Problem>, Error> {
-    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let mut db = Db::open(opts).await?;
     let result = async {
         let history = if has_history(&mut db).await? { read_history(&mut db).await? } else { vec![] };
         Ok(applied_unlike(opts, &history, files, db.dialect()))
@@ -3920,7 +3931,7 @@ async fn settle(db: &mut Db, mut current: crate::diff::Schema, target: &Target, 
 #[cfg(feature = "cli")]
 async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_name: &str, migration: &str, choices: &Choices, log: Log<'_>) -> Result<Result<Drafted, Vec<Problem>>, Error> {
     let drafted = |texts: Vec<String>, code: i32, notes: Vec<String>, empty: bool| Drafted { texts, code, notes, empty, target: target_name.to_string(), lock_safe: false };
-    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let mut db = Db::open(opts).await?;
     let problems = out_of_reach(&mut db, &opts.url).await?;
     if !problems.is_empty() {
         db.close().await;
@@ -4115,7 +4126,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
 /// dump, which also holds what Reylo reads by name only.
 #[cfg(feature = "cli")]
 async fn schema_as_sql(opts: &Options, schemas: &[String]) -> Result<String, Error> {
-    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let mut db = Db::open(opts).await?;
     let result = schema_as_sql_on(&mut db, opts, schemas).await;
     db.close().await;
     result
@@ -4519,7 +4530,7 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
     // empty, holding the checksum of the empty schema.sql the no migrations reach, so the project
     // keeps linear history from its first migration.
     let spinning = crate::terminal::spinner(format!("Introspecting {}", shown_url(&opts.url)));
-    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let mut db = Db::open(opts).await?;
     // Relations of the project's a superuser out of the role's reach owns are its to give first: no
     // file the role runs makes them as they are here.
     let problems = out_of_reach(&mut db, &opts.url).await;
@@ -4599,7 +4610,7 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
 pub async fn db_introspect(opts: &Options, schemas: &[String]) -> Result<String, Error> {
     there(opts)?;
     let _spinning = crate::terminal::spinner(format!("Introspecting {}", shown_url(&opts.url)));
-    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let mut db = Db::open(opts).await?;
     let result = match catalog(&mut db).await {
         Ok(lines) if holds_a_schema(&lines) => schema_as_sql_on(&mut db, opts, schemas).await,
         Ok(_) => Ok(String::new()),
@@ -5781,13 +5792,14 @@ fn and_list(items: &[String]) -> String {
 /// text or files, in the order given; records nothing. For a change typed by hand during
 /// development, and a seed after `reylo migrate dev`.
 #[cfg(feature = "cli")]
-pub async fn run_sql(url: &str, root: &Path, items: &[(String, String)], log: Log<'_>) -> Result<i32, Error> {
+pub async fn run_sql(opts: &Options, items: &[(String, String)], log: Log<'_>) -> Result<i32, Error> {
+    let (url, root) = (opts.url.as_str(), opts.root.as_path());
     // A SQLite file that isn't there is no database to run on, and opening it would make
     // one: refused, as the migrations' commands refuse it.
     if let Some((path, which)) = missing_at(url, root)? {
         return Ok(refuse(&[Problem::new("no-database", format!("No {which} database at {}", path.display()))], log));
     }
-    let mut db = Db::connect(url, root).await?;
+    let mut db = Db::open(opts).await?;
     let mut code = 0;
     for (label, sql) in items {
         match db.script(sql).await {
