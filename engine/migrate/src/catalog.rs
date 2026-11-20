@@ -906,7 +906,9 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     // Privileges on sequences, functions and types, and comments on what is not a relation.
     for r in db
         .rows(&format!(
-            "select 'sequence ' || format('%I.%I', n.nspname, c.relname) as name, {} as acl, obj_description(c.oid, 'pg_class') as comment, {} as owner_lacks
+            "select coalesce((select 'sequence of identity ' || format('%I.%I.%I', tn.nspname, tc.relname, ta.attname) from pg_depend d join pg_class tc on tc.oid = d.refobjid join pg_namespace tn on tn.oid = tc.relnamespace
+                join pg_attribute ta on ta.attrelid = tc.oid and ta.attnum = d.refobjsubid where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.refclassid = 'pg_class'::regclass and d.deptype = 'i'),
+                'sequence ' || format('%I.%I', n.nspname, c.relname)) as name, {} as acl, obj_description(c.oid, 'pg_class') as comment, {} as owner_lacks
             from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'S' and {ns} and {} and {}
             union all select 'function ' || format('%s', p.oid::regprocedure), {}, obj_description(p.oid, 'pg_proc'), {}
             from pg_proc p join pg_namespace n on n.oid = p.pronamespace where {ns} and {} and {}

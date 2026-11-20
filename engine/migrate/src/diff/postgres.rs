@@ -898,7 +898,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             };
             // A not null under the name it has (a parent's), which the column added keeps.
             let added = match c.get("nn_name") {
-                Some(nn) if made.ends_with(" not null") => format!("{} constraint {nn} not null", made.trim_end_matches(" not null")),
+                Some(nn) if declared.is_none() && made.ends_with(" not null") => format!("{} constraint {nn} not null", made.trim_end_matches(" not null")),
                 _ => made.clone(),
             };
             let from_parent = if c.flag("inherited") || partition { "inherited" } else { "" };
@@ -974,7 +974,6 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                         .map(|n| format!("not null name {n}"))
                         .into_iter()
                         .chain(c.get("identity_name").map(|n| format!("{IDENTITY_SEQUENCE}{n}")))
-                        .chain(c.get("identity_sequence").and_then(|v| v.split('\u{1f}').next()).map(|n| format!("{IDENTITY_IS}{n}")))
                         .chain((kind == "p").then(|| "partitioned".to_string()))
                         .chain((!c.text("generated").is_empty()).then(|| super::GENERATED.to_string()))
                         .chain((c.flag("inherited") && !partition).then(|| "inherited".to_string()))
@@ -993,10 +992,13 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     ..Object::default()
                 });
                 // Its identity's sequence, logged otherwise than its table or commented, which the
-                // identity makes as its table is: set on it after.
-                if let Some((sequence, rest)) = c.get("identity_sequence").and_then(|v| v.split_once('\u{1f}')) {
+                // identity makes as its table is: set on it after, the sequence found through the
+                // column as the statement runs, since a column renamed keeps the sequence's name.
+                if let Some((_, rest)) = c.get("identity_sequence").and_then(|v| v.split_once('\u{1f}')) {
                     let (persistence, comment) = rest.split_once('\u{1f}').unwrap_or((rest, ""));
                     let owner = format!("column {name}.{}", c.text("name"));
+                    let sequence = format!("pg_get_serial_sequence({}, {})", literal(&name), literal(&unquoted(c.text("name"))));
+                    let on_it = |statement: &str, arg: &str| format!("do $reylo$ begin execute format({}, {sequence}{arg}); end $reylo$", literal(statement));
                     if !persistence.is_empty() {
                         let (now, back) = if persistence == "u" { ("unlogged", "logged") } else { ("logged", "unlogged") };
                         s.add(Object {
@@ -1004,8 +1006,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                             kind: Some(Kind::ColumnSetting),
                             owner: Some(owner.clone()),
                             def: now.into(),
-                            create: vec![format!("alter sequence {sequence} set {now}")],
-                            drop: vec![format!("alter sequence {sequence} set {back}")],
+                            create: vec![on_it(&format!("alter sequence %s set {now}"), "")],
+                            drop: vec![on_it(&format!("alter sequence %s set {back}"), "")],
                             ..Object::default()
                         });
                     }
@@ -1015,8 +1017,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                             kind: Some(Kind::Comment),
                             owner: Some(owner.clone()),
                             def: comment.to_string(),
-                            create: vec![format!("comment on sequence {sequence} is {}", literal(comment))],
-                            drop: vec![format!("comment on sequence {sequence} is null")],
+                            create: vec![on_it("comment on sequence %s is %L", &format!(", {}", literal(comment)))],
+                            drop: vec![on_it("comment on sequence %s is null", "")],
                             change: Change::Alter { blocks: false },
                             ..Object::default()
                         });
@@ -2747,8 +2749,6 @@ pub fn derived_renames(current: &Schema, target: &Schema, renamed: &[(String, St
 
 /// What precedes the name of an identity's sequence where it isn't the one Postgres would choose.
 const IDENTITY_SEQUENCE: &str = "identity sequence ";
-/// What precedes the name of an identity's sequence, whichever it is.
-const IDENTITY_IS: &str = "sequence of its identity ";
 
 /// The name of an identity column's sequence, where Postgres wouldn't have chosen it.
 fn identity_sequence(o: &Object) -> Option<String> {
@@ -4138,13 +4138,6 @@ impl Alterer for PostgresAlterer {
                 out.push(format!("alter table {table} rename constraint {a} to {b}"));
             }
         }
-        // So does its identity's sequence, which the target names after the column.
-        let sequence = |o: &Object| o.extra.iter().find_map(|l| l.strip_prefix(IDENTITY_IS)).map(String::from);
-        if let (Some(a), Some(b)) = (sequence(from), sequence(to)) {
-            if a != b {
-                out.push(format!("alter sequence {a} rename to {}", super::last_written(&b)));
-            }
-        }
         Some(out)
     }
 
@@ -4353,8 +4346,13 @@ impl Alterer for PostgresAlterer {
                 }
                 // An identity needs its column not null first.
                 let mut not_null_done = false;
+                // A not null the target names itself, made under that name.
+                let declared = |o: &Object| o.def.split(NOT_NULL_NAMED).nth(1).map(|n| n.trim_end_matches(')').to_string());
                 if a.identity.is_none() && b.identity.is_some() && b.not_null && !a.not_null && !b.no_inherit {
-                    out.push(format!("{at} set not null"));
+                    out.push(match declared(to) {
+                        Some(n) => format!("alter table {table} add constraint {n} not null {name}"),
+                        None => format!("{at} set not null"),
+                    });
                     not_null_done = true;
                 }
                 match (&a.identity, &b.identity) {
@@ -4440,31 +4438,25 @@ impl Alterer for PostgresAlterer {
                     out.push(format!("alter table {table} add constraint {nn} not null {name} not valid"));
                 } else if b.not_null && (!a.not_null || a.no_inherit != b.no_inherit || (a.not_valid && !b.not_valid)) && !not_null_done {
                     // A not null the target names otherwise than Postgres would is added under its name.
-                    let named = to.extra.iter().find_map(|l| l.strip_prefix("not null name ")).filter(|n| !a.not_null && !generated_not_null(n, &table, &name));
+                    let named = declared(to)
+                        .or_else(|| to.extra.iter().find_map(|l| l.strip_prefix("not null name ")).filter(|n| !generated_not_null(n, &table, &name)).map(String::from))
+                        .filter(|_| !a.not_null || a.no_inherit != b.no_inherit);
                     out.push(match named {
+                        Some(n) if b.no_inherit => format!("alter table {table} add constraint {n} not null {name} no inherit"),
                         _ if b.no_inherit => format!("alter table {table} add not null {name} no inherit"),
                         Some(n) => format!("alter table {table} add constraint {n} not null {name}"),
                         None => format!("{at} set not null"),
                     });
                 }
-                // A not null either names itself (`constraint a_required not null`) has the target's
-                // name once the statements above are done, whatever name they leave it: its own where
-                // it is kept, the one Postgres makes where it is made, or the target's where it is added
-                // under it. A column's rename and a table's joining rename theirs.
-                let declared = |o: &Object| o.def.split(NOT_NULL_NAMED).nth(1).map(|n| n.trim_end_matches(')').to_string());
-                if b.not_null && (declared(from).is_some() || declared(to).is_some()) {
+                // A not null kept, under the name the target gives it where either names it itself
+                // (`constraint a_required not null`); one made above is made under that name. A
+                // column's rename and a table's joining rename theirs.
+                let dropped = out.iter().any(|s| s.ends_with(" drop not null"));
+                if a.not_null && b.not_null && !dropped && (declared(from).is_some() || declared(to).is_some()) {
                     let made = default_not_null(&table, &name);
                     let made = if made.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_') { made } else { crate::db::ident(&made) };
-                    let want = declared(to).unwrap_or_else(|| made.clone());
-                    let dropped = out.iter().any(|s| s.ends_with(" drop not null"));
-                    let now = if out.iter().any(|s| s.contains(&format!(" add constraint {want} not null "))) {
-                        want.clone()
-                    } else if a.not_null && !dropped {
-                        not_null_name(from).unwrap_or(made)
-                    } else {
-                        made
-                    };
-                    if unquoted(&now) != unquoted(&want) {
+                    let want = declared(to).unwrap_or(made);
+                    if let Some(now) = not_null_name(from).filter(|now| unquoted(now) != unquoted(&want)) {
                         out.push(format!("alter table {table} rename constraint {now} to {want}"));
                     }
                 }
