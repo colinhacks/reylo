@@ -45,9 +45,9 @@ Point [`direct_url`](/configuration#direct_url) at the direct one:
 direct_url: ${DATABASE_URL_UNPOOLED}
 ```
 
-- Neon's pooler is PgBouncer in transaction mode. Your app's queries can go through it, but the type check can fail there, and [migrations](/migrations) refuse it: a run holds a session, which the pooler shares between clients.
+- Neon's pooler is PgBouncer in transaction mode. Your app's queries can go through it, but the type check can fail there, and [migrations](/migrate/docs) refuse it: a run holds a session, which the pooler shares between clients.
 - Without this line, Reylo reads `DATABASE_URL` and nothing else. `DATABASE_URL_UNPOOLED` is the name Neon's Vercel integration gives the direct string.
-- The type check takes the string as Neon writes it, `sslmode=require` and `channel_binding=require` included ([TLS](/configuration#tls)).
+- The type check takes the string as Neon writes it, `sslmode=require` and `channel_binding=require` included ([TLS](/configuration#direct_url)).
 
 ## Serverless driver
 

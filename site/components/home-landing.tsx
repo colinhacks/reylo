@@ -10,7 +10,7 @@ import './home-landing.css';
  * Reylo's homepage, at / (app/routes/home.tsx), in the Migrate landing's language
  * (components/migrate-landing.tsx, the `.ml` styles): a nav whose GitHub pill carries a handwritten
  * "Leave a star!"; a hero split in half, the words on the left and on the right a query and, under
- * it, the main.ts that imports it; the Inference section's examples, each in the docs' inference card
+ * it, the main.ts that imports it; the databases and hosts it works with; the Inference section's examples, each in the docs' inference card
  * (components/inference-card.tsx) with its schema behind "View schema", named in a list in the left
  * gutter; the features; and a closing call to action. Every statement and type is the docs' own,
  * captured (lib/home-examples.ts). Nothing moves by itself, and nothing reads the scroll position.
@@ -35,6 +35,7 @@ export function HomeLanding({ stars }: { stars?: number }) {
     <div className="ml rh">
       <Nav stars={stars} />
       <Hero />
+      <Logos />
       <Examples />
       <Features />
       <End />
@@ -97,7 +98,7 @@ function StarNote() {
 
 /* ── The install ────────────────────────────────────────────────────────── */
 
-const INSTALLS = { npm: 'npm install reylo', pnpm: 'pnpm add reylo', bun: 'bun add reylo', nub: 'nub add reylo' } as const;
+const INSTALL = 'npm add reylo';
 
 function CopyIcon({ done }: { done: boolean }) {
   return done ? (
@@ -112,22 +113,14 @@ function CopyIcon({ done }: { done: boolean }) {
   );
 }
 
-/** The install command by package manager, with "Get started", which opens the docs at their top. `centered` puts the two side by side, centred. */
+/** The install command, with "Read the docs", which opens the docs at their top: side by side where the width allows. `centered` centres the two. */
 function Install({ centered }: { centered?: boolean }) {
-  const [kind, setKind] = useState<keyof typeof INSTALLS>('npm');
   const [copied, setCopied] = useState(false);
-  const command = INSTALLS[kind];
+  const command = INSTALL;
   return (
     <div className={`ml-install rh-install${centered ? ' ml-centered' : ''}`}>
       <div className="ml-big">
         <div className="ml-box">
-          <div className="ml-seg" role="tablist">
-            {(Object.keys(INSTALLS) as (keyof typeof INSTALLS)[]).map((k) => (
-              <button key={k} type="button" role="tab" aria-selected={k === kind} className={k === kind ? 'on' : undefined} onClick={() => setKind(k)}>
-                {k}
-              </button>
-            ))}
-          </div>
           <div className="ml-cmd">
             <span className="ml-dollar">$</span>
             <span>{command}</span>
@@ -146,7 +139,7 @@ function Install({ centered }: { centered?: boolean }) {
           </div>
         </div>
         <a className="ml-docs ml-docs-primary" href={introUrl}>
-          Get started
+          Read the docs
           <svg viewBox="0 0 16 16" aria-hidden="true">
             <path d="M2.5 8h11M9 3.5 13.5 8 9 12.5" />
           </svg>
@@ -404,22 +397,31 @@ function Features() {
           </div>
         ))}
       </div>
-      <div className="rh-logos">
-        {LOGO_ROWS.map((row, i) => (
-          <div key={i} className="rh-logos-row">
-            {row.map((t) => (
-              <span key={t.name} title={t.name}>
-                <svg viewBox={t.viewBox} fill="currentColor" aria-hidden="true">
-                  {t.paths.map((d) => (
-                    <path key={d} d={d} />
-                  ))}
-                </svg>
-                {t.name.replace(/ and Aurora$/, '')}
-              </span>
-            ))}
-          </div>
-        ))}
-      </div>
+    </section>
+  );
+}
+
+/** Under the hero, the databases and hosts Reylo works with, under a small title that says so. */
+function Logos() {
+  return (
+    <section className="rh-logos" aria-labelledby="rh-works-with">
+      <h2 id="rh-works-with" className="rh-logos-title">
+        Works with
+      </h2>
+      {LOGO_ROWS.map((row, i) => (
+        <div key={i} className="rh-logos-row">
+          {row.map((t) => (
+            <span key={t.name} title={t.name}>
+              <svg viewBox={t.viewBox} fill="currentColor" aria-hidden="true">
+                {t.paths.map((d) => (
+                  <path key={d} d={d} />
+                ))}
+              </svg>
+              {t.name.replace(/ and Aurora$/, '')}
+            </span>
+          ))}
+        </div>
+      ))}
     </section>
   );
 }
@@ -429,9 +431,6 @@ function End() {
     <section className="ml-end rh-end">
       <h2>Ship faster with Reylo</h2>
       <Install centered />
-      <a className="rh-star-link" href={githubUrl}>
-        Leave a star
-      </a>
     </section>
   );
 }

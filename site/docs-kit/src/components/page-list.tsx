@@ -3,6 +3,7 @@
 import Link from 'fumadocs-core/link';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { GitHubIcon, GitHubStar, ThemeRow } from './chrome';
+import { SearchField } from './search-trigger';
 
 /** A page of the list. `code` writes its title as code, as a page named for a file is (`.reylo.yaml`); `external` marks a page that leaves the docs, with the links' ↗. */
 export type PageListItem = { title: string; href: string; code?: boolean; external?: boolean };
@@ -76,9 +77,10 @@ function Foot({ list, github, star }: { list: PageList; github: string; star: bo
 }
 
 /**
- * The left column: the name, then the pages and after them the links away from the docs, the theme
- * switch and the note under the repository's link, all of which scroll together, the name with the
- * pages rather than pinned over them, and the foot rather than pinned to the column's foot.
+ * The left column: the name, the search field on a site with search, then the pages and after them
+ * the links away from the docs, the theme switch and the note under the repository's link, all of
+ * which scroll together, the name with the pages rather than pinned over them, and the foot rather
+ * than pinned to the column's foot.
  */
 export function PageListColumn({ list, brand, github }: { list: PageList; brand: ReactNode; github: string }) {
   const scroll = useRef<HTMLDivElement>(null);
@@ -87,6 +89,7 @@ export function PageListColumn({ list, brand, github }: { list: PageList; brand:
     <aside id="dk-page-list">
       <div ref={scroll} className="dk-pages-scroll">
         <div className="dk-pages-brand">{brand}</div>
+        <SearchField />
         <Groups list={list} />
         <Foot list={list} github={github} star />
       </div>
@@ -137,6 +140,7 @@ export function PageListMenu({ list, brand, github, title }: { list: PageList; b
             </button>
           </div>
           <div ref={scroll} className="dk-pages-scroll">
+            <SearchField onOpen={() => setOpen(false)} />
             <Groups list={list} onPick={() => setOpen(false)} />
             <Foot list={list} github={github} star={false} />
           </div>

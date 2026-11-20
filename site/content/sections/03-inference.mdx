@@ -2,11 +2,9 @@
 title: "Inference"
 ---
 
-## How it works [#how-it-works]
+Reylo sends each statement against your live dev database without running it. It gets back a prepared version of the query plus your database's type descriptors, and it infers type information based on those.
 
-Your database does the typing.
-
-Reylo has it prepare each statement without running it, and reads its catalog. Run `reylo analyze` on a file to see what it learns:
+Reylo returns the types in a structured format that is then consumed by the TypeScript content mapper. To read the data in its raw form, you can use the CLI:
 
 <Analyzed file="queries/is_verified.sql">
 
