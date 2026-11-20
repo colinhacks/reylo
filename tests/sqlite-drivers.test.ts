@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Session } from "../src/analyze.ts";
-import { placeRefusal, projectDrivers } from "../src/sqlite-drivers.ts";
+import { placeRefusal, projectDrivers, SQLEAN_FUNCTIONS } from "../src/sqlite-drivers.ts";
 import { DRIVERS } from "./helpers.ts";
 
 // The drivers are the labs' (lab/drivers), linked into each project as an install would put them.
@@ -203,4 +203,26 @@ test("D1 compiles each statement against the schema as it is now, after a migrat
   // A later session, as a build step opens after a pause, asks D1 again.
   const pretty = await analyze(root, env, "select json_pretty(tag) as t from notes");
   assert.match(pretty.analysis.diagnostics[0]?.message ?? "", /refuses this statement: not authorized to use function: json_pretty$/);
+});
+
+// Turso Cloud loads the sqlean extensions into every connection, and `@libsql/client` reaches it,
+// while the libSQL it carries for a local file has none of them.
+const SQLEAN = "select uuid4() as id, levenshtein(body, :q) as distance, regexp_like(body, 'a+') as matched from notes";
+
+test("libSQL's drivers let the sqlean functions Turso Cloud loads through, and another SQLite's refuses them", { skip }, async () => {
+  const libsql = project(["@libsql/client"]);
+  assert.deepEqual((await analyze(libsql.root, libsql.env, SQLEAN)).analysis.diagnostics, []);
+  const better = project(["better-sqlite3"]);
+  assert.match((await analyze(better.root, better.env, SQLEAN)).analysis.diagnostics[0]?.message ?? "", /^better-sqlite3 runs SQLite [\d.]+, which refuses this statement: no such function: uuid4$/);
+  // A function no SQLite has is still refused.
+  assert.match((await analyze(libsql.root, libsql.env, "select nosuch(body) as x from notes")).analysis.diagnostics[0]?.message ?? "", /no such function: nosuch/);
+});
+
+test("the sqlean functions the driver check lets through are the ones the engine knows", () => {
+  const walker = readFileSync(new URL("../engine/sqlite/csrc/reylo_sqlite.c", import.meta.url), "utf8");
+  const table = walker.slice(walker.indexOf("aTurso[] = {"), walker.indexOf("};", walker.indexOf("aTurso[] = {")));
+  const sqlean = [...table.slice(table.indexOf("/* sqlean's")).matchAll(/\{"([a-z0-9_]+)",/g)].map((m) => m[1]!);
+  assert.ok(sqlean.length > 100, `${sqlean.length}`);
+  assert.deepEqual(sqlean.filter((name) => !SQLEAN_FUNCTIONS.has(name)), []);
+  for (const vtab of ["generate_series", "stats_seq"]) assert.ok(SQLEAN_FUNCTIONS.has(vtab));
 });

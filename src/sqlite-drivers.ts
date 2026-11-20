@@ -41,7 +41,39 @@ interface SyncDatabase {
   close(): void;
 }
 
-function sync(name: string, db: SyncDatabase): SqliteDriver {
+/**
+ * The functions of the sqlean extensions Turso Cloud loads into every connection (uuid, crypto,
+ * fuzzy, math, stats, text, regexp), as libsql-ffi 0.10.0 builds them, with their table-valued
+ * `generate_series` and `stats_seq`: every name their sources register, which the engine's SQLite
+ * also knows (`aTurso` in engine/sqlite/csrc/reylo_sqlite.c).
+ */
+export const SQLEAN_FUNCTIONS: ReadonlySet<string> = new Set([
+  "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh", "bit_length", "blake3", "btrim", "caverphone", "ceil", "ceiling", "char_length",
+  "character_length", "concat", "concat_ws", "cos", "cosh", "crypto_blake3", "crypto_decode", "crypto_encode", "crypto_md5", "crypto_sha1",
+  "crypto_sha256", "crypto_sha384", "crypto_sha512", "decode", "degrees", "dlevenshtein", "edit_distance", "encode", "exp", "floor", "fuzzy_caver",
+  "fuzzy_damlev", "fuzzy_editdist", "fuzzy_hamming", "fuzzy_jarowin", "fuzzy_leven", "fuzzy_osadist", "fuzzy_phonetic", "fuzzy_rsoundex",
+  "fuzzy_script", "fuzzy_soundex", "fuzzy_translit", "gen_random_uuid", "generate_series", "hamming", "jaro_winkler", "left", "levenshtein", "ln",
+  "log", "log10", "log2", "lpad", "ltrim", "math_acos", "math_acosh", "math_asin", "math_asinh", "math_atan", "math_atan2", "math_atanh", "math_ceil",
+  "math_cos", "math_cosh", "math_degrees", "math_exp", "math_floor", "math_ln", "math_log", "math_log10", "math_log2", "math_mod", "math_pi",
+  "math_pow", "math_radians", "math_round", "math_sin", "math_sinh", "math_sqrt", "math_tan", "math_tanh", "math_trunc", "md5", "median", "mod",
+  "octet_length", "osa_distance", "percentile", "percentile_25", "percentile_75", "percentile_90", "percentile_95", "percentile_99", "phonetic_hash",
+  "pi", "pow", "power", "radians", "regexp", "regexp_capture", "regexp_like", "regexp_replace", "regexp_substr", "repeat", "reverse", "right", "rpad",
+  "rsoundex", "rtrim", "script_code", "sha1", "sha256", "sha384", "sha512", "sin", "sinh", "soundex", "split_part", "sqrt", "starts_with",
+  "stats_median", "stats_p25", "stats_p75", "stats_p90", "stats_p95", "stats_p99", "stats_perc", "stats_seq", "stats_stddev", "stats_stddev_pop",
+  "stats_stddev_samp", "stats_var", "stats_var_pop", "stats_var_samp", "stddev", "stddev_pop", "stddev_samp", "strpos", "tan", "tanh", "text_bitsize",
+  "text_casefold", "text_concat", "text_contains", "text_count", "text_has_prefix", "text_has_suffix", "text_index", "text_join", "text_last_index",
+  "text_left", "text_length", "text_like", "text_lower", "text_lpad", "text_ltrim", "text_repeat", "text_replace", "text_reverse", "text_right",
+  "text_rpad", "text_rtrim", "text_size", "text_slice", "text_split", "text_substring", "text_title", "text_translate", "text_trim", "text_upper",
+  "translate", "translit", "trunc", "uuid4", "uuid7", "uuid7_timestamp_ms", "uuid_blob", "uuid_str", "var_pop", "var_samp", "variance"
+]);
+
+/**
+ * A driver over libSQL's engine, `@libsql/client` and the `libsql` package, runs a statement on a
+ * local file with the SQLite it carries, which loads no extension, and on Turso Cloud, or any libSQL
+ * server, with the server's, which loads sqlean's. So a statement calling one of sqlean's functions
+ * is refused by none of them, and fails on a local file when it runs.
+ */
+function sync(name: string, db: SyncDatabase, server = false): SqliteDriver {
   const row = db.prepare("select sqlite_version() as v").get() as { v: string };
   return {
     name,
@@ -51,7 +83,9 @@ function sync(name: string, db: SyncDatabase): SqliteDriver {
         db.prepare(sql);
         return undefined;
       } catch (e) {
-        return (e as Error).message;
+        const message = (e as Error).message;
+        const missing = /^no such (?:function|table): (\w+)$/.exec(message)?.[1];
+        return server && missing !== undefined && SQLEAN_FUNCTIONS.has(missing.toLowerCase()) ? undefined : message;
       }
     },
     async close() {
@@ -74,14 +108,14 @@ const DRIVERS: [string, Open][] = [
     "@libsql/client",
     async (require, path) => {
       const Database = createRequire(require.resolve("@libsql/client"))("libsql") as new (path: string, options: object) => SyncDatabase;
-      return sync("@libsql/client", new Database(path, { readonly: true }));
+      return sync("@libsql/client", new Database(path, { readonly: true }), true);
     },
   ],
   [
     "libsql",
     async (require, path) => {
       const Database = require("libsql") as new (path: string, options: object) => SyncDatabase;
-      return sync("libsql", new Database(path, { readonly: true }));
+      return sync("libsql", new Database(path, { readonly: true }), true);
     },
   ],
   [
