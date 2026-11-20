@@ -4336,7 +4336,8 @@ mod adversarial {
     pub async fn a_rebuild_keeps_every_row_where_foreign_keys_are_on(mut p: P) {
         // A parent, and tables that reference it every way: cascade, set null, none, at a second
         // level, through a key that is a unique index of its own, one the plan keeps and one it
-        // renames, and itself; each with what a rebuild takes down and makes again.
+        // renames, each naming its column's collation, and itself; each with what a rebuild takes
+        // down and makes again.
         let tables = |check: &str, key: &str| {
             format!(
                 "create table parents (id integer primary key, boss integer references parents (id) on delete cascade, name text{check});
@@ -4346,10 +4347,10 @@ create table pets (id integer primary key, parent_id integer references parents 
 create table chores (id integer primary key, kid_id integer references kids (id));
 create table toys (kid_id integer references kids (id) on delete cascade, name text);
 create table a_links (parent_id integer references parents (id), kid_id integer references kids (id));
-create table accounts (id integer primary key, parent_id integer references parents (id), email text not null);
-create unique index {key} on accounts (email);
-create table logins (id integer primary key, email text references accounts (email) on delete cascade);
-create unique index logins_email on logins (email);
+create table accounts (id integer primary key, parent_id integer references parents (id), email text not null collate nocase);
+create unique index {key} on accounts (email collate nocase);
+create table logins (id integer primary key, email text collate nocase references accounts (email) on delete cascade);
+create unique index logins_email on logins (email collate nocase);
 create table sessions (id integer primary key, email text references logins (email));
 create view kid_names as select kids.note, parents.name from kids join parents on parents.id = kids.parent_id;
 create trigger kids_note after insert on kids begin update parents set name = name where id = new.parent_id; end;"

@@ -892,11 +892,27 @@ fn unique_index(tokens: &[Token]) -> Option<(usize, usize)> {
 }
 
 /// Whether what follows an index's table in its text is a list of whole columns among `columns`
-/// and nothing more: no expression, no collation of its own and no WHERE, none of which a foreign
-/// key's parent key may have.
+/// and nothing more: no expression and no WHERE, neither of which a foreign key's parent key may
+/// have. A column may name its collation, which is the column's own where the index is a key.
 fn whole_columns(list: &[Token], columns: &BTreeSet<String>) -> bool {
     let Some(close) = list.iter().position(|t| t.text == ")") else { return false };
-    list.first().is_some_and(|t| t.text == "(") && close + 1 == list.len() && list[1..close].iter().all(|t| t.text == "," || matches!(t.upper().as_str(), "ASC" | "DESC") || name_of(t).is_some_and(|c| columns.contains(&c)))
+    if list.first().is_none_or(|t| t.text != "(") || close + 1 != list.len() {
+        return false;
+    }
+    let mut k = 1;
+    while k < close {
+        let t = &list[k];
+        // A collation, and its name after it.
+        if t.upper() == "COLLATE" {
+            k += 2;
+            continue;
+        }
+        if t.text != "," && !matches!(t.upper().as_str(), "ASC" | "DESC") && name_of(t).is_none_or(|c| !columns.contains(&c)) {
+            return false;
+        }
+        k += 1;
+    }
+    true
 }
 
 /// Whether a table's text names a column by the table's own name, as `"users"."age"`.
