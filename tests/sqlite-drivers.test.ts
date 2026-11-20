@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Session } from "../src/analyze.ts";
-import { placeRefusal, projectDrivers, SQLEAN_FUNCTIONS } from "../src/sqlite-drivers.ts";
+import { placeRefusal, projectDrivers, SQLEAN_FUNCTIONS, withoutSqlean } from "../src/sqlite-drivers.ts";
 import { DRIVERS } from "./helpers.ts";
 
 // The drivers are the labs' (lab/drivers), linked into each project as an install would put them.
@@ -216,6 +216,15 @@ test("libSQL's drivers let the sqlean functions Turso Cloud loads through, and a
   assert.match((await analyze(better.root, better.env, SQLEAN)).analysis.diagnostics[0]?.message ?? "", /^better-sqlite3 runs SQLite [\d.]+, which refuses this statement: no such function: uuid4$/);
   // A function no SQLite has is still refused.
   assert.match((await analyze(libsql.root, libsql.env, "select nosuch(body) as x from notes")).analysis.diagnostics[0]?.message ?? "", /no such function: nosuch/);
+  // The rest of a statement that calls one is still checked: libSQL's SQLite 3.45.1 has no `json_pretty`, and takes `iif` with three arguments or more.
+  assert.match((await analyze(libsql.root, libsql.env, "select uuid4() as id, json_pretty(meta) as meta from notes")).analysis.diagnostics[0]?.message ?? "", /^@libsql\/client runs SQLite 3\.45\.1, which refuses this statement: no such function: json_pretty$/);
+  assert.match((await analyze(libsql.root, libsql.env, "select levenshtein(body, 'a') as d, iif(id > 1, 'big') as size from notes")).analysis.diagnostics[0]?.message ?? "", /wrong number of arguments to function iif\(\)/);
+});
+
+test("the check reads a call of a sqlean function as one of char, outside strings, quoted names and comments", () => {
+  assert.equal(withoutSqlean("select uuid4(), 'uuid4()', \"uuid4\", Uuid4 (x) -- uuid4()\nfrom t", "uuid4"), "select char(), 'uuid4()', \"uuid4\", char (x) -- uuid4()\nfrom t");
+  assert.equal(withoutSqlean("select value from stats_seq(1, 3)", "stats_seq"), "select value from generate_series(1, 3)");
+  assert.equal(withoutSqlean("select 'it''s uuid4()' /* uuid4() */ as uuid4", "uuid4"), undefined);
 });
 
 test("the sqlean functions the driver check lets through are the ones the engine knows", () => {

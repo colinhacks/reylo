@@ -70,22 +70,76 @@ export const SQLEAN_FUNCTIONS: ReadonlySet<string> = new Set([
 /**
  * A driver over libSQL's engine, `@libsql/client` and the `libsql` package, runs a statement on a
  * local file with the SQLite it carries, which loads no extension, and on Turso Cloud, or any libSQL
- * server, with the server's, which loads sqlean's. So a statement calling one of sqlean's functions
- * is refused by none of them, and fails on a local file when it runs.
+ * server, with the server's, which loads sqlean's. So the check takes a call of a sqlean function
+ * its SQLite lacks as one of `char`, which it has and which takes any number of arguments, and
+ * `stats_seq` as `generate_series`, and checks the rest of the statement: a statement that only
+ * such a call keeps from preparing is refused by neither, and fails on a local file when it runs.
+ * The statement runs as written; only the check reads it so.
  */
+export function withoutSqlean(sql: string, name: string): string | undefined {
+  const stand = name.toLowerCase() === "stats_seq" ? "generate_series" : "char";
+  let out = "";
+  let changed = false;
+  let i = 0;
+  while (i < sql.length) {
+    const c = sql[i]!;
+    const close = c === "'" || c === '"' || c === "`" ? c : c === "[" ? "]" : undefined;
+    if (close) {
+      // A quote written twice inside is the quote itself; a bracket ends at the first `]`.
+      let j = i + 1;
+      while (j < sql.length) {
+        if (sql[j] === close) {
+          if (close !== "]" && sql[j + 1] === close) {
+            j += 2;
+            continue;
+          }
+          break;
+        }
+        j++;
+      }
+      out += sql.slice(i, j + 1);
+      i = j + 1;
+    } else if (sql.startsWith("--", i) || sql.startsWith("/*", i)) {
+      const end = sql.startsWith("--", i) ? sql.indexOf("\n", i) : sql.indexOf("*/", i + 2) + 1;
+      const j = end <= 0 ? sql.length : end + 1;
+      out += sql.slice(i, j);
+      i = j;
+    } else if (/[A-Za-z_]/.test(c)) {
+      const word = /^[A-Za-z_][\w$]*/.exec(sql.slice(i))![0];
+      const call = /^\s*\(/.test(sql.slice(i + word.length));
+      if (call && word.toLowerCase() === name.toLowerCase()) {
+        out += stand;
+        changed = true;
+      } else {
+        out += word;
+      }
+      i += word.length;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return changed ? out : undefined;
+}
+
 function sync(name: string, db: SyncDatabase, server = false): SqliteDriver {
   const row = db.prepare("select sqlite_version() as v").get() as { v: string };
   return {
     name,
     says: (refusal) => `${name} runs SQLite ${row.v}, which refuses this statement: ${refusal}`,
     async refuses(sql) {
-      try {
-        db.prepare(sql);
-        return undefined;
-      } catch (e) {
-        const message = (e as Error).message;
-        const missing = /^no such (?:function|table): (\w+)$/.exec(message)?.[1];
-        return server && missing !== undefined && SQLEAN_FUNCTIONS.has(missing.toLowerCase()) ? undefined : message;
+      let text = sql;
+      for (;;) {
+        try {
+          db.prepare(text);
+          return undefined;
+        } catch (e) {
+          const message = (e as Error).message;
+          const missing = /^no such (?:function|table): (\w+)$/.exec(message)?.[1];
+          const next = server && missing !== undefined && SQLEAN_FUNCTIONS.has(missing.toLowerCase()) ? withoutSqlean(text, missing) : undefined;
+          if (next === undefined) return message;
+          text = next;
+        }
       }
     },
     async close() {
