@@ -1,6 +1,6 @@
 //! libSQL's engine, Turso's fork of SQLite, which a SQLite case with a `libsql` file runs on: the
-//! amalgamation of `libsql-ffi` 0.10.0, SQLite 3.47.0 with libSQL's vectors (`build.rs`,
-//! `csrc/libsql.c`). Its API is private to its own translation unit, beside rusqlite's SQLite, so a
+//! amalgamation of `libsql-ffi` 0.10.0, SQLite 3.47.0 with libSQL's vectors, and the sqlean
+//! extensions Turso Cloud loads (`build.rs`, `csrc/libsql.c`). Its API is private to its own translation unit, beside rusqlite's SQLite, so a
 //! connection is reached through the few functions `csrc/libsql.c` exports, and answers the seeding
 //! as a rusqlite connection does ([`crate::seed::SqliteDb`]): its values are rusqlite's, and its
 //! errors rusqlite's `SqliteFailure` with libSQL's code and message.
