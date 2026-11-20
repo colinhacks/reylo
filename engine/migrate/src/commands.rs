@@ -3609,7 +3609,7 @@ fn guess_problem(guesses: &[Guess], drops: &[(String, String)], narrowed: &[(Str
     }
     let rest: Vec<String> = more.iter().filter(|n| !taken.contains(n)).cloned().collect();
     let width = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
-    let lead = "For each, pick a rename, which keeps its rows, or a drop, which loses them";
+    let lead = "For each, rename to keep its rows, or drop it";
     problem.lines.extend([String::new(), format!("  {lead}:")]);
     for (keep, drop) in &rows {
         problem.lines.push(format!("    {}{}   or   {}", paint("cyan", keep), " ".repeat(width - keep.chars().count()), paint("cyan", drop)));

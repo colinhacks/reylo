@@ -1856,7 +1856,7 @@ fn choices_of(line: &str) -> reylo_migrate::Choices {
 /// The command a refusal of several guesses prints for adding flags to, with the flags of each line
 /// it picks: the rename on the left, where `keep` says, else the drop on the right.
 fn picked(out: &str, keep: impl Fn(usize) -> bool) -> String {
-    let rows: Vec<&str> = out.lines().skip_while(|l| !l.contains("For each, pick a rename")).skip(1).take_while(|l| l.starts_with("    --")).collect();
+    let rows: Vec<&str> = out.lines().skip_while(|l| !l.contains("For each, rename to keep its rows")).skip(1).take_while(|l| l.starts_with("    --")).collect();
     let base: Vec<&str> = out.lines().skip_while(|l| !l.contains("Add the flags you picked to")).skip(1).take_while(|l| l.starts_with("    ")).collect();
     assert!(!rows.is_empty() && !base.is_empty(), "{out}");
     let flags: Vec<&str> = rows
@@ -1884,7 +1884,7 @@ async fn create_settles_every_guess_with_one_command(mut p: P) {
     p.schema(&format!("create table users (id {id}, handle {long}); create table invoices (id {id}, a {text}, b {text}, c {text}, total {int}); create table posts (id {id});"));
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "tidy", &Default::default(), log).await).await, 1);
     let out = p.output();
-    assert_has!(&out, r"✗ This migration can't tell renames from new tables and columns\n\n    orders     → invoices  adds total, drops legacy\n    users\.nick → handle    [^\n]+\n\n  It also drops the columns posts\.old_a and posts\.old_b, with their data\.\n\n  For each, pick a rename, which keeps its rows, or a drop, which loses them:\n    --rename orders=invoices --drop invoices\.legacy   or   --drop orders\n    --rename users\.nick=handle                        or   --drop users\.nick\n  Add the flags you picked to:\n    reylo migrate new tidy --drop posts\.old_a,posts\.old_b\n");
+    assert_has!(&out, r"✗ This migration can't tell renames from new tables and columns\n\n    orders     → invoices  adds total, drops legacy\n    users\.nick → handle    [^\n]+\n\n  It also drops the columns posts\.old_a and posts\.old_b, with their data\.\n\n  For each, rename to keep its rows, or drop it:\n    --rename orders=invoices --drop invoices\.legacy   or   --drop orders\n    --rename users\.nick=handle                        or   --drop users\.nick\n  Add the flags you picked to:\n    reylo migrate new tidy --drop posts\.old_a,posts\.old_b\n");
     let (keeps, drops) = (picked(&out, |_| true), picked(&out, |_| false));
     let made = |p: &P| p.files().into_iter().filter(|f| f.contains("_tidy")).collect::<Vec<_>>();
     // The second command, as printed, is one the next create takes.
@@ -2469,7 +2469,7 @@ async fn create_assumes_a_rename_where_one_goes_and_one_comes(mut p: P) {
     p.schema(&format!("create table users (id {id}, handle {long}); create table members (id {int}, email {short}, name {short}, joined {int});"));
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "renames", &Default::default(), log).await).await, 1);
     let out = p.output();
-    assert_has!(&out, r"✗ This migration can't tell renames from new tables and columns\n\n    accounts   → members  adds joined\n    users\.nick → handle   [^\n]+ → [^\n]+\n\n  For each, pick a rename, which keeps its rows, or a drop, which loses them:\n    --rename accounts=members    or   --drop accounts\n    --rename users\.nick=handle   or   --drop users\.nick\n  Add the flags you picked to:\n    reylo migrate new renames\n\nNothing was changed\.");
+    assert_has!(&out, r"✗ This migration can't tell renames from new tables and columns\n\n    accounts   → members  adds joined\n    users\.nick → handle   [^\n]+ → [^\n]+\n\n  For each, rename to keep its rows, or drop it:\n    --rename accounts=members    or   --drop accounts\n    --rename users\.nick=handle   or   --drop users\.nick\n  Add the flags you picked to:\n    reylo migrate new renames\n\nNothing was changed\.");
     assert_eq!(p.files().len(), 2, "nothing is written");
     // The second command, which takes them for new ones.
     let choices = reylo_migrate::Choices { drop: vec!["accounts".into(), "users.nick".into()], rename: vec![], ..Default::default() };
