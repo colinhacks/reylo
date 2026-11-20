@@ -819,13 +819,14 @@ const db = await new sql.ConnectionPool({
 const tx = new sql.Transaction(db);
 await tx.begin();
 try {
-  await createUser.run(tx, { name: "Ada" });
-  await createUser.run(tx, { name: "Grace" });
-  await tx.commit();
+  await createUser.run(tx, { name: "Ada", email: "ada@example.com" });
+  await createUser.run(tx, { name: "Grace", email: "grace@example.com" });
 } catch (error) {
-  await tx.rollback();
+  // SQL Server may have rolled it back already
+  await tx.rollback().catch(() => {});
   throw error;
 }
+await tx.commit();
 ```
 
 ### `.runSync()`
