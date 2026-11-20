@@ -14,8 +14,8 @@
 ** and the replay registers a stub for each, so a statement calling one prepares here as it does
 ** there. A host that lists the functions of its own SQLite (pragma_function_list) decides which
 ** functions exist: one it has and this build lacks gets a stub too, and one this build has and it
-** lacks is refused. libSQL's vector functions and its vector_top_k are on every replay, whatever
-** the host lists (openLibsql).
+** lacks is refused. libSQL's vector functions and its vector_top_k, and the functions of the sqlean
+** extensions Turso Cloud loads, are on every replay, whatever the host lists (openLibsql).
 */
 #include <stdio.h>
 #include <string.h>
@@ -659,23 +659,89 @@ static void hostFinalStub(sqlite3_context *ctx){ sqlite3_result_null(ctx); }
 
 /* ---- libSQL's own SQL ------------------------------------------------------------------------ */
 
-/* libSQL, Turso's fork of SQLite, adds vectors: these scalar functions, under these names and
-** argument counts (libSQL 0.10.0's vector.c and vectorIndex.c), and the table-valued
-** vector_top_k below. A libSQL database file reads as SQLite's, with nothing in it to say whose it
-** is, so the replay has them on every database, as it has every optional family of SQLite's, and
-** the SQLite the application runs on decides: the type check also prepares each statement on the
-** application's own drivers (src/sqlite-drivers.ts), and one whose SQLite lacks them refuses it.
-** The analysis only prepares, so a stand-in under libSQL's name, argument count and flags
-** (deterministic and innocuous, as libSQL registers them) resolves as libSQL's own does. */
-static const char *const azLibsql[] = {
-  "vector", "vector32", "vector64", "vector1bit", "vector8", "vector16", "vectorb16", "vector_extract",
-  "vector_distance_cos", "vector_distance_l2", "libsql_vector_idx",
+/* libSQL, Turso's fork of SQLite, adds vectors: the scalar functions below, under these names and
+** argument counts (libSQL 0.10.0's vector.c and vectorIndex.c), and the table-valued vector_top_k.
+** Turso Cloud also loads into every connection the sqlean extensions libsql-ffi 0.10.0 carries
+** (uuid, crypto, fuzzy, math, stats, text, regexp), whose functions follow, and whose
+** generate_series and stats_seq are table-valued. A libSQL database file reads as SQLite's, with
+** nothing in it to say whose it is, so the replay has them on every database, as it has every
+** optional family of SQLite's, and the SQLite the application runs on decides: the type check also
+** prepares each statement on the application's own drivers (src/sqlite-drivers.ts), and one whose
+** SQLite lacks them refuses it. The analysis only prepares, so a stand-in under the same name,
+** argument count, kind and flags resolves as libSQL's own does. A name this build has already, as
+** sqlean's math functions, `concat` and `median`, keeps this build's function. */
+#define D (SQLITE_UTF8|SQLITE_DETERMINISTIC)
+#define I (SQLITE_UTF8|SQLITE_INNOCUOUS)
+#define DI (SQLITE_UTF8|SQLITE_DETERMINISTIC|SQLITE_INNOCUOUS)
+static const struct TursoFunction { const char *zName; int nArg; char cKind; int flags; } aTurso[] = {
+  /* libSQL's vectors */
+  {"vector", 1, 's', DI}, {"vector32", 1, 's', DI}, {"vector64", 1, 's', DI}, {"vector1bit", 1, 's', DI},
+  {"vector8", 1, 's', DI}, {"vector16", 1, 's', DI}, {"vectorb16", 1, 's', DI}, {"vector_extract", 1, 's', DI},
+  {"vector_distance_cos", 2, 's', DI}, {"vector_distance_l2", 2, 's', DI}, {"libsql_vector_idx", -1, 's', DI},
+  /* sqlean's uuid */
+  {"gen_random_uuid", 0, 's', I}, {"uuid4", 0, 's', I}, {"uuid7", 0, 's', I},
+  {"uuid7_timestamp_ms", 1, 's', DI}, {"uuid_blob", 1, 's', DI}, {"uuid_str", 1, 's', DI},
+  /* sqlean's crypto */
+  {"blake3", 1, 's', DI}, {"crypto_blake3", 1, 's', DI}, {"crypto_decode", 2, 's', DI},
+  {"crypto_encode", 2, 's', DI}, {"crypto_md5", 1, 's', DI}, {"crypto_sha1", 1, 's', DI},
+  {"crypto_sha256", 1, 's', DI}, {"crypto_sha384", 1, 's', DI}, {"crypto_sha512", 1, 's', DI},
+  {"decode", 2, 's', DI}, {"encode", 2, 's', DI}, {"md5", 1, 's', DI}, {"sha1", 1, 's', DI},
+  {"sha256", 1, 's', DI}, {"sha384", 1, 's', DI}, {"sha512", 1, 's', DI},
+  /* sqlean's fuzzy */
+  {"caverphone", 1, 's', DI}, {"dlevenshtein", 2, 's', DI}, {"edit_distance", 2, 's', DI},
+  {"fuzzy_caver", 1, 's', DI}, {"fuzzy_damlev", 2, 's', DI}, {"fuzzy_editdist", 2, 's', DI},
+  {"fuzzy_hamming", 2, 's', DI}, {"fuzzy_jarowin", 2, 's', DI}, {"fuzzy_leven", 2, 's', DI},
+  {"fuzzy_osadist", 2, 's', DI}, {"fuzzy_phonetic", 1, 's', DI}, {"fuzzy_rsoundex", 1, 's', DI},
+  {"fuzzy_script", 1, 's', DI}, {"fuzzy_soundex", 1, 's', DI}, {"fuzzy_translit", 1, 's', DI},
+  {"hamming", 2, 's', DI}, {"jaro_winkler", 2, 's', DI}, {"levenshtein", 2, 's', DI},
+  {"osa_distance", 2, 's', DI}, {"phonetic_hash", 1, 's', DI}, {"rsoundex", 1, 's', DI},
+  {"script_code", 1, 's', DI}, {"translit", 1, 's', DI},
+  /* sqlean's math */
+  {"math_acos", 1, 's', DI}, {"math_acosh", 1, 's', DI}, {"math_asin", 1, 's', DI},
+  {"math_asinh", 1, 's', DI}, {"math_atan", 1, 's', DI}, {"math_atan2", 2, 's', DI},
+  {"math_atanh", 1, 's', DI}, {"math_ceil", 1, 's', DI}, {"math_cos", 1, 's', DI}, {"math_cosh", 1, 's', DI},
+  {"math_degrees", 1, 's', DI}, {"math_exp", 1, 's', DI}, {"math_floor", 1, 's', DI},
+  {"math_ln", 1, 's', DI}, {"math_log", 1, 's', DI}, {"math_log", 2, 's', DI}, {"math_log10", 1, 's', DI},
+  {"math_log2", 1, 's', DI}, {"math_mod", 2, 's', DI}, {"math_pi", 0, 's', DI}, {"math_pow", 2, 's', DI},
+  {"math_radians", 1, 's', DI}, {"math_round", 1, 's', DI}, {"math_round", 2, 's', DI},
+  {"math_sin", 1, 's', DI}, {"math_sinh", 1, 's', DI}, {"math_sqrt", 1, 's', DI}, {"math_tan", 1, 's', DI},
+  {"math_tanh", 1, 's', DI}, {"math_trunc", 1, 's', DI},
+  /* sqlean's stats */
+  {"percentile_25", 1, 'a', I}, {"percentile_75", 1, 'a', I}, {"percentile_90", 1, 'a', I},
+  {"percentile_95", 1, 'a', I}, {"percentile_99", 1, 'a', I}, {"stats_median", 1, 'a', I},
+  {"stats_p25", 1, 'a', I}, {"stats_p75", 1, 'a', I}, {"stats_p90", 1, 'a', I}, {"stats_p95", 1, 'a', I},
+  {"stats_p99", 1, 'a', I}, {"stats_perc", 2, 'a', I}, {"stats_stddev", 1, 'a', I},
+  {"stats_stddev_pop", 1, 'a', I}, {"stats_stddev_samp", 1, 'a', I}, {"stats_var", 1, 'a', I},
+  {"stats_var_pop", 1, 'a', I}, {"stats_var_samp", 1, 'a', I}, {"stddev", 1, 'a', I},
+  {"stddev_pop", 1, 'a', I}, {"stddev_samp", 1, 'a', I}, {"var_pop", 1, 'a', I}, {"var_samp", 1, 'a', I},
+  {"variance", 1, 'a', I},
+  /* sqlean's text */
+  {"bit_length", 1, 's', DI}, {"btrim", -1, 's', DI}, {"char_length", 1, 's', DI},
+  {"character_length", 1, 's', DI}, {"left", 2, 's', DI}, {"lpad", -1, 's', DI}, {"repeat", 2, 's', DI},
+  {"reverse", 1, 's', DI}, {"right", 2, 's', DI}, {"rpad", -1, 's', DI}, {"split_part", 3, 's', DI},
+  {"starts_with", 2, 's', DI}, {"strpos", 2, 's', DI}, {"text_bitsize", 1, 's', DI},
+  {"text_casefold", 1, 's', DI}, {"text_concat", -1, 's', DI}, {"text_contains", 2, 's', DI},
+  {"text_count", 2, 's', DI}, {"text_has_prefix", 2, 's', DI}, {"text_has_suffix", 2, 's', DI},
+  {"text_index", 2, 's', DI}, {"text_join", -1, 's', DI}, {"text_last_index", 2, 's', DI},
+  {"text_left", 2, 's', DI}, {"text_length", 1, 's', DI}, {"text_like", 2, 's', DI},
+  {"text_lower", 1, 's', DI}, {"text_lpad", -1, 's', DI}, {"text_ltrim", -1, 's', DI},
+  {"text_repeat", 2, 's', DI}, {"text_replace", 3, 's', DI}, {"text_replace", 4, 's', DI},
+  {"text_reverse", 1, 's', DI}, {"text_right", 2, 's', DI}, {"text_rpad", -1, 's', DI},
+  {"text_rtrim", -1, 's', DI}, {"text_size", 1, 's', DI}, {"text_slice", 2, 's', DI},
+  {"text_slice", 3, 's', DI}, {"text_split", 3, 's', DI}, {"text_substring", 2, 's', DI},
+  {"text_substring", 3, 's', DI}, {"text_title", 1, 's', DI}, {"text_translate", 3, 's', DI},
+  {"text_trim", -1, 's', DI}, {"text_upper", 1, 's', DI}, {"translate", 3, 's', DI},
+  /* sqlean's regexp */
+  {"regexp", 2, 's', D}, {"regexp_capture", 2, 's', D}, {"regexp_capture", 3, 's', D},
+  {"regexp_like", 2, 's', D}, {"regexp_replace", 3, 's', D}, {"regexp_substr", 2, 's', D},
 };
-static const int aLibsqlArg[] = { 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, -1 };
+#undef D
+#undef I
+#undef DI
 
-static int isLibsqlFunction(const char *zName){
+static int isTursoFunction(const char *zName){
   int i;
-  for(i=0; i<(int)(sizeof(azLibsql)/sizeof(azLibsql[0])); i++) if( sqlite3StrICmp(azLibsql[i], zName)==0 ) return 1;
+  for(i=0; i<(int)(sizeof(aTurso)/sizeof(aTurso[0])); i++) if( sqlite3StrICmp(aTurso[i].zName, zName)==0 ) return 1;
   return 0;
 }
 
@@ -736,15 +802,67 @@ static sqlite3_module vectorTopKModule = {
 
 static void functionError(sqlite3_str *errors, const char *zName);
 
-/* libSQL's functions and vector_top_k on the replay, unless this build has its own of a name. */
+/* generate_series(start, stop, step) and its alias stats_seq, as sqlean's stats extension declares
+** them (SQLite's own series.c): each row's value, under its three arguments as hidden columns. Its
+** plan takes an equality constraint on each argument the call gives, and is refused without a
+** start, as sqlean's is. Only ever prepared here, so a scan of it has no rows. */
+static int seriesConnect(sqlite3 *db, void *pAux, int argc, const char *const *argv, sqlite3_vtab **ppVtab, char **pzErr){
+  int rc;
+  (void)pAux; (void)argc; (void)argv; (void)pzErr;
+  rc = sqlite3_declare_vtab(db, "CREATE TABLE x(value,start hidden,stop hidden,step hidden)");
+  if( rc!=SQLITE_OK ) return rc;
+  *ppVtab = sqlite3_malloc(sizeof(sqlite3_vtab));
+  if( *ppVtab==0 ) return SQLITE_NOMEM;
+  memset(*ppVtab, 0, sizeof(sqlite3_vtab));
+  return SQLITE_OK;
+}
+static int seriesBestIndex(sqlite3_vtab *pVtab, sqlite3_index_info *pInfo){
+  int i, nArg = 0, aIdx[3] = {-1, -1, -1}, bStart = 0, unusable = 0, used = 0;
+  for(i=0; i<pInfo->nConstraint; i++){
+    const struct sqlite3_index_constraint *p = &pInfo->aConstraint[i];
+    int iCol = p->iColumn - 1;
+    if( iCol<0 || iCol>2 ) continue;
+    if( iCol==0 ) bStart = 1;
+    if( !p->usable ){ unusable |= 1<<iCol; continue; }
+    if( p->op==SQLITE_INDEX_CONSTRAINT_EQ ){ aIdx[iCol] = i; used |= 1<<iCol; }
+  }
+  for(i=0; i<3; i++) if( aIdx[i]>=0 ){ pInfo->aConstraintUsage[aIdx[i]].argvIndex = ++nArg; pInfo->aConstraintUsage[aIdx[i]].omit = 1; }
+  if( !bStart ){
+    sqlite3_free(pVtab->zErrMsg);
+    pVtab->zErrMsg = sqlite3_mprintf("first argument to \"generate_series()\" missing or unusable");
+    return SQLITE_ERROR;
+  }
+  if( (unusable & ~used)!=0 ) return SQLITE_CONSTRAINT;
+  pInfo->idxNum = used;
+  pInfo->estimatedCost = (used & 3)==3 ? 2.0 : 2147483647.0;
+  pInfo->estimatedRows = (used & 3)==3 ? 1000 : 2147483647;
+  return SQLITE_OK;
+}
+static sqlite3_module seriesModule = {
+  0, 0, seriesConnect, seriesBestIndex, vectorTopKDisconnect, 0, vectorTopKOpen, vectorTopKClose,
+  vectorTopKFilter, vectorTopKNext, vectorTopKEof, vectorTopKColumn, vectorTopKRowid,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+
+/* libSQL's functions and sqlean's, vector_top_k, generate_series and stats_seq on the replay, but a
+** name this build has its own function of: a scalar function or an aggregate, by its kind. */
 static void openLibsql(sqlite3_str *errors){
-  const int flags = SQLITE_UTF8|SQLITE_DETERMINISTIC|SQLITE_INNOCUOUS;
-  int i;
-  for(i=0; i<(int)(sizeof(azLibsql)/sizeof(azLibsql[0])); i++){
-    if( sqlite3FindFunction(gDb, azLibsql[i], -2, SQLITE_UTF8, 0)!=0 ) continue;
-    if( sqlite3_create_function_v2(gDb, azLibsql[i], aLibsqlArg[i], flags, 0, hostFunctionStub, 0, 0, 0)!=SQLITE_OK ) functionError(errors, azLibsql[i]);
+  enum { N = sizeof(aTurso)/sizeof(aTurso[0]) };
+  char aHas[N];
+  int i, rc;
+  /* Settled before any is registered: a stand-in for one argument count must not hide that this
+  ** build lacks the name. */
+  for(i=0; i<N; i++) aHas[i] = sqlite3FindFunction(gDb, aTurso[i].zName, -2, SQLITE_UTF8, 0)!=0;
+  for(i=0; i<N; i++){
+    const struct TursoFunction *f = &aTurso[i];
+    if( aHas[i] ) continue;
+    if( f->cKind=='a' ) rc = sqlite3_create_function_v2(gDb, f->zName, f->nArg, f->flags, 0, 0, hostFunctionStub, hostFinalStub, 0);
+    else rc = sqlite3_create_function_v2(gDb, f->zName, f->nArg, f->flags, 0, hostFunctionStub, 0, 0, 0);
+    if( rc!=SQLITE_OK ) functionError(errors, f->zName);
   }
   if( sqlite3_create_module(gDb, "vector_top_k", &vectorTopKModule, 0)!=SQLITE_OK ) functionError(errors, "vector_top_k");
+  if( sqlite3_create_module(gDb, "generate_series", &seriesModule, 0)!=SQLITE_OK ) functionError(errors, "generate_series");
+  if( sqlite3_create_module(gDb, "stats_seq", &seriesModule, 0)!=SQLITE_OK ) functionError(errors, "stats_seq");
 }
 
 /* For vector_top_k('docs_emb', …), the table whose rows its index holds, as its DDL spells the name,
@@ -939,10 +1057,10 @@ static int functionAuth(void *pArg, int code, const char *z1, const char *zFn, c
   if( code!=SQLITE_FUNCTION || zFn==0 ) return SQLITE_OK;
   for(i=0; i<gnHost; i++) if( sqlite3StrICmp(gHost[i], zFn)==0 ) return SQLITE_OK;
   for(i=0; i<gnExtra; i++) if( sqlite3StrICmp(gExtra[i], zFn)==0 ) return SQLITE_OK;
-  /* libSQL's are refused by no host's list: the SQLite that reads the database file reads a
-  ** libSQL file as its own and lists none of them, and the application's drivers decide whether
-  ** its SQLite has them (openLibsql). */
-  if( isLibsqlFunction(zFn) ) return SQLITE_OK;
+  /* libSQL's and sqlean's are refused by no host's list: the SQLite that reads the database file
+  ** reads a libSQL file as its own and lists none of them, and the application's drivers decide
+  ** whether its SQLite has them (openLibsql). */
+  if( isTursoFunction(zFn) ) return SQLITE_OK;
   pDef = sqlite3FindFunction(gDb, zFn, -2, SQLITE_UTF8, 0);
   if( pDef==0 || (pDef->funcFlags & SQLITE_FUNC_INTERNAL)!=0 ) return SQLITE_OK;
   if( gnDenied++==0 && zInside ){

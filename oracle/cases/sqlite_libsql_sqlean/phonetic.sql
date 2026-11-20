@@ -1,0 +1,1 @@
+select caverphone(nick) as a, phonetic_hash(nick) as b, rsoundex(nick) as c, fuzzy_soundex(nick) as d, soundex(nick) as e, translit(bio) as f, script_code(bio) as g from people where coalesce(nick, '') not glob '*[^ -~]*'

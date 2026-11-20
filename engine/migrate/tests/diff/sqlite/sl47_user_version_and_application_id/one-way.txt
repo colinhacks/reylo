@@ -1,0 +1,1 @@
+A user_version or application_id schema.sql stops setting is left as it is: an app may keep its own there.

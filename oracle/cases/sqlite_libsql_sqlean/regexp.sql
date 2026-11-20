@@ -1,0 +1,1 @@
+select regexp_like(nick, 'a+') as a, regexp_substr(name, 'a+') as b, regexp_capture(name, '(a)', 1) as c, regexp_replace(name, 'a', 'b') as d, regexp_replace(nick, 'a', 'b') as e from people where name regexp :pattern

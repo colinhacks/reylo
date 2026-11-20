@@ -1,0 +1,1 @@
+select text_title(name) as a, text_casefold(nick) as b, text_upper(name) as c, text_lower(nick) as d, text_trim(name) as e, text_replace(name, 'a', 'b') as f, text_slice(name, 2) as g, text_substring(nick, 1, 2) as h, text_split(name, ' ', 1) as i, text_concat(name, nick) as j, text_join(',', name, nick) as k, text_join(nick, name) as l from people
