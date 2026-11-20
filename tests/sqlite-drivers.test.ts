@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Session } from "../src/analyze.ts";
-import { placeRefusal, projectDrivers } from "../src/sqlite-drivers.ts";
+import { placeRefusal, projectDrivers, SQLEAN_AGGREGATES, SQLEAN_FUNCTIONS, withoutSqlean } from "../src/sqlite-drivers.ts";
 import { DRIVERS } from "./helpers.ts";
 
 // The drivers are the labs' (lab/drivers), linked into each project as an install would put them.
@@ -203,4 +203,48 @@ test("D1 compiles each statement against the schema as it is now, after a migrat
   // A later session, as a build step opens after a pause, asks D1 again.
   const pretty = await analyze(root, env, "select json_pretty(tag) as t from notes");
   assert.match(pretty.analysis.diagnostics[0]?.message ?? "", /refuses this statement: not authorized to use function: json_pretty$/);
+});
+
+// Turso Cloud loads the sqlean extensions into every connection, and `@libsql/client` reaches it,
+// while the libSQL it carries for a local file has none of them.
+const SQLEAN = "select uuid4() as id, levenshtein(body, :q) as distance, regexp_like(body, 'a+') as matched from notes";
+
+test("libSQL's drivers let the sqlean functions Turso Cloud loads through, and another SQLite's refuses them", { skip }, async () => {
+  const libsql = project(["@libsql/client"]);
+  assert.deepEqual((await analyze(libsql.root, libsql.env, SQLEAN)).analysis.diagnostics, []);
+  const better = project(["better-sqlite3"]);
+  assert.match((await analyze(better.root, better.env, SQLEAN)).analysis.diagnostics[0]?.message ?? "", /^better-sqlite3 runs SQLite [\d.]+, which refuses this statement: no such function: uuid4$/);
+  // A function no SQLite has is still refused.
+  assert.match((await analyze(libsql.root, libsql.env, "select nosuch(body) as x from notes")).analysis.diagnostics[0]?.message ?? "", /no such function: nosuch/);
+  // The rest of a statement that calls one is still checked: libSQL's SQLite 3.45.1 has no `json_pretty`, and takes `iif` with three arguments or more.
+  assert.match((await analyze(libsql.root, libsql.env, "select uuid4() as id, json_pretty(meta) as meta from notes")).analysis.diagnostics[0]?.message ?? "", /^@libsql\/client runs SQLite 3\.45\.1, which refuses this statement: no such function: json_pretty$/);
+  assert.match((await analyze(libsql.root, libsql.env, "select levenshtein(body, 'a') as d, iif(id > 1, 'big') as size from notes")).analysis.diagnostics[0]?.message ?? "", /wrong number of arguments to function iif\(\)/);
+  // An aggregate keeps a query that needs one valid, and a quoted or commented call is still a call.
+  for (const sql of ["select stats_stddev(id) filter (where id > 0) as s from notes", "select stats_stddev(id) as s from notes having count(*) > 0", 'select "uuid4"() as id from notes', "select uuid4 /* id */ () as id from notes"]) {
+    assert.deepEqual((await analyze(libsql.root, libsql.env, sql)).analysis.diagnostics, [], sql);
+  }
+});
+
+test("the check reads a call of a sqlean function as one of char, outside strings, quoted names and comments", () => {
+  assert.equal(withoutSqlean("select uuid4(), 'uuid4()', \"uuid4\", Uuid4 (x) -- uuid4()\nfrom t", "uuid4"), "select char(), 'uuid4()', \"uuid4\", char (x) -- uuid4()\nfrom t");
+  assert.equal(withoutSqlean("select value from stats_seq(1, 3)", "stats_seq"), "select value from generate_series(1, 3)");
+  assert.equal(withoutSqlean("select 'it''s uuid4()' /* uuid4() */ as uuid4", "uuid4"), undefined);
+  // A quoted name that is called, and a comment before the parenthesis.
+  assert.equal(withoutSqlean('select "uuid4"(), [uuid4] /* a */ (), "uuid4" from t', "uuid4"), 'select char(), char /* a */ (), "uuid4" from t');
+  assert.equal(withoutSqlean("select uuid4 -- a\n() from t", "uuid4"), "select char -- a\n() from t");
+  // An aggregate stays one.
+  assert.equal(withoutSqlean("select stats_stddev(id) filter (where id > 0) from t", "stats_stddev"), "select total(id) filter (where id > 0) from t");
+  assert.equal(withoutSqlean("select stats_perc(id, 50) from t", "stats_perc"), "select group_concat(id, 50) from t");
+});
+
+test("the sqlean functions the driver check lets through are the ones the engine knows", () => {
+  const walker = readFileSync(new URL("../engine/sqlite/csrc/reylo_sqlite.c", import.meta.url), "utf8");
+  const table = walker.slice(walker.indexOf("aTurso[] = {"), walker.indexOf("};", walker.indexOf("aTurso[] = {")));
+  const sqlean = [...table.slice(table.indexOf("/* sqlean's")).matchAll(/\{"([a-z0-9_]+)",/g)].map((m) => m[1]!);
+  assert.ok(sqlean.length > 100, `${sqlean.length}`);
+  assert.deepEqual(sqlean.filter((name) => !SQLEAN_FUNCTIONS.has(name)), []);
+  // Each aggregate, with its argument count, but `median` and `percentile`, which the engine's own SQLite has.
+  const aggregates = [...table.slice(table.indexOf("/* sqlean's")).matchAll(/\{"([a-z0-9_]+)", (-?\d+), 'a'/g)].map((m) => [m[1]!, Number(m[2])] as const);
+  assert.deepEqual(new Map(aggregates), new Map([...SQLEAN_AGGREGATES].filter(([name]) => name !== "median" && name !== "percentile")));
+  for (const vtab of ["generate_series", "stats_seq"]) assert.ok(SQLEAN_FUNCTIONS.has(vtab));
 });

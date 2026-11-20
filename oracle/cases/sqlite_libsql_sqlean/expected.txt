@@ -1,0 +1,19 @@
+decode.sql: one (hex: text(UTF-8, ill-formed)) -> { a: bytes }
+digest.sql: many (text: text(UTF-8, ill-formed)) -> { a: bytes, b: bytes?, c: bytes?, d: bytes, e: bytes, f: bytes?, g: bytes }
+distance.sql: many (q: text(UTF-8, ill-formed)) -> { a: int64, b: int64, c: int64, d: int64, e: int64, f: float(11,52) }
+distance_aliases.sql: many () -> { a: int64, b: int64, c: int64, d: int64, e: int64, f: float(11,52) }
+encode.sql: many () -> { a: text(UTF-8, ill-formed)?, b: text(UTF-8, ill-formed), c: text(UTF-8, ill-formed)? }
+math.sql: many (x: float(11,52)) -> { a: float(11,52), b: float(11,52), c: float(11,52)?, d: float(11,52)?, e: float(11,52), f: float(11,52), g: float(11,52)?, h: float(11,52)?, i: float(11,52), j: float(11,52)? }
+phonetic.sql: many () -> { a: text(UTF-8, ill-formed)?, b: text(UTF-8, ill-formed)?, c: text(UTF-8, ill-formed)?, d: text(UTF-8, ill-formed)?, e: text(UTF-8, ill-formed)?, f: text(UTF-8, ill-formed), g: int64 }
+regexp.sql: many (pattern: text(UTF-8, ill-formed)) -> { a: boolean, b: text(UTF-8, ill-formed)?, c: text(UTF-8, ill-formed)?, d: text(UTF-8, ill-formed), e: text(UTF-8, ill-formed)? }
+regexp_passthrough.sql: many (x: float(11,52)) -> { a: unknown, b: unknown, c: unknown?, d: float(11,52)? }
+series.sql: many (stop: int64) -> { value: int64 }
+series_alias.sql: many (start: int64) -> { value: int64 }
+stats.sql: many () -> { name: TEXT(UTF-8, ill-formed), a: float(11,52)?, b: float(11,52)?, c: float(11,52)?, d: float(11,52)?, e: float(11,52)?, f: float(11,52)?, g: float(11,52)? }
+stats_aliases.sql: one () -> { a: float(11,52)?, b: float(11,52)?, c: float(11,52)?, d: float(11,52)?, e: float(11,52)? }
+text_core.sql: many (n: int64) -> { a: text(UTF-8, ill-formed), b: text(UTF-8, ill-formed), c: text(UTF-8, ill-formed)?, d: text(UTF-8, ill-formed), e: text(UTF-8, ill-formed), f: text(UTF-8, ill-formed)?, g: text(UTF-8, ill-formed), h: text(UTF-8, ill-formed), i: text(UTF-8, ill-formed)? }
+text_fns.sql: many () -> { a: text(UTF-8, ill-formed), b: text(UTF-8, ill-formed)?, c: text(UTF-8, ill-formed), d: text(UTF-8, ill-formed)?, e: text(UTF-8, ill-formed), f: text(UTF-8, ill-formed), g: text(UTF-8, ill-formed), h: text(UTF-8, ill-formed)?, i: text(UTF-8, ill-formed), j: text(UTF-8, ill-formed), k: text(UTF-8, ill-formed), l: text(UTF-8, ill-formed)? }
+text_measure.sql: many () -> { a: int64, b: int64?, c: int64, d: int64, e: int64, f: int64, g: int64?, h: int64, i: int64?, j: int64 }
+text_tests.sql: many (prefix: text(UTF-8, ill-formed)) -> { a: boolean, b: boolean, c: boolean?, d: boolean, e: boolean }
+uuid.sql: one () -> { a: text(UTF-8, ill-formed), b: text(UTF-8, ill-formed), c: text(UTF-8, ill-formed), d: text(UTF-8, ill-formed)?, e: bytes?, f: int64? }
+uuid_read.sql: many (id: text(UTF-8, ill-formed)) -> { a: text(UTF-8, ill-formed)?, b: bytes?, c: int64?, d: text(UTF-8, ill-formed)? }

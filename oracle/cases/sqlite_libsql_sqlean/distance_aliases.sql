@@ -1,0 +1,1 @@
+select fuzzy_leven(name, 'a') as a, fuzzy_damlev(name, 'b') as b, fuzzy_editdist(name, 'c') as c, fuzzy_osadist(name, 'd') as d, fuzzy_hamming(name, 'e') as e, fuzzy_jarowin(name, 'f') as f from people where name not glob '*[^ -~]*'

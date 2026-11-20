@@ -2913,7 +2913,7 @@ on!(Postgres, init_keeps_a_publications_generated_columns, init_makes_a_wrapper_
 on!(Sqlite, a_virtual_tables_own_tables_are_not_in_the_dump);
 mod on_mysql {
     use super::*;
-    on!(Mysql, a_comment_made_by_hand_stops_nothing, a_comment_in_schema_sql_is_written, a_role_that_cannot_create_databases_is_told_of_shadow_url);
+    on!(Mysql, a_comment_made_by_hand_stops_nothing, a_comment_in_schema_sql_is_written, a_role_that_cannot_create_databases_is_told_of_shadow_url, a_grant_is_written_pushed_and_left_by_no_shadow, grants_an_account_cannot_read_back_are_refused);
 }
 on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, libsqls_own_sql_migrates, a_libsql_history_replays_on_a_branch_without_it, a_table_renamed_keeps_its_rows_key_and_counter);
 mod on_turso {
@@ -3768,6 +3768,51 @@ mod adversarial {
         let out = p.output();
         assert!(has(&out, r"revoke execute on function f\(\) from public"), "{out}");
         assert!(has(&out, r"comment on index t_x is 'by x'"), "{out}");
+    }
+
+    /// MySQL grants on a table and a column are written in a migration, checked, and pushed back
+    /// where one is taken away by hand. MySQL keeps a dropped database's grants, and no shadow's
+    /// outlives it.
+    pub async fn a_grant_is_written_pushed_and_left_by_no_shadow(mut p: P) {
+        p.exec("create user if not exists 'madv_reader'@'%'").await;
+        let shadows = "select count(*) as n from mysql.tables_priv where user = 'madv_reader' and db like 'reylo\\_shadow\\_%'";
+        p.schema("create table t (id int primary key, note text); grant select on t to 'madv_reader'@'%';");
+        p.file("20261120100000_t.sql", "create table t (id int primary key, note text);");
+        p.file("20261120100001_read.sql", "grant select on t to 'madv_reader'@'%';");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.output();
+        p.schema("create table t (id int primary key, note text); grant select on t to 'madv_reader'@'%'; grant update (note) on t to 'madv_reader'@'%';");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "note", &Default::default(), log).await).await, 0, "{}", p.peek());
+        p.output();
+        let written = p.files().into_iter().find(|f| f.ends_with("_note.sql")).unwrap();
+        let text = std::fs::read_to_string(p.dir.join("migrations").join(&written)).unwrap();
+        assert!(has(&text, r"grant update \(note\) on t to `madv_reader`@`%`"), "{text}");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.output();
+        let (code, out) = p.check_every_way().await;
+        assert_eq!(code, 0, "{out}");
+        p.exec("revoke select on t from 'madv_reader'@'%'").await;
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        assert_has!(p.output(), r"grant select on t to `madv_reader`@`%`");
+        assert_eq!(p.rows("select count(*) as n from mysql.tables_priv where user = 'madv_reader' and db = database() and table_priv = 'Select'").await[0].text("n"), "1");
+        assert_eq!(p.rows(shadows).await[0].text("n"), "0", "a shadow's grants outlived it");
+    }
+
+    /// An account with its database's privileges alone sees only its own grants in MySQL, so the
+    /// grants schema.sql makes would be planned from nothing: they are refused, naming what to grant.
+    pub async fn grants_an_account_cannot_read_back_are_refused(mut p: P) {
+        let role = "madv_noread";
+        p.exec(&format!("create user if not exists '{role}'@'%'; create user if not exists 'madv_reader'@'%'; grant all on `{}`.* to '{role}'@'%' with grant option", p.name)).await;
+        p.url = as_role(&p.url, role);
+        p.schema("create table t (id int primary key); grant select on t to 'madv_reader'@'%';");
+        assert_eq!(p.db_push().await, 1);
+        let out = p.output();
+        assert_has!(&out, r"✗ Can't plan the grants in schema\.sql");
+        assert_has!(&out, r"grant select on mysql\.tables_priv to 'madv_noread'@'%';");
+        // Nor does a migration written from it leave them out.
+        assert_ne!(p.run(async |o, log| reylo_migrate::create(o, "t", &Default::default(), log).await).await, 0);
+        assert_has!(p.output(), r"Can't plan the grants in schema\.sql");
+        assert!(p.files().is_empty(), "a migration was written: {:?}", p.files());
     }
 
     pub async fn a_comment_made_by_hand_stops_nothing(mut p: P) {

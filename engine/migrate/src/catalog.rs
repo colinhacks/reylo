@@ -109,6 +109,14 @@ pub fn without_extra_children(live: &[String], reference: &[String]) -> Vec<Stri
     // as it makes a database), as Reylo copies it into every shadow: only one a migration made and
     // the live database lacks is a difference.
     let live: Vec<String> = live.iter().filter(|l| !l.starts_with(DEFAULT_PRIVILEGES) || reference.contains(l)).cloned().collect();
+    // So are the privileges on what an extension made that the reference doesn't have: an
+    // extension the environment provides is copied into a shadow as it is made, without them.
+    let live: Vec<String> = live.into_iter().filter(|l| !l.starts_with(EXTENSION_GRANT) || reference.contains(l)).collect();
+    // So is an SQLite file's `user_version` or `application_id` the reference doesn't set: an app
+    // may keep its own there.
+    let pragma = |l: &str| l.strip_prefix("pragma ").and_then(|r| r.split(' ').next()).map(String::from);
+    let declared: BTreeSet<String> = reference.iter().filter_map(|l| pragma(l)).collect();
+    let live: Vec<String> = live.into_iter().filter(|l| pragma(l).is_none_or(|p| declared.contains(&p))).collect();
     // So is an extension the reference has none of: a live database's extensions are never
     // dropped, and a shadow leaves out one the project's files no longer create in a schema they do.
     let extension = |l: &str| l.strip_prefix("extension ").and_then(|r| r.split(' ').next()).map(String::from);
@@ -135,14 +143,17 @@ pub fn without_extra_children(live: &[String], reference: &[String]) -> Vec<Stri
 
 /// `lines` without any partition or inheriting child, which the fingerprint leaves out: one may have
 /// been made at run time, as data, and only a replay can tell. Default privileges are left out of
-/// it too: one may be the environment's, which only a replay against the migrations can tell.
+/// it too, and so are the privileges on what an extension made: one may be the environment's,
+/// which only a replay against the migrations can tell.
 pub fn without_children(lines: &[String]) -> Vec<String> {
     let kids: Vec<String> = children(lines).into_iter().map(|(name, _)| name).collect();
-    lines.iter().filter(|l| !l.starts_with(DEFAULT_PRIVILEGES) && !kids.iter().any(|name| of_table(l, name))).cloned().collect()
+    lines.iter().filter(|l| !l.starts_with(DEFAULT_PRIVILEGES) && !l.starts_with(EXTENSION_GRANT) && !kids.iter().any(|name| of_table(l, name))).cloned().collect()
 }
 
 /// How a default privilege's line begins: the statement that makes it, without its `alter`.
 pub(crate) const DEFAULT_PRIVILEGES: &str = "default privileges ";
+/// How a line of the privileges on what an extension made begins.
+pub(crate) const EXTENSION_GRANT: &str = "extension grant ";
 
 /// `lines` without comments. A migration writes a comment, and two replays compare theirs, but a
 /// live database's is never compared: one added in a dashboard changes nothing the app runs on, so
@@ -162,18 +173,33 @@ pub fn without_missing_children(reference: &[String], live: &[String]) -> Vec<St
 /// Whether the live database has what `reference` lists: comments, and children made or dropped at
 /// run time, aside.
 pub fn same_schema(live: &[String], reference: &[String]) -> bool {
-    let reference = without_missing_children(reference, live);
+    let (live, reference) = grants_comparable(live, reference);
+    let live = &live[..];
+    let reference = without_missing_children(&reference, live);
     without_comments(&without_extra_children(live, &reference)) == without_comments(&reference)
+}
+
+/// The line of a MySQL catalog read by an account that may not read the privilege tables.
+pub(crate) const GRANTS_UNREAD: &str = "grants unread";
+
+/// `a` and `b` without their grants where either's went unread: neither is compared then.
+fn grants_comparable(a: &[String], b: &[String]) -> (Vec<String>, Vec<String>) {
+    let unread = a.iter().chain(b).any(|l| l == GRANTS_UNREAD);
+    let keep = |lines: &[String]| lines.iter().filter(|l| !unread || !(l.starts_with("grant ") || *l == GRANTS_UNREAD)).cloned().collect::<Vec<_>>();
+    (keep(a), keep(b))
 }
 
 /// The lines only in `a`, and those only in `b`.
 pub fn difference(a: &[String], b: &[String]) -> (Vec<String>, Vec<String>) {
+    let (a, b) = grants_comparable(a, b);
+    let (a, b) = (&a[..], &b[..]);
     let sa: BTreeSet<&String> = a.iter().collect();
     let sb: BTreeSet<&String> = b.iter().collect();
     (a.iter().filter(|l| !sb.contains(l)).cloned().collect(), b.iter().filter(|l| !sa.contains(l)).cloned().collect())
 }
 
 pub fn same(a: &[String], b: &[String]) -> bool {
+    let (a, b) = grants_comparable(a, b);
     a == b
 }
 
@@ -374,6 +400,58 @@ pub(crate) fn in_project_schema(n: &str) -> String {
 
 pub(crate) fn not_extension(catalog: &str, alias: &str) -> String {
     format!("not exists (select 1 from pg_depend e where e.classid = '{catalog}'::regclass and e.objid = {alias}.oid and e.deptype = 'e')")
+}
+
+/// What an extension made that has privileges (its routines, relations, schemas, types,
+/// foreign-data wrappers, servers and languages, plpgsql's language among them), each with the
+/// privileges it has and those it was made with (`pg_init_privs`), where they differ: what was
+/// granted or revoked on it since. Each row: the extension (`ext`), `pg_identify_object`'s `type`
+/// and `identity`, and its privileges as `json_build_array(have, made with)`, each a list of
+/// `{grantee, privilege, grantable}` without its owner's. The platform's own are left out.
+pub(crate) fn extension_member_privileges() -> String {
+    let explode = |of: &str| {
+        format!(
+            "(select json_agg(json_build_object('grantee', case when a.grantee = 0 then 'public' else quote_ident(pg_get_userbyid(a.grantee)) end, 'privilege', a.privilege_type, 'grantable', a.is_grantable) order by a.grantee, a.privilege_type)
+               from aclexplode(coalesce({of}, acldefault(m.kind, m.owner))) a where a.grantee <> m.owner)"
+        )
+    };
+    format!(
+        "select ext, type, identity, format('%s', json_build_array(have, made)) as privileges from (
+        select format('%I', x.extname) as ext, o.type, o.identity, {} as have, {} as made
+        from (
+          select 'pg_proc'::regclass as cls, p.oid, p.proacl as acl, p.proowner as owner, 'f'::\"char\" as kind from pg_proc p
+          union all select 'pg_class'::regclass, c.oid, c.relacl, c.relowner, case when c.relkind = 'S' then 's' else 'r' end::\"char\" from pg_class c where c.relkind in ('r', 'v', 'm', 'S', 'f', 'p')
+          union all select 'pg_namespace'::regclass, n.oid, n.nspacl, n.nspowner, 'n' from pg_namespace n
+          union all select 'pg_type'::regclass, t.oid, t.typacl, t.typowner, 'T' from pg_type t
+          union all select 'pg_foreign_data_wrapper'::regclass, w.oid, w.fdwacl, w.fdwowner, 'F' from pg_foreign_data_wrapper w
+          union all select 'pg_foreign_server'::regclass, v.oid, v.srvacl, v.srvowner, 'S' from pg_foreign_server v
+          union all select 'pg_language'::regclass, l.oid, l.lanacl, l.lanowner, 'l' from pg_language l
+        ) m
+        join pg_depend d on d.classid = m.cls and d.objid = m.oid and d.objsubid = 0 and d.deptype = 'e' and d.refclassid = 'pg_extension'::regclass
+        join pg_extension x on x.oid = d.refobjid
+        left join pg_init_privs i on i.classoid = m.cls and i.objoid = m.oid and i.objsubid = 0
+        , lateral pg_identify_object(m.cls, m.oid, 0) o
+        where m.acl is distinct from i.initprivs and {}
+        ) p where have::text is distinct from made::text
+        order by type, identity",
+        explode("m.acl"),
+        explode("i.initprivs"),
+        not_platform("m.owner")
+    )
+}
+
+/// What a `grant` names an extension's member as, from `pg_identify_object`'s type.
+pub(crate) fn privilege_target(kind: &str) -> &'static str {
+    match kind {
+        "function" | "procedure" | "aggregate" | "window function" => "routine",
+        "sequence" => "sequence",
+        "schema" => "schema",
+        "type" | "composite type" | "domain" | "enum" | "range" => "type",
+        "foreign-data wrapper" => "foreign data wrapper",
+        "server" => "foreign server",
+        "language" => "language",
+        _ => "table",
+    }
 }
 
 /// An object's privileges as `grantee:privilege[*]`, sorted and comma-separated, its owner's own left
@@ -579,6 +657,9 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
                 case when coalesce(a.attstattarget, -1) >= 0 then 'statistics=' || a.attstattarget end, 'options=' || (select string_agg(o, ',' order by o) from unnest(a.attoptions) o where left(o, 10) = 'n_distinct')) as settings,
               exists (select 1 from pg_constraint nn where nn.conrelid = c.oid and nn.contype = 'n' and nn.connoinherit and nn.conkey = array[a.attnum]) as noinherit,
               exists (select 1 from pg_constraint nn where nn.conrelid = c.oid and nn.contype = 'n' and not nn.convalidated and nn.conkey = array[a.attnum]) as nn_invalid,
+              (select nn.conname from pg_constraint nn where nn.conrelid = c.oid and nn.contype = 'n' and nn.conislocal and nn.coninhcount = 0 and nn.conkey = array[a.attnum]
+                and not (left(nn.conname, length(left(c.relname || '_' || a.attname || '_not_null', 63))) = left(c.relname || '_' || a.attname || '_not_null', 63)
+                  and substr(nn.conname, length(left(c.relname || '_' || a.attname || '_not_null', 63)) + 1) ~ '^[0-9]*$')) as nn_named,
               (select string_agg(distinct format('%s:%s%s', case when x.grantee = 0 then 'PUBLIC' else pg_get_userbyid(x.grantee) end, x.privilege_type, case when x.is_grantable then '*' else '' end), ',')
                  from aclexplode(a.attacl) x where x.grantee <> c.relowner) as acl
             from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace join pg_type t on t.oid = a.atttypid
@@ -595,9 +676,13 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         let mut parts = vec![format!("column {column} {}", r.text("type"))];
         if r.flag("notnull") {
             parts.push(if r.flag("noinherit") { "not null no inherit".into() } else { "not null".into() });
-            // Postgres 18's not null left unvalidated against the rows.
+            // Postgres 18's not null left unvalidated against the rows, and one named otherwise than
+            // Postgres would name it.
             if r.flag("nn_invalid") {
                 parts.push("not valid".into());
+            }
+            if let Some(n) = r.get("nn_named") {
+                parts.push(format!("named {n}"));
             }
         }
         let options = r.get("identity_options").map(|o| format!(" ({o})")).unwrap_or_default();
@@ -723,6 +808,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             "select format('%I.%I', n.nspname, t.typname) as name, t.typtype as kind,
               (select string_agg(format('%s', to_json(e.enumlabel::text)), ', ' order by e.enumsortorder) from pg_enum e where e.enumtypid = t.oid) as labels,
               case when t.typtype = 'd' then format_type(t.typbasetype, t.typtypmod) end as base, t.typnotnull as notnull, t.typdefault as def,
+              case when t.typtype = 'd' and t.typcollation <> (select b.typcollation from pg_type b where b.oid = t.typbasetype) then (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = t.typcollation) end as collation,
               (select concat_ws(' ', 'subtype=' || format_type(rg.rngsubtype, null),
                   case when rg.rngcollation <> 0 then 'collate=' || (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = rg.rngcollation) end,
                   'opclass=' || (select format('%I.%I', on_.nspname, oc.opcname) from pg_opclass oc join pg_namespace on_ on on_.oid = oc.opcnamespace where oc.oid = rg.rngsubopc),
@@ -741,8 +827,9 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         match r.text("kind") {
             "e" => lines.push(format!("enum {name} ({})", r.text("labels"))),
             "d" => lines.push(format!(
-                "domain {name} as {}{}{}",
+                "domain {name} as {}{}{}{}",
                 r.text("base"),
+                r.get("collation").map(|c| format!(" collate {c}")).unwrap_or_default(),
                 if r.flag("notnull") { " not null" } else { "" },
                 r.get("def").map(|d| format!(" default {d}")).unwrap_or_default()
             )),
@@ -820,7 +907,9 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     // Privileges on sequences, functions and types, and comments on what is not a relation.
     for r in db
         .rows(&format!(
-            "select 'sequence ' || format('%I.%I', n.nspname, c.relname) as name, {} as acl, obj_description(c.oid, 'pg_class') as comment, {} as owner_lacks
+            "select coalesce((select 'sequence of identity ' || format('%I.%I.%I', tn.nspname, tc.relname, ta.attname) from pg_depend d join pg_class tc on tc.oid = d.refobjid join pg_namespace tn on tn.oid = tc.relnamespace
+                join pg_attribute ta on ta.attrelid = tc.oid and ta.attnum = d.refobjsubid where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.refclassid = 'pg_class'::regclass and d.deptype = 'i'),
+                'sequence ' || format('%I.%I', n.nspname, c.relname)) as name, {} as acl, obj_description(c.oid, 'pg_class') as comment, {} as owner_lacks
             from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'S' and {ns} and {} and {}
             union all select 'function ' || format('%s', p.oid::regprocedure), {}, obj_description(p.oid, 'pg_proc'), {}
             from pg_proc p join pg_namespace n on n.oid = p.pronamespace where {ns} and {} and {}
@@ -845,7 +934,10 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             from pg_rewrite ru join pg_class c on c.oid = ru.ev_class join pg_namespace n on n.oid = c.relnamespace where ru.rulename <> '_RETURN' and {ns}
             union all select 'event trigger ' || format('%I', et.evtname), null, obj_description(et.oid, 'pg_event_trigger'), null from pg_event_trigger et where {}
             union all select 'foreign data wrapper ' || format('%I', w.fdwname), {}, obj_description(w.oid, 'pg_foreign_data_wrapper'), null from pg_foreign_data_wrapper w where {}
-            union all select 'server ' || format('%I', sv.srvname), {}, obj_description(sv.oid, 'pg_foreign_server'), null from pg_foreign_server sv where {}",
+            union all select 'server ' || format('%I', sv.srvname), {}, obj_description(sv.oid, 'pg_foreign_server'), null from pg_foreign_server sv where {}
+            union all select 'extension ' || format('%I', x.extname), null, nullif(obj_description(x.oid, 'pg_extension'), (select a.comment from pg_available_extensions a where a.name = x.extname)), null
+            from pg_extension x join pg_namespace n on n.oid = x.extnamespace where {}
+            union all select 'language ' || format('%I', l.lanname), null, obj_description(l.oid, 'pg_language'), null from pg_language l where l.lanpltrusted",
             acl("c.relacl", "c.relowner", 's'),
             owner_lacks("c.relacl", "c.relowner", 's'),
             not_extension("pg_class", "c"),
@@ -866,6 +958,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             not_extension("pg_foreign_data_wrapper", "w"),
             acl("sv.srvacl", "sv.srvowner", 'S'),
             not_platform("sv.srvowner"),
+            project_extension("x", "n"),
         ))
         .await?
     {
@@ -1016,6 +1109,27 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             lines.push(rest.to_string());
         }
     }
+    // A statistics object's own target, a foreign table column's options for its wrapper, and
+    // what a migration made depend on an extension, which goes with it.
+    for r in db
+        .rows(&format!(
+            "select 'statistics target ' || format('%I.%I', n.nspname, x.stxname) || ' ' || x.stxstattarget as line from pg_statistic_ext x join pg_namespace n on n.oid = x.stxnamespace where coalesce(x.stxstattarget::int, -1) <> -1 and {ns}
+            union all select 'wrapper options ' || format('%I.%I.%I', n.nspname, c.relname, a.attname) || ' ' || array_to_string(a.attfdwoptions, ',') from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace
+              where c.relkind = 'f' and a.attnum > 0 and a.attfdwoptions is not null and {ns}
+            union all select 'depends ' || o.type || ' ' || o.identity || ' on extension ' || format('%I', x.extname) from pg_depend d join pg_extension x on x.oid = d.refobjid, lateral pg_identify_object(d.classid, d.objid, 0) o
+              where d.deptype = 'x' and d.refclassid = 'pg_extension'::regclass
+            union all select 'identity sequence ' || format('%I.%I.%I', n.nspname, tc.relname, a.attname) || ' ' || case sc.relpersistence when 'u' then 'unlogged' else 'logged' end
+            from pg_depend sd join pg_class sc on sc.oid = sd.objid join pg_class tc on tc.oid = sd.refobjid join pg_namespace n on n.oid = tc.relnamespace join pg_attribute a on a.attrelid = tc.oid and a.attnum = sd.refobjsubid
+              where sd.classid = 'pg_class'::regclass and sd.refclassid = 'pg_class'::regclass and sd.deptype = 'i' and sc.relkind = 'S' and sc.relpersistence <> tc.relpersistence and {ns}"
+        ))
+        .await?
+    {
+        lines.push(r.text("line").to_string());
+    }
+    // Privileges granted or revoked on what an extension made, since it made it.
+    for r in db.rows(&extension_member_privileges()).await? {
+        lines.push(format!("{EXTENSION_GRANT}{} {} {}", privilege_target(r.text("type")), r.text("identity"), r.text("privileges")));
+    }
     Ok(lines)
 }
 
@@ -1095,6 +1209,9 @@ pub(crate) fn aggregate_options(proc: &str) -> String {
 /// (`migrate new`, `db push`), whose lines also say what that change leaves out. None on the other
 /// databases, whose every kind is read.
 pub async fn unmodeled(db: &mut Db, writes: bool) -> Result<Vec<String>, Error> {
+    if db.dialect() == Dialect::Mysql {
+        return mysql_unmodeled(db).await;
+    }
     if db.dialect() != Dialect::Postgres {
         return Ok(vec![]);
     }
@@ -1143,6 +1260,21 @@ pub async fn unmodeled(db: &mut Db, writes: bool) -> Result<Vec<String>, Error> 
     Ok(out)
 }
 
+/// What a MySQL database holds that no migration Reylo writes keeps: a routine, trigger or event
+/// made under another sql_mode than the server's (a session's own, as a dump sets one before
+/// each), which it runs under (a migration file holds one statement that commits, so it can't set
+/// the mode for it), and an index whose keys are disabled.
+async fn mysql_unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
+    let sql = "select lower(routine_type) as kind, routine_name as name, sql_mode as mode from information_schema.routines where routine_schema = database() and sql_mode <> @@global.sql_mode
+        union all select 'trigger', trigger_name, sql_mode from information_schema.triggers where trigger_schema = database() and sql_mode <> @@global.sql_mode
+        union all select 'event', event_name, sql_mode from information_schema.events where event_schema = database() and sql_mode <> @@global.sql_mode
+        order by 1, 2";
+    let mut out: Vec<String> = db.rows(sql).await?.iter().map(|r| format!("{} {}: made under sql_mode '{}', which a migration doesn't set", r.text("kind"), r.text("name"), r.text("mode"))).collect();
+    let disabled = "select distinct table_name as t, index_name as i from information_schema.statistics where table_schema = database() and comment = 'disabled' order by 1, 2";
+    out.extend(db.rows(disabled).await?.iter().map(|r| format!("index {} on {}: its keys are disabled (alter table … disable keys)", r.text("i"), r.text("t"))));
+    Ok(out)
+}
+
 /// The role that runs the migrations, which owns what they make: the owner of Reylo's history table,
 /// whoever reads the catalog, so that a deploy by one role and a repair by another read alike; and
 /// on a database with no history yet (a shadow), the role connected.
@@ -1168,6 +1300,7 @@ pub(crate) fn owned_objects(history: &str) -> String {
         format!("select 'pg_foreign_server'::regclass, s.oid, s.srvowner from pg_foreign_server s where {}", not_platform("s.srvowner")),
         format!("select 'pg_foreign_data_wrapper'::regclass, w.oid, w.fdwowner from pg_foreign_data_wrapper w where {} and {}", not_extension("pg_foreign_data_wrapper", "w"), not_platform("w.fdwowner")),
         format!("select 'pg_event_trigger'::regclass, et.oid, et.evtowner from pg_event_trigger et where {} and {}", not_extension("pg_event_trigger", "et"), not_platform("et.evtowner")),
+        format!("select 'pg_statistic_ext'::regclass, x.oid, x.stxowner from pg_statistic_ext x join pg_namespace n on n.oid = x.stxnamespace where {ns} and {}", not_platform("x.stxowner")),
     ]
     .join(" union all ")
 }
@@ -1297,8 +1430,12 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
     // databases the same migrations build (a deploy's account, a developer's) where nothing else does,
     // and MySQL has no owner to read it against, as Postgres's owners are read against the history
     // table's. Whether an object runs as its definer or its invoker is read.
+    // A view's algorithm is in its own statement alone.
+    static ALGORITHM: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"^CREATE ALGORITHM=(\w+)").expect("a valid pattern"));
     for r in db.rows("select table_name as n, view_definition as def, check_option as opt, security_type as sec from information_schema.views where table_schema = database()").await? {
-        lines.push(format!("view {} as {} check={} security={}", r.text("n"), strip(r.text("def")), r.text("opt"), r.text("sec")));
+        let text = db.rows(&format!("show create view `{}`", r.text("n").replace('`', "``"))).await?.first().map(|v| v.text("Create View").to_string()).unwrap_or_default();
+        let algorithm = ALGORITHM.captures(&text).map(|c| c[1].to_string()).unwrap_or_default();
+        lines.push(format!("view {} as {} check={} security={} algorithm={algorithm}", r.text("n"), strip(r.text("def")), r.text("opt"), r.text("sec")));
     }
 
     // Each routine's parameters are read in a query of their own and joined here, not in a
@@ -1308,29 +1445,34 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
     let mut params: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for p in db
         .rows(
-            "select specific_name as routine, parameter_mode as pmode, parameter_name as pname, dtd_identifier as ptype
+            "select specific_name as routine, parameter_mode as pmode, parameter_name as pname, dtd_identifier as ptype, character_set_name as pcharset
             from information_schema.parameters where specific_schema = database() and ordinal_position > 0 order by specific_name, ordinal_position",
         )
         .await?
     {
-        // As `concat_ws(' ', …)` joins them: a null part is left out.
-        let text = [p.get("pmode"), p.get("pname"), p.get("ptype")].into_iter().flatten().collect::<Vec<_>>().join(" ");
+        // As `concat_ws(' ', …)` joins them: a null part is left out. A string's character set is
+        // no part of its type there.
+        let charset = p.get("pcharset").map(|c| format!("charset {c}"));
+        let text = [p.get("pmode"), p.get("pname"), p.get("ptype"), charset.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" ");
         params.entry(p.text("routine").to_string()).or_default().push(text);
     }
     for r in db
         .rows(
-            "select routine_name as n, specific_name as routine, routine_type as type, dtd_identifier as ret, routine_definition as def, is_deterministic as det,
-              sql_data_access as access, security_type as sec
+            "select routine_name as n, specific_name as routine, routine_type as type, dtd_identifier as ret, character_set_name as charset, routine_definition as def, is_deterministic as det,
+              sql_data_access as access, security_type as sec, routine_comment as comment
             from information_schema.routines where routine_schema = database()",
         )
         .await?
     {
+        if !r.text("comment").is_empty() {
+            lines.push(format!("comment {} {} {}", r.text("type").to_lowercase(), r.text("n"), json(r.text("comment"))));
+        }
         lines.push(format!(
             "{} {}({}){} {} {} security={} as {}",
             r.text("type").to_lowercase(),
             r.text("n"),
             params.get(r.text("routine")).map(|p| p.join(", ")).unwrap_or_default(),
-            r.get("ret").map(|t| format!(" returns {t}")).unwrap_or_default(),
+            r.get("ret").map(|t| format!(" returns {t}{}", r.get("charset").map(|c| format!(" charset {c}")).unwrap_or_default())).unwrap_or_default(),
             if r.text("det") == "YES" { "deterministic" } else { "not deterministic" },
             r.text("access"),
             r.text("sec"),
@@ -1350,16 +1492,18 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
 
     // Recurring events, without the start the server fills in as each is made, which no two
     // databases share. A one-time event is left out: once it fires, the server drops it, or
-    // disables it, as it was told to.
+    // disables it, as it was told to, and its time, resolved as it is made, differs between two
+    // replays of one `at current_timestamp + interval 1 day`.
     for r in db
         .rows(
-            "select event_name as n, event_type as type, interval_value as every, interval_field as unit, on_completion as completion, status as status, event_definition as body, event_comment as comment
+            "select event_name as n, event_type as type, interval_value as every, interval_field as unit, ends as ends, on_completion as completion, status as status, event_definition as body, event_comment as comment
             from information_schema.events where event_schema = database() and event_type <> 'ONE TIME'",
         )
         .await?
     {
         let every = r.get("every").map(|v| format!(" every {v} {}", r.text("unit"))).unwrap_or_default();
-        lines.push(format!("event {} {}{every} on completion {} {} do {}", r.text("n"), r.text("type").to_lowercase(), r.text("completion").to_lowercase(), r.text("status").to_lowercase(), strip(r.text("body"))));
+        let ends = r.get("ends").map(|e| format!(" ends {e}")).unwrap_or_default();
+        lines.push(format!("event {} {}{every}{ends} on completion {} {} do {}", r.text("n"), r.text("type").to_lowercase(), r.text("completion").to_lowercase(), r.text("status").to_lowercase(), strip(r.text("body"))));
         if !r.text("comment").is_empty() {
             lines.push(format!("comment event {} {}", r.text("n"), json(r.text("comment"))));
         }
@@ -1407,7 +1551,90 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
         let text = db.rows(&format!("show create table `{}`", t.replace('`', "``"))).await?.first().map(|r| r.text("Create Table").to_string()).unwrap_or_default();
         lines.extend(statement_options(&t, &text));
     }
+    // Each privilege on a table, a view, a column or a routine, as `grant <its name> …` lines read;
+    // where the account may not read them, a line that says so.
+    let grants = mysql_grants(db).await?;
+    if grants.is_none() {
+        lines.push(GRANTS_UNREAD.to_string());
+    }
+    for g in grants.unwrap_or_default() {
+        let on = match (g.kind, &g.column) {
+            ("table", Some(c)) => format!("{}.{c}", g.name),
+            ("table", None) => g.name.clone(),
+            (kind, _) => format!("{kind} {}", g.name),
+        };
+        lines.push(format!("grant {on} {} to {}", g.privilege, g.account()));
+    }
     Ok(lines)
+}
+
+/// A privilege on one of a MySQL database's tables, views, columns or routines, granted to an
+/// account: `grant update (email) on users to 'reader'@'%'`.
+#[derive(Clone, Debug)]
+pub(crate) struct MysqlGrant {
+    pub user: String,
+    pub host: String,
+    /// `table` (a table's or a view's), `procedure` or `function`.
+    pub kind: &'static str,
+    pub name: String,
+    pub column: Option<String>,
+    /// As a statement writes it: `select`, `show view`, `alter routine`, `grant option`.
+    pub privilege: String,
+}
+
+impl MysqlGrant {
+    /// The account, as a statement names it.
+    pub fn account(&self) -> String {
+        format!("`{}`@`{}`", self.user.replace('`', "``"), self.host.replace('`', "``"))
+    }
+
+    /// The `grant` that gives it, or the `revoke` that takes it, its names written by `ident`.
+    pub fn statement(&self, ident: &dyn Fn(&str) -> String, grant: bool) -> String {
+        let column = self.column.as_deref().map(|c| format!(" ({})", ident(c))).unwrap_or_default();
+        let on = if self.kind == "table" { ident(&self.name) } else { format!("{} {}", self.kind, ident(&self.name)) };
+        let (verb, to) = if grant { ("grant", "to") } else { ("revoke", "from") };
+        format!("{verb} {}{column} on {on} {to} {}", self.privilege, self.account())
+    }
+}
+
+/// The privileges on the database's tables, views, columns and routines, from the server's
+/// privilege tables, or None where the account reading may not read them, as an account with the
+/// database's privileges alone may not: information_schema shows such an account its own privileges
+/// only. Its own are left out, as an owner's are on Postgres, and so are those on Reylo's history
+/// table. A table's grant option is a privilege of its own, which a grant on one of its columns
+/// may give.
+pub(crate) async fn mysql_grants(db: &mut Db) -> Result<Option<Vec<MysqlGrant>>, Error> {
+    let queries = [
+        "select user as u, host as h, 'table' as k, table_name as n, null as c, table_priv as p from mysql.tables_priv where db = database()",
+        "select user as u, host as h, 'table' as k, table_name as n, column_name as c, column_priv as p from mysql.columns_priv where db = database()",
+        "select user as u, host as h, lower(routine_type) as k, routine_name as n, null as c, proc_priv as p from mysql.procs_priv where db = database()",
+    ];
+    let mut rows = Vec::new();
+    for q in queries {
+        match db.rows(q).await {
+            Ok(r) => rows.extend(r),
+            Err(_) => return Ok(None),
+        }
+    }
+    let me = db.rows("select current_user() as u").await?.first().map(|r| r.text("u").to_string()).unwrap_or_default();
+    let (my_user, my_host) = me.rsplit_once('@').unwrap_or((me.as_str(), ""));
+    let mut out = Vec::new();
+    for r in &rows {
+        let (user, host, name) = (r.text("u"), r.text("h"), r.text("n"));
+        if (user == my_user && host == my_host) || name == HISTORY_TABLE {
+            continue;
+        }
+        let kind = match r.text("k") {
+            "table" => "table",
+            "procedure" => "procedure",
+            _ => "function",
+        };
+        for p in r.text("p").split(',').filter(|p| !p.is_empty()) {
+            let privilege = if p.eq_ignore_ascii_case("grant") { "grant option".to_string() } else { p.to_ascii_lowercase() };
+            out.push(MysqlGrant { user: user.into(), host: host.into(), kind, name: name.into(), column: r.get("c").map(String::from), privilege });
+        }
+    }
+    Ok(Some(out))
 }
 
 /// The options of a MySQL table's `show create table` text that information_schema leaves out,
@@ -1417,8 +1644,10 @@ fn statement_options(table: &str, text: &str) -> Vec<String> {
     static STRING: &str = r"'(?:[^'\\]|\\.|'')*'";
     static COLUMN: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(&format!(r"\b(STORAGE (?:DISK|MEMORY)|COLUMN_FORMAT (?:FIXED|DYNAMIC)|(?:SECONDARY_)?ENGINE_ATTRIBUTE {STRING})")).expect("a valid pattern"));
     static INDEX: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(&format!(r"\b(KEY_BLOCK_SIZE=\d+|WITH PARSER `[^`]+`|(?:SECONDARY_)?ENGINE_ATTRIBUTE {STRING})")).expect("a valid pattern"));
-    static TABLE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(&format!(r"\b(AUTOEXTEND_SIZE=\d+|(?:SECONDARY_)?ENGINE_ATTRIBUTE={STRING})")).expect("a valid pattern"));
-    static ALGORITHM: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\b((?:SUB)?PARTITION BY (?:LINEAR )?KEY ALGORITHM = \d)").expect("a valid pattern"));
+    static TABLE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(&format!(r"\b(AUTOEXTEND_SIZE=\d+|(?:SECONDARY_)?ENGINE_ATTRIBUTE={STRING}|TABLESPACE `[^`]+`|INSERT_METHOD=\w+|UNION=\([^)]*\)|CONNECTION={STRING})")).expect("a valid pattern"));
+    // The algorithm of a key partitioning, which `show create table` writes in a version comment
+    // of its own: `PARTITION BY KEY */ /*!50611 ALGORITHM = 1 */ /*!50100 (id)`.
+    static ALGORITHM: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\b((?:SUB)?PARTITION BY (?:LINEAR )?KEY)(?:\s*\*/\s*/\*!\d+)?\s+(ALGORITHM = \d)").expect("a valid pattern"));
     static PARTITION: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^\(?\s*((?:SUB)?PARTITION) (`[^`]+`|\S+)").expect("a valid pattern"));
     static LIMITS: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(&format!(r"\b((?:MAX|MIN)_ROWS = \d+|COMMENT = {STRING})")).expect("a valid pattern"));
     let found = |re: &regex::Regex, line: &str| -> Vec<String> { re.captures_iter(line).map(|c| c[1].to_string()).collect() };
@@ -1428,7 +1657,8 @@ fn statement_options(table: &str, text: &str) -> Vec<String> {
         let line = line.trim().trim_end_matches(',');
         if line.starts_with(')') {
             body = false;
-            let options = found(&TABLE, line);
+            // A table in a file of its own reads as one with no tablespace, which it is.
+            let options: Vec<String> = found(&TABLE, line).into_iter().filter(|o| o != "TABLESPACE `innodb_file_per_table`").collect();
             if !options.is_empty() {
                 out.push(format!("table options {table} {}", options.join(" ")));
             }
@@ -1447,8 +1677,8 @@ fn statement_options(table: &str, text: &str) -> Vec<String> {
                 }
             }
         } else {
-            for a in found(&ALGORITHM, line) {
-                out.push(format!("partitioning options {table} {a}"));
+            for c in ALGORITHM.captures_iter(line) {
+                out.push(format!("partitioning options {table} {} {}", &c[1], &c[2]));
             }
             if let Some(c) = PARTITION.captures(line) {
                 let limits = found(&LIMITS, line);
@@ -1474,9 +1704,9 @@ fn canonical_sqlite(tokens: &[Token]) -> String {
         .map(|t| match t.kind {
             TokenKind::Quoted => {
                 let inner = &t.text[1..t.text.len().saturating_sub(1).max(1)];
-                inner.replace("\"\"", "\"").replace("``", "`").replace("]]", "]").to_lowercase()
+                inner.replace("\"\"", "\"").replace("``", "`").replace("]]", "]").to_ascii_lowercase()
             }
-            TokenKind::Word => t.text.to_lowercase(),
+            TokenKind::Word => t.text.to_ascii_lowercase(),
             _ => t.text.clone(),
         })
         .collect::<Vec<_>>()
@@ -1509,13 +1739,16 @@ async fn sqlite(db: &mut Db) -> Result<Vec<String>, Error> {
         let tokens = tokenize(sql, Dialect::Sqlite);
         let kind = r.text("type");
         if kind != "table" {
-            lines.push(format!("{kind} {} {}", r.text("name").to_lowercase(), canonical_sqlite(&tokens)));
+            lines.push(format!("{kind} {} {}", r.text("name").to_ascii_lowercase(), canonical_sqlite(&tokens)));
             continue;
         }
-        let name = r.text("name").to_lowercase();
+        let name = r.text("name").to_ascii_lowercase();
         let option = options.get(r.text("name"));
+        // A virtual table's module, which tables of one shape may differ in (`rtree`, `rtree_i32`).
+        let words: Vec<String> = tokens.iter().filter(|t| t.kind == TokenKind::Word).take(6).map(|t| t.text.to_ascii_lowercase()).collect();
+        let module = words.iter().position(|w| w == "using").filter(|_| words.get(1).is_some_and(|w| w == "virtual")).and_then(|k| words.get(k + 1)).map(|m| format!(" using {m}")).unwrap_or_default();
         lines.push(format!(
-            "table {name}{}{}",
+            "table {name}{}{}{module}",
             if option.is_some_and(|o| o.text("strict") == "1") { " strict" } else { "" },
             if option.is_some_and(|o| o.text("wr") == "1") { " without rowid" } else { "" }
         ));
@@ -1544,12 +1777,18 @@ async fn sqlite(db: &mut Db) -> Result<Vec<String>, Error> {
             parts.push(part);
         }
         for p in parts {
-            let first = p[0].text.to_lowercase();
+            let first = p[0].text.to_ascii_lowercase();
             if p[0].kind == TokenKind::Word && SQLITE_TABLE_CONSTRAINT.contains(&first.as_str()) {
                 lines.push(format!("constraint {name} {}", canonical_sqlite(&p)));
             } else {
                 lines.push(format!("column {name}.{}", canonical_sqlite(&p)));
             }
+        }
+    }
+    for pragma in ["user_version", "application_id"] {
+        let value = db.rows(&format!("select {pragma} as v from pragma_{pragma}")).await?.first().map(|r| r.text("v").to_string()).unwrap_or_default();
+        if !value.is_empty() && value != "0" {
+            lines.push(format!("pragma {pragma} {value}"));
         }
     }
     Ok(lines)

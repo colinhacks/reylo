@@ -1,0 +1,10 @@
+create table u (id int, b int constraint b_required not null default 0);
+create table w (a int constraint a_required not null);
+create table y (id int constraint y_id_named not null generated always as identity);
+create table z (id int primary key, a int constraint z_a_named not null no inherit);
+create table v (a int constraint v_a_new not null);
+create table x (b int constraint x_b_named not null no inherit, c int generated always as identity constraint x_c_named not null);
+create table k (id int, a int constraint k_a_named not null no inherit, constraint k_a_not_null check (true));
+create table h (a int constraint h_a_named not null no inherit);
+create type ty as (a int);
+create table typed of ty (a with options constraint a_typed not null);
