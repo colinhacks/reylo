@@ -711,7 +711,9 @@ fn alter_table(from: &Object, to: &Object, decided: Option<Vec<(String, String)>
     // With foreign keys on, as a Durable Object and D1 keep them, a row copied into a table that
     // references another looks its key up there, and a key that is a unique index of its own must
     // stand by then, not after the copies, where what goes with a table is otherwise made again:
-    // the unique indexes of each rebuilt table that one of them references.
+    // the unique indexes of each rebuilt table that one of them references. One the plan replaces
+    // (renames, or makes again another way) it drops before the rebuild and makes after it, so
+    // the rebuild makes that one for itself, as it was, and drops it when the rows are in.
     let referenced: BTreeSet<String> = texts
         .iter()
         .flat_map(|text| {
@@ -720,10 +722,24 @@ fn alter_table(from: &Object, to: &Object, decided: Option<Vec<(String, String)>
         })
         .filter(|table| family.iter().any(|(x, _)| fold(&x.name) == *table))
         .collect();
-    let (keys, coming): (Vec<_>, Vec<_>) = by_rank(coming).into_iter().partition(|(_, create)| {
+    // The columns each rebuilt table has while it is rebuilt: the new table's, by their old names.
+    let columns_then: BTreeMap<String, BTreeSet<String>> = family.iter().zip(&texts).map(|((x, _), text)| (fold(&x.name), parts(text).iter().filter_map(|p| p.column.clone()).collect())).collect();
+    // Whether a text is a key a foreign key can name: a unique index of a referenced table, on
+    // whole columns it has then, over every row.
+    let is_key = |create: &str| {
         let tokens = tokenize(create, Dialect::Sqlite);
-        unique_index(&tokens).is_some_and(|(_, table)| name_of(&tokens[table]).is_some_and(|t| referenced.contains(&t)))
-    });
+        unique_index(&tokens).is_some_and(|(_, table)| name_of(&tokens[table]).is_some_and(|t| referenced.contains(&t) && columns_then.get(&t).is_some_and(|columns| whole_columns(&tokens[table + 1..], columns))))
+    };
+    let (keys, coming): (Vec<_>, Vec<_>) = by_rank(coming).into_iter().partition(|(_, create)| is_key(create));
+    let mut replaced: Vec<(usize, String)> = Vec::new();
+    for (x, y) in &family {
+        for item in x.goes.iter().filter(|i| !kept(i, y) && is_key(&i.3)) {
+            if !replaced.iter().any(|(_, create)| *create == item.3) {
+                replaced.push((item.4, item.3.clone()));
+            }
+        }
+    }
+    replaced.sort();
     // A table whose text names its columns by its own name (a check written `"users"."age" > 21`)
     // can be neither made under another name nor renamed: SQLite reads the name as the table's
     // own. Where one of the tables rebuilt together is such, the rows of each wait in a table of
@@ -774,8 +790,18 @@ fn alter_table(from: &Object, to: &Object, decided: Option<Vec<(String, String)>
         for (_, _, text, _) in &members {
             out.push(text.clone());
         }
-        // The old tables took their indexes with them: the keys come back before the rows.
+        // The old tables took their indexes with them: the keys come back before the rows, and
+        // one the plan makes again itself stands meanwhile under a name of its own.
         out.extend(keys.into_iter().map(|(_, create)| create));
+        let mut standing: Vec<String> = Vec::new();
+        for (_, create) in &replaced {
+            let tokens = tokenize(create, Dialect::Sqlite);
+            let (name, _) = unique_index(&tokens)?;
+            let scratch = free(format!("new_{}", unquote(&tokens[name])), &used);
+            used.insert(fold(&scratch));
+            out.push(rewrite(create, &tokens, |k, _| (k == name).then(|| quote(&scratch))));
+            standing.push(scratch);
+        }
         for ((name, list, _, sequence), (aside, seq_aside)) in members.iter().zip(&asides) {
             if !list.is_empty() {
                 out.push(format!("insert into {} ({list}) select {list} from {aside}", quote(name)));
@@ -787,6 +813,7 @@ fn alter_table(from: &Object, to: &Object, decided: Option<Vec<(String, String)>
                 out.push(format!("drop table {seq_aside}"));
             }
         }
+        out.extend(standing.iter().map(|name| format!("drop index {}", quote(name))));
         out.extend(coming.into_iter().map(|(_, create)| create));
         return Some(out);
     }
@@ -826,7 +853,7 @@ fn alter_table(from: &Object, to: &Object, decided: Option<Vec<(String, String)>
     // Each key on its table's new one, under a name of its own while the old index has its name.
     let mut used: BTreeSet<String> = scratches.values().map(|(name, _)| fold(name)).collect();
     let mut passing: Vec<String> = Vec::new();
-    for (_, create) in &keys {
+    for (_, create) in keys.iter().chain(&replaced) {
         let tokens = tokenize(create, Dialect::Sqlite);
         let (name, table) = unique_index(&tokens)?;
         let scratch = free(format!("new_{}", unquote(&tokens[name])), &used);
@@ -862,6 +889,14 @@ fn unique_index(tokens: &[Token]) -> Option<(usize, usize)> {
     let at = name_at(tokens)?;
     let unique = tokens[..at].iter().any(|t| t.upper() == "UNIQUE") && tokens[at - 1].upper() == "INDEX";
     (unique && tokens.get(at + 1).is_some_and(|t| t.upper() == "ON") && at + 2 < tokens.len()).then_some((at, at + 2))
+}
+
+/// Whether what follows an index's table in its text is a list of whole columns among `columns`
+/// and nothing more: no expression, no collation of its own and no WHERE, none of which a foreign
+/// key's parent key may have.
+fn whole_columns(list: &[Token], columns: &BTreeSet<String>) -> bool {
+    let Some(close) = list.iter().position(|t| t.text == ")") else { return false };
+    list.first().is_some_and(|t| t.text == "(") && close + 1 == list.len() && list[1..close].iter().all(|t| t.text == "," || matches!(t.upper().as_str(), "ASC" | "DESC") || name_of(t).is_some_and(|c| columns.contains(&c)))
 }
 
 /// Whether a table's text names a column by the table's own name, as `"users"."age"`.
