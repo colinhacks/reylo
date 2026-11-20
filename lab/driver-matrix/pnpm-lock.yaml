@@ -134,6 +134,9 @@ importers:
       slonik:
         specifier: 49.12.0
         version: 49.12.0
+      sql-js-117:
+        specifier: npm:sql.js@1.17.0
+        version: sql.js@1.17.0
       sql.js:
         specifier: 1.15.2
         version: 1.15.2
@@ -1695,6 +1698,9 @@ packages:
 
   sql.js@1.15.2:
     resolution: {integrity: sha512-ZmMYFsZPZWDKIJUh3A5rdnpRV3hB/r7AijwAzSzLnfv/9CSx4obUmDtA8brAjWJWjGtUVh43nIEJ+6nl6HuOUg==}
+
+  sql.js@1.17.0:
+    resolution: {integrity: sha512-HNdo5+2eSTEm7iLcfXUd2mjZX3Oe+5mJ0uDgIpirS7gSLHhZIw9kWDWxNcDVeFGEIBxJlkgo525g0CZJoH8GgA==}
 
   sqlite3@5.1.7:
     resolution: {integrity: sha512-GGIyOiFaG+TUra3JIfkI/zGP8yZYLPQ0pl1bH+ODjiX57sPhrLU5sQJn1y9bDKZUFYkX1crlrPfSYt0BKKdkog==}
@@ -3359,6 +3365,8 @@ snapshots:
   sql-escaper@1.5.2: {}
 
   sql.js@1.15.2: {}
+
+  sql.js@1.17.0: {}
 
   sqlite3@5.1.7(node-gyp@8.4.1):
     dependencies:
