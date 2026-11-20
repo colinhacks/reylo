@@ -11,7 +11,12 @@
 //! domain or a composite type, called from defaults, checks, views and policies, or reading a table's
 //! column from a SQL-standard body; domains and composite types as columns' types; triggers, row
 //! level security, sequences a column owns, identity, partitions, comments and grants; and names and
-//! labels that need quoting.
+//! labels that need quoting. Tables inherit from one or two others, declaring columns beside and over
+//! the inherited ones, and start and stop inheriting; typed tables follow their type's attributes;
+//! tables become partitions and partitions tables; publications name tables with and without their
+//! children, and with column lists; and keys, tables, expression indexes and views carry storage
+//! parameters, statistics targets and column defaults. Rows are read from each table alone (`only`),
+//! so a parent's values are its own.
 
 use reylo_migrate::catalog::{catalog, difference};
 use reylo_migrate::db::{with_database, Db};
@@ -208,6 +213,8 @@ struct View {
     over: Option<String>,
     materialized: bool,
     invoker: bool,
+    /// Its columns given a default of their own (`alter view … alter column … set default`).
+    defaults: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -284,6 +291,63 @@ struct Table {
     rls: bool,
     granted: bool,
     comment: Option<String>,
+    /// The tables it inherits from, each earlier in the model: `cols` holds the columns it declares
+    /// itself, beside or over the ones it inherits.
+    inherits: Vec<String>,
+    /// The composite type it is a typed table of, whose attributes `cols` mirrors.
+    of_type: Option<String>,
+    /// Its storage parameters, `toast.` ones included.
+    options: BTreeMap<String, String>,
+    /// The fillfactor of its primary key's index, and of its unique constraints' by name.
+    pk_fill: Option<u32>,
+    key_fill: BTreeMap<String, u32>,
+    /// Indexes on an expression of a column, alone or after the column itself.
+    expr_indexes: Vec<(String, String, bool)>,
+    /// The statistics target of an expression index's expression column, by the index's name.
+    idx_stats: BTreeMap<String, i32>,
+    /// Indexes of a partitioned table made on the table alone (`on only`).
+    only_indexes: BTreeSet<String>,
+    /// What its seeded ids start after, so that its rows fit a partition's bounds.
+    base: usize,
+    /// The partitioned table it has the columns of, which it may become a partition of.
+    twin_of: Option<String>,
+}
+
+fn table(name: &str, cols: Vec<Col>) -> Table {
+    Table {
+        name: name.into(),
+        cols,
+        pk: vec![],
+        uniques: vec![],
+        checks: vec![],
+        indexes: vec![],
+        fn_indexes: vec![],
+        stats: vec![],
+        fks: vec![],
+        part: None,
+        rls: false,
+        granted: false,
+        comment: None,
+        inherits: vec![],
+        of_type: None,
+        options: BTreeMap::new(),
+        pk_fill: None,
+        key_fill: BTreeMap::new(),
+        expr_indexes: vec![],
+        idx_stats: BTreeMap::new(),
+        only_indexes: BTreeSet::new(),
+        base: 0,
+        twin_of: None,
+    }
+}
+
+/// A publication: each table it names, whether `only`, and the columns its list names.
+#[derive(Clone, Debug)]
+struct Publication {
+    name: String,
+    tables: Vec<(String, bool, Option<Vec<String>>)>,
+    /// `publish_via_partition_root`, which a column list on a partitioned table needs.
+    root: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -297,6 +361,7 @@ struct Model {
     views: Vec<View>,
     triggers: Vec<Trigger>,
     policies: Vec<Policy>,
+    pubs: Vec<Publication>,
 }
 
 impl Model {
@@ -316,6 +381,214 @@ impl Model {
         self.composites.iter().find(|c| c.name == name)
     }
 
+    /// The columns a table has from its parents, merged by name as Postgres merges them: identity
+    /// is not inherited.
+    fn parent_cols(&self, t: &Table) -> Vec<Col> {
+        let mut out: Vec<Col> = Vec::new();
+        for p in &t.inherits {
+            let Some(pt) = self.table(p) else { continue };
+            for mut c in self.all_cols(pt) {
+                if out.iter().any(|x| x.name == c.name) {
+                    continue;
+                }
+                c.identity = false;
+                c.start = None;
+                c.comment = None;
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Every column a table has, inherited or declared: a column it declares over an inherited one
+    /// adds its default and its not null to the inherited one's.
+    fn all_cols(&self, t: &Table) -> Vec<Col> {
+        let mut out = self.parent_cols(t);
+        for c in &t.cols {
+            match out.iter_mut().find(|x| x.name == c.name) {
+                Some(x) => {
+                    x.not_null |= c.not_null;
+                    if c.default.is_some() || c.call.is_some() || c.seq {
+                        x.default = c.default.clone();
+                        x.call = c.call.clone();
+                        x.seq = c.seq;
+                    }
+                    x.identity |= c.identity;
+                    x.comment = c.comment.clone();
+                }
+                None => out.push(c.clone()),
+            }
+        }
+        out
+    }
+
+    fn inherited_names(&self, t: &Table) -> BTreeSet<String> {
+        self.parent_cols(t).into_iter().map(|c| c.name).collect()
+    }
+
+    /// Whether a table may inherit or be inherited from: a partitioned or typed table may not.
+    fn can_inherit(&self, t: &Table) -> bool {
+        t.part.is_none() && t.of_type.is_none()
+    }
+
+    /// Whether any table inherits from it, or the tables that do, at any depth.
+    fn has_children(&self, name: &str) -> bool {
+        self.tables.iter().any(|t| t.inherits.iter().any(|p| p == name))
+    }
+    fn descendants(&self, name: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut frontier = vec![name.to_string()];
+        while let Some(n) = frontier.pop() {
+            for t in self.tables.iter().filter(|t| t.inherits.contains(&n)) {
+                if !out.contains(&t.name) {
+                    out.push(t.name.clone());
+                    frontier.push(t.name.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether tables can be inherited from together: a column two of them have agrees in its type,
+    /// its default and whether it is generated.
+    fn parents_agree(&self, parents: &[String]) -> bool {
+        let sets: Vec<Vec<Col>> = parents.iter().filter_map(|p| self.table(p)).map(|t| self.all_cols(t)).collect();
+        let key = |c: &Col| (c.ty.clone(), c.default.clone(), c.call.clone(), c.seq, c.generated.clone(), c.gen_call.clone());
+        for (i, a) in sets.iter().enumerate() {
+            for b in &sets[i + 1..] {
+                for x in a {
+                    if b.iter().any(|y| y.name == x.name && key(y) != key(x)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// The model made whole again after a change: parents only earlier tables that may have
+    /// children, a typed table's columns its type's attributes, a column a table declares over an
+    /// inherited one of the inherited one's type, and what names a column or index that is gone
+    /// gone too.
+    fn normalize(&mut self) {
+        let mut retyped: Vec<(usize, String)> = Vec::new();
+        for i in 0..self.tables.len() {
+            let ok: Vec<String> = self.tables[..i].iter().filter(|t| self.can_inherit(t)).map(|t| t.name.clone()).collect();
+            let can = self.can_inherit(&self.tables[i]);
+            let t = &mut self.tables[i];
+            t.inherits.retain(|p| can && ok.contains(p));
+            let mut seen = BTreeSet::new();
+            t.inherits.retain(|p| seen.insert(p.clone()));
+            // A typed table's columns follow its type's attributes, keeping their options.
+            if let Some(ty) = self.tables[i].of_type.clone() {
+                match self.composite(&ty).map(|c| c.attrs.clone()) {
+                    Some(attrs) => {
+                        let old = self.tables[i].cols.clone();
+                        let mut cols = Vec::new();
+                        for (n, aty) in attrs {
+                            match old.iter().find(|c| c.name == n) {
+                                Some(c) => {
+                                    let mut c = c.clone();
+                                    if c.ty != aty {
+                                        c.ty = aty;
+                                        retyped.push((i, n.clone()));
+                                    }
+                                    cols.push(c);
+                                }
+                                None => cols.push(col(&n, aty)),
+                            }
+                        }
+                        self.tables[i].cols = cols;
+                    }
+                    None => self.tables[i].of_type = None,
+                }
+            }
+            // A column declared over an inherited one has its type; over a generated one it can't be.
+            let inherited = self.parent_cols(&self.tables[i]);
+            let snapshot = self.clone();
+            let t = &mut self.tables[i];
+            t.cols.retain(|c| !inherited.iter().any(|x| x.name == c.name && (x.generated.is_some() || c.generated.is_some())));
+            for c in &mut t.cols {
+                if let Some(x) = inherited.iter().find(|x| x.name == c.name) {
+                    if x.ty != c.ty {
+                        c.ty = x.ty.clone();
+                        c.call = None;
+                        if c.default.is_some() {
+                            c.default = Some(snapshot.default_of(&c.ty));
+                        }
+                        retyped.push((i, c.name.clone()));
+                    }
+                }
+            }
+        }
+        for (i, name) in &retyped {
+            let t = &mut self.tables[*i];
+            t.checks.retain(|ck| &ck.col != name);
+            t.indexes.retain(|(_, cols, wh)| (!cols.contains(name) || wh.is_none()) && wh.as_deref() != Some(name));
+            t.fn_indexes.retain(|x| &x.2 != name);
+        }
+        if !retyped.is_empty() {
+            self.fix_calls();
+        }
+        // What names a column, an index or a table gone goes too.
+        let cols: BTreeMap<String, Vec<Col>> = self.tables.iter().map(|t| (t.name.clone(), self.all_cols(t))).collect();
+        let partitioned: BTreeSet<String> = self.tables.iter().filter(|t| t.part.is_some()).map(|t| t.name.clone()).collect();
+        let under: BTreeMap<String, Vec<String>> = self.tables.iter().map(|t| (t.name.clone(), self.descendants(&t.name))).collect();
+        // A key names only columns the table has, which one it stopped inheriting it no longer does.
+        for t in &mut self.tables {
+            let have: BTreeSet<String> = cols[&t.name].iter().map(|c| c.name.clone()).collect();
+            if !t.pk.iter().all(|c| have.contains(c)) {
+                t.pk.clear();
+            }
+            t.uniques.retain(|(_, cs)| cs.iter().all(|c| have.contains(c)));
+        }
+        for p in &mut self.pubs {
+            p.tables.retain(|e| cols.contains_key(&e.0));
+            // Entries that reach the same table (one named with its children and one of them, or two
+            // parents of one child) take no column lists: they would be lists of the same table.
+            let reach: Vec<BTreeSet<String>> = p.tables.iter().map(|e| std::iter::once(e.0.clone()).chain(if e.1 { vec![] } else { under[&e.0].clone() }).collect()).collect();
+            for i in 0..p.tables.len() {
+                if (0..p.tables.len()).any(|j| j != i && !reach[i].is_disjoint(&reach[j])) {
+                    p.tables[i].2 = None;
+                }
+            }
+            if p.tables.iter().any(|e| e.2.is_some() && partitioned.contains(&e.0)) {
+                p.root = true;
+            }
+            for e in &mut p.tables {
+                if let Some(list) = &mut e.2 {
+                    list.retain(|c| cols[&e.0].iter().any(|x| &x.name == c && x.generated.is_none()));
+                    if list.is_empty() {
+                        e.2 = None;
+                    }
+                }
+            }
+        }
+        for v in &mut self.views {
+            let has = |c: &String| cols.get(&v.table).is_some_and(|cs| cs.iter().any(|x| &x.name == c));
+            let keep: Vec<String> = v.defaults.iter().filter(|c| !v.materialized && v.cols.contains(c) && has(c)).cloned().collect();
+            v.defaults = keep;
+        }
+        for t in &mut self.tables {
+            let names: BTreeSet<String> = t.indexes.iter().map(|i| i.0.clone()).collect();
+            if t.part.is_none() {
+                t.only_indexes.clear();
+            } else {
+                t.options.clear();
+            }
+            t.only_indexes.retain(|n| names.contains(n));
+            let exprs: BTreeSet<String> = t.fn_indexes.iter().map(|i| i.0.clone()).chain(t.expr_indexes.iter().map(|i| i.0.clone())).collect();
+            t.idx_stats.retain(|n, _| exprs.contains(n));
+            let uniques: BTreeSet<String> = t.uniques.iter().map(|u| u.0.clone()).collect();
+            t.key_fill.retain(|n, _| uniques.contains(n));
+            if t.pk.is_empty() {
+                t.pk_fill = None;
+            }
+            let own: BTreeSet<String> = t.cols.iter().map(|c| c.name.clone()).collect();
+            t.expr_indexes.retain(|x| own.contains(&x.1));
+        }
+    }
+
     /// Every name the model uses, for a fresh one.
     fn names(&self) -> BTreeSet<String> {
         let mut out = BTreeSet::new();
@@ -326,11 +599,13 @@ impl Model {
         out.extend(self.views.iter().map(|v| v.name.clone()));
         out.extend(self.triggers.iter().map(|v| v.name.clone()));
         out.extend(self.policies.iter().map(|v| v.name.clone()));
+        out.extend(self.pubs.iter().map(|v| v.name.clone()));
         for t in &self.tables {
             out.insert(t.name.clone());
             out.extend(t.cols.iter().map(|c| c.name.clone()));
             out.extend(t.indexes.iter().map(|i| i.0.clone()));
             out.extend(t.fn_indexes.iter().map(|i| i.0.clone()));
+            out.extend(t.expr_indexes.iter().map(|i| i.0.clone()));
             out.extend(t.stats.iter().map(|i| i.0.clone()));
             out.extend(t.checks.iter().map(|c| c.name.clone()));
             out.extend(t.uniques.iter().map(|u| u.0.clone()));
@@ -514,7 +789,7 @@ impl Model {
         for t in &self.tables {
             let mut lines: Vec<String> = Vec::new();
             for c in &t.cols {
-                let mut s = format!("{} {}", q(&c.name), c.ty.sql());
+                let mut s = String::new();
                 if c.identity {
                     s.push_str(" generated by default as identity");
                     if let Some(n) = c.start {
@@ -542,13 +817,19 @@ impl Model {
                 if c.not_null {
                     s.push_str(" not null");
                 }
-                lines.push(s);
+                // A typed table's column is its type's attribute, with only its options here.
+                if t.of_type.is_none() {
+                    lines.push(format!("{} {}{s}", q(&c.name), c.ty.sql()));
+                } else if !s.is_empty() {
+                    lines.push(format!("{} with options{s}", q(&c.name)));
+                }
             }
+            let fill = |f: Option<u32>| f.map(|f| format!(" with (fillfactor = {f})")).unwrap_or_default();
             if !t.pk.is_empty() {
-                lines.push(format!("constraint {} primary key ({})", q(&format!("{}_pkey", t.name)), t.pk.iter().map(|c| q(c)).collect::<Vec<_>>().join(", ")));
+                lines.push(format!("constraint {} primary key ({}){}", q(&format!("{}_pkey", t.name)), t.pk.iter().map(|c| q(c)).collect::<Vec<_>>().join(", "), fill(t.pk_fill)));
             }
             for (n, cols) in &t.uniques {
-                lines.push(format!("constraint {} unique ({})", q(n), cols.iter().map(|c| q(c)).collect::<Vec<_>>().join(", ")));
+                lines.push(format!("constraint {} unique ({}){}", q(n), cols.iter().map(|c| q(c)).collect::<Vec<_>>().join(", "), fill(t.key_fill.get(n).copied())));
             }
             for ck in &t.checks {
                 let s = format!("constraint {} check ({})", q(&ck.name), self.check_sql(ck));
@@ -562,7 +843,14 @@ impl Model {
                 Some(p) => format!(" partition by {} (id)", if p.list { "list" } else { "range" }),
                 None => String::new(),
             };
-            out.push(format!("create table {} (\n  {}\n){by};", q(&t.name), lines.join(",\n  ")));
+            let inherits = if t.inherits.is_empty() { String::new() } else { format!(" inherits ({})", t.inherits.iter().map(|p| q(p)).collect::<Vec<_>>().join(", ")) };
+            let with = if t.options.is_empty() { String::new() } else { format!(" with ({})", t.options.iter().map(|(k, v)| format!("{k} = {v}")).collect::<Vec<_>>().join(", ")) };
+            let head = match &t.of_type {
+                Some(ty) if lines.is_empty() => format!("create table {} of {}", q(&t.name), q(ty)),
+                Some(ty) => format!("create table {} of {} (\n  {}\n)", q(&t.name), q(ty), lines.join(",\n  ")),
+                None => format!("create table {} (\n  {}\n)", q(&t.name), lines.join(",\n  ")),
+            };
+            out.push(format!("{head}{inherits}{by}{with};"));
             if let Some(p) = &t.part {
                 for (child, bound) in &p.children {
                     let b = match bound {
@@ -589,8 +877,17 @@ impl Model {
                     out.push(format!("create index {} on {} (({}));", q(n), q(&t.name), self.call(f, Some(c))));
                 }
             }
+            for (n, col, two) in &t.expr_indexes {
+                let expr = expr_index(t, col);
+                out.push(format!("create index {} on {} ({}{expr});", q(n), q(&t.name), if *two { format!("{}, ", q(col)) } else { String::new() }));
+            }
+            for (n, k) in &t.idx_stats {
+                let at = if t.expr_indexes.iter().any(|x| &x.0 == n && x.2) { 2 } else { 1 };
+                out.push(format!("alter index {} alter column {at} set statistics {k};", q(n)));
+            }
             for (n, cols, wh) in &t.indexes {
-                out.push(format!("create index {} on {} ({}){};", q(n), q(&t.name), cols.iter().map(|c| q(c)).collect::<Vec<_>>().join(", "), wh.as_ref().map(|w| format!(" where {} is not null", q(w))).unwrap_or_default()));
+                let only = if t.only_indexes.contains(n) { "only " } else { "" };
+                out.push(format!("create index {} on {only}{} ({}){};", q(n), q(&t.name), cols.iter().map(|c| q(c)).collect::<Vec<_>>().join(", "), wh.as_ref().map(|w| format!(" where {} is not null", q(w))).unwrap_or_default()));
             }
         }
         for f in self.funcs.iter().filter(|f| f.reads().is_some()) {
@@ -605,6 +902,10 @@ impl Model {
             let kind = if v.materialized { "materialized view" } else { "view" };
             let with = if v.invoker && !v.materialized { " with (security_invoker = true)" } else { "" };
             out.push(format!("create {kind} {}{with} as select {} from {};", q(&v.name), cols.join(", "), q(v.over.as_ref().unwrap_or(&v.table))));
+            for c in &v.defaults {
+                let Some(ty) = self.table(&v.table).and_then(|t| self.all_cols(t).into_iter().find(|x| &x.name == c)).map(|x| x.ty) else { continue };
+                out.push(format!("alter view {} alter column {} set default {};", q(&v.name), q(c), self.default_of(&ty)));
+            }
         }
         for tg in &self.triggers {
             let body = ["", "perform 1;", "new := new;"][tg.variant % 3];
@@ -648,6 +949,16 @@ impl Model {
                 }
             }
         }
+        for p in &self.pubs {
+            let tables: Vec<String> = p
+                .tables
+                .iter()
+                .map(|(t, only, cols)| format!("table {}{}{}", if *only { "only " } else { "" }, q(t), cols.as_ref().map(|cs| format!(" ({})", cs.iter().map(|c| q(c)).collect::<Vec<_>>().join(", "))).unwrap_or_default()))
+                .collect();
+            let what = if tables.is_empty() { String::new() } else { format!(" for {}", tables.join(", ")) };
+            let with = if p.root { " with (publish_via_partition_root = true)" } else { "" };
+            out.push(format!("create publication {}{what}{with};", q(&p.name)));
+        }
         out.join("\n") + "\n"
     }
 
@@ -655,12 +966,13 @@ impl Model {
     fn seed(&self) -> String {
         let mut out = Vec::new();
         for t in &self.tables {
-            let cols: Vec<&Col> = t.cols.iter().filter(|c| c.generated.is_none() && !c.identity).collect();
+            let all = self.all_cols(t);
+            let cols: Vec<&Col> = all.iter().filter(|c| c.generated.is_none() && !c.identity).collect();
             if cols.is_empty() {
                 continue;
             }
             for k in 1..=3 {
-                let values: Vec<String> = cols.iter().map(|c| self.value(&c.ty, k)).collect();
+                let values: Vec<String> = cols.iter().map(|c| if c.name == "id" && t.base > 0 { format!("{}", t.base + k) } else { self.value(&c.ty, k) }).collect();
                 out.push(format!("insert into {} ({}) values ({});", q(&t.name), cols.iter().map(|c| q(&c.name)).collect::<Vec<_>>().join(", "), values.join(", ")));
             }
         }
@@ -673,12 +985,26 @@ impl Model {
     /// refusal says so.
     fn fits(&self, to: &Model) -> bool {
         for t in &to.tables {
-            let Some(old) = self.table(&t.name) else { continue };
-            for c in &t.cols {
-                let added = !old.cols.iter().any(|x| x.name == c.name);
+            // A table that was a partition holds its rows, with its parent's columns.
+            let was_partition = self.tables.iter().find(|p| p.part.as_ref().is_some_and(|p| p.children.iter().any(|c| c.0 == t.name)));
+            let Some(old) = self.table(&t.name).or(was_partition) else { continue };
+            let old_cols = self.all_cols(old);
+            for c in &to.all_cols(t) {
+                let added = !old_cols.iter().any(|x| x.name == c.name);
                 let filled = c.default.is_some() || c.call.is_some() || c.seq || c.generated.is_some() || c.identity || to.domain_default(&c.ty);
                 if added && (c.not_null || to.domain_not_null(&c.ty)) && !filled {
                     return false;
+                }
+            }
+            // A table that becomes one of its partitions takes its columns.
+            for (child, _) in t.part.iter().flat_map(|p| &p.children) {
+                let Some(old) = self.table(child) else { continue };
+                let old_cols = self.all_cols(old);
+                for c in &to.all_cols(t) {
+                    let filled = c.default.is_some() || c.call.is_some() || c.seq || c.generated.is_some() || c.identity || to.domain_default(&c.ty);
+                    if !old_cols.iter().any(|x| x.name == c.name) && (c.not_null || to.domain_not_null(&c.ty)) && !filled {
+                        return false;
+                    }
                 }
             }
             for name in t.uniques.iter().flat_map(|(_, cols)| cols) {
@@ -707,6 +1033,8 @@ impl Model {
             || multiplied(t, col)
             || t.cols.iter().any(|c| c.gen_call.as_ref().is_some_and(|(_, x)| x == col))
             || t.fn_indexes.iter().any(|i| i.2 == col)
+            || t.expr_indexes.iter().any(|i| i.1 == col)
+            || self.pubs.iter().any(|p| p.tables.iter().any(|(pt, _, cs)| pt == table && cs.as_ref().is_some_and(|cs| cs.iter().any(|c| c == col))))
             || t.stats.iter().any(|(_, cs)| cs.iter().any(|c| c == col))
             || self.tables.iter().any(|o| o.fks.iter().any(|(_, _, rt, rc)| rt == table && rc == col))
             || self.views.iter().any(|v| v.table == table && (v.cols.iter().any(|c| c == col) || v.call.as_ref().is_some_and(|(_, c)| c.as_deref() == Some(col))))
@@ -722,6 +1050,7 @@ impl Model {
             || self.funcs.iter().any(|f| is(&f.ret) || f.args.iter().any(is))
             || self.composites.iter().any(|c| c.attrs.iter().any(|(_, t)| is(t)))
             || self.domains.iter().any(|d| is(&d.base))
+            || self.tables.iter().any(|t| t.of_type.as_deref() == Some(name))
     }
 
     /// What calls a function made to fit it again, after its signature changed: a call it no longer
@@ -809,13 +1138,29 @@ impl Model {
         self.views.retain(|v| v.table != name);
         self.triggers.retain(|v| v.table != name);
         self.policies.retain(|v| v.table != name);
+        for p in &mut self.pubs {
+            p.tables.retain(|e| e.0 != name);
+        }
         for t in &mut self.tables {
             t.fks.retain(|(_, _, rt, _)| rt != name);
+            t.inherits.retain(|p| p != name);
+            if t.twin_of.as_deref() == Some(name) {
+                t.twin_of = None;
+            }
         }
         let readers: Vec<String> = self.funcs.iter().filter(|f| f.reads().is_some_and(|(t, _)| t == name)).map(|f| f.name.clone()).collect();
         for f in readers {
             self.drop_func(&f);
         }
+    }
+}
+
+/// An index's expression over a column, by the column's type.
+fn expr_index(t: &Table, col: &str) -> String {
+    match t.cols.iter().find(|c| c.name == col).map(|c| &c.ty) {
+        Some(ty) if ty.integral() || *ty == Ty::Numeric => format!("({} + 1)", q(col)),
+        Some(ty) if ty.stringy() => format!("lower({})", q(col)),
+        _ => format!("({} is null)", q(col)),
     }
 }
 
@@ -912,7 +1257,7 @@ fn generate(rng: &mut Rng) -> Model {
     }
     for t in 0..(1 + rng.below(3)) {
         let name = styled(rng, format!("t{t}"));
-        let partitioned = rng.chance(15);
+        let partitioned = rng.chance(20);
         let mut id = col("id", Ty::Int);
         id.not_null = true;
         id.identity = !partitioned && rng.chance(20);
@@ -931,7 +1276,7 @@ fn generate(rng: &mut Rng) -> Model {
             }
             Part { list: rng.chance(50), children }
         });
-        let mut table = Table { name, cols, pk: vec!["id".into()], uniques: vec![], checks: vec![], indexes: vec![], fn_indexes: vec![], stats: vec![], fks: vec![], part, rls: false, granted: false, comment: None };
+        let mut table = Table { pk: vec!["id".into()], part, ..self::table(&name, cols) };
         if t > 0 && rng.chance(40) {
             table.cols.push(col("parent", Ty::Int));
             let t0 = m.tables[0].name.clone();
@@ -939,8 +1284,15 @@ fn generate(rng: &mut Rng) -> Model {
         }
         m.tables.push(table);
     }
+    // Tables that inherit, and tables that may become partitions, which changes then reach.
+    if rng.chance(45) {
+        mutation(&mut m, rng, 32);
+    }
+    if m.tables.iter().any(|t| t.part.is_some()) && rng.chance(60) {
+        mutation(&mut m, rng, 44);
+    }
     // The first schema has some of what the changes interact with already.
-    for _ in 0..rng.below(5) {
+    for _ in 0..rng.below(7) {
         let k = *rng.pick(ADDERS).unwrap();
         mutation(&mut m, rng, k);
     }
@@ -948,10 +1300,10 @@ fn generate(rng: &mut Rng) -> Model {
 }
 
 /// Mutations that add something, which make the first schema too.
-const ADDERS: &[usize] = &[20, 20, 14, 14, 15, 22, 22, 23, 24, 25, 26, 27, 0, 6, 8, 11, 19, 30];
+const ADDERS: &[usize] = &[20, 20, 14, 14, 15, 22, 22, 23, 24, 25, 26, 27, 0, 6, 8, 11, 19, 30, 32, 32, 32, 33, 35, 36, 39, 40, 41, 42, 44, 44];
 
 /// The mutations, weighted toward functions, domains, composite types and the enum, and what reads them.
-const KINDS: &[usize] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 11, 12, 13, 14, 14, 15, 15, 16, 16, 17, 17, 18, 18, 19, 20, 20, 21, 21, 22, 22, 23, 23, 24, 25, 26, 27, 28, 29, 30, 2, 3];
+const KINDS: &[usize] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 11, 12, 13, 14, 14, 15, 15, 16, 16, 17, 17, 18, 18, 19, 20, 20, 21, 21, 22, 22, 23, 23, 24, 25, 26, 27, 28, 29, 30, 2, 3, 31, 31, 31, 32, 33, 33, 34, 34, 35, 35, 35, 36, 37, 37, 37, 38, 38, 39, 39, 40, 40, 41, 42, 42, 42, 43, 43, 36, 11];
 
 /// One random change to the model, kept consistent: what reads a column dropped goes with it.
 fn mutate(m: &mut Model, rng: &mut Rng) -> String {
@@ -966,8 +1318,24 @@ fn mutate(m: &mut Model, rng: &mut Rng) -> String {
 }
 
 fn mutation(m: &mut Model, rng: &mut Rng, kind: usize) -> String {
+    let done = mutation_raw(m, rng, kind);
+    m.normalize();
+    done
+}
+
+fn mutation_raw(m: &mut Model, rng: &mut Rng, kind: usize) -> String {
     let ti = rng.below(m.tables.len());
     let table = m.tables[ti].name.clone();
+    // A typed table's columns are its type's: they change through the type.
+    let typed = m.tables[ti].of_type.is_some();
+    if typed && matches!(kind, 0 | 1 | 2 | 3 | 9 | 20 | 28) {
+        return "nothing".into();
+    }
+    if m.tables[ti].cols.is_empty() && !(31..=44).contains(&kind) {
+        return "nothing".into();
+    }
+    // A column a table inherits changes through its parent.
+    let inh = m.inherited_names(&m.tables[ti]);
     match kind {
         0 => {
             let ty = column_type(m, rng);
@@ -978,6 +1346,9 @@ fn mutation(m: &mut Model, rng: &mut Rng, kind: usize) -> String {
             format!("add column {name}")
         }
         1 => {
+            if !m.tables[ti].inherits.is_empty() && m.tables[ti].cols.len() <= 1 {
+                return "nothing".into();
+            }
             let free: Vec<String> = m.tables[ti].cols.iter().filter(|c| c.name != "id" && !m.used(&table, &c.name)).map(|c| c.name.clone()).collect();
             let Some(c) = rng.pick(&free).cloned() else { return "nothing".into() };
             m.tables[ti].cols.retain(|x| x.name != c);
@@ -985,7 +1356,7 @@ fn mutation(m: &mut Model, rng: &mut Rng, kind: usize) -> String {
         }
         2 | 3 => {
             let t = &m.tables[ti];
-            let free: Vec<usize> = (0..t.cols.len()).filter(|k| t.cols[*k].name != "id" && t.cols[*k].generated.is_none() && !t.cols[*k].identity && !t.fks.iter().any(|(_, c, ..)| *c == t.cols[*k].name)).collect();
+            let free: Vec<usize> = (0..t.cols.len()).filter(|k| t.cols[*k].name != "id" && !inh.contains(&t.cols[*k].name) && t.cols[*k].generated.is_none() && !t.cols[*k].identity && !t.fks.iter().any(|(_, c, ..)| *c == t.cols[*k].name)).collect();
             let Some(&k) = rng.pick(&free) else { return "nothing".into() };
             let name = t.cols[k].name.clone();
             let mut to = becomes(m, &t.cols[k].ty);
@@ -1124,7 +1495,7 @@ fn mutation(m: &mut Model, rng: &mut Rng, kind: usize) -> String {
                 Some(v) => (Some(v.name.clone()), v.cols.iter().take(1 + rng.below(2)).cloned().collect()),
                 None => (None, cols),
             };
-            m.views.push(View { name: name.clone(), table, cols, call: None, over, materialized: rng.chance(20), invoker: rng.chance(20) });
+            m.views.push(View { name: name.clone(), table, cols, call: None, over, materialized: rng.chance(20), invoker: rng.chance(20), defaults: vec![] });
             format!("view {name}")
         }
         12 => {
@@ -1254,7 +1625,7 @@ fn mutation(m: &mut Model, rng: &mut Rng, kind: usize) -> String {
             let ty = Ty::Domain(name.clone());
             // A column of the base made the domain, or a new column of it.
             let t = &m.tables[ti];
-            let same: Vec<usize> = (0..t.cols.len()).filter(|k| t.cols[*k].ty == base && t.cols[*k].name != "id" && t.cols[*k].generated.is_none() && !t.cols[*k].identity && !t.fks.iter().any(|(_, c, ..)| *c == t.cols[*k].name) && !multiplied(t, &t.cols[*k].name)).collect();
+            let same: Vec<usize> = (0..t.cols.len()).filter(|k| t.cols[*k].ty == base && t.cols[*k].name != "id" && !inh.contains(&t.cols[*k].name) && t.cols[*k].generated.is_none() && !t.cols[*k].identity && !t.fks.iter().any(|(_, c, ..)| *c == t.cols[*k].name) && !multiplied(t, &t.cols[*k].name)).collect();
             if let (Some(&k), true) = (rng.pick(&same), rng.chance(60)) {
                 m.tables[ti].cols[k].ty = ty;
                 m.tables[ti].cols[k].call = None;
@@ -1315,6 +1686,9 @@ fn mutation(m: &mut Model, rng: &mut Rng, kind: usize) -> String {
         // A composite type and a column of it, or a change to one.
         22 => {
             if m.composites.is_empty() || rng.chance(40) {
+                if typed {
+                    return "nothing".into();
+                }
                 let mut pool = vec![Ty::Int, Ty::Text, Ty::Numeric, Ty::BigInt];
                 pool.extend(m.enums.iter().map(|e| Ty::Enum(e.0.clone())));
                 pool.extend(m.domains.iter().filter(|d| !d.not_null).map(|d| Ty::Domain(d.name.clone())));
@@ -1328,39 +1702,7 @@ fn mutation(m: &mut Model, rng: &mut Rng, kind: usize) -> String {
                 return format!("composite {name}");
             }
             let k = rng.below(m.composites.len());
-            let c = &mut m.composites[k];
-            let what = match rng.below(3) {
-                0 => {
-                    let name = (0..).map(|k| format!("b{k}")).find(|n| !c.attrs.iter().any(|a| &a.0 == n)).unwrap();
-                    c.attrs.push((name, Ty::Int));
-                    "attribute added"
-                }
-                1 if c.attrs.len() > 1 => {
-                    let at = 1 + rng.below(c.attrs.len() - 1);
-                    c.attrs.remove(at);
-                    "attribute dropped"
-                }
-                _ => {
-                    let at = rng.below(c.attrs.len());
-                    c.attrs[at].1 = match c.attrs[at].1 {
-                        Ty::Int => Ty::BigInt,
-                        Ty::BigInt => Ty::Numeric,
-                        Ty::Numeric => Ty::Text,
-                        _ => return "nothing".into(),
-                    };
-                    "attribute retyped"
-                }
-            };
-            let (name, snapshot) = (c.name.clone(), m.clone());
-            // A default of the type holds a row of its attributes, which changed.
-            for t in &mut m.tables {
-                for x in &mut t.cols {
-                    if x.ty == Ty::Composite(name.clone()) && x.default.is_some() {
-                        x.default = Some(snapshot.default_of(&x.ty));
-                    }
-                }
-            }
-            format!("composite {name} {what}")
+            composite_change(m, rng, k)
         }
         // A comment set, changed or taken off.
         23 => {
@@ -1474,7 +1816,7 @@ fn mutation(m: &mut Model, rng: &mut Rng, kind: usize) -> String {
                 return "nothing".into();
             }
             let t = &m.tables[ti];
-            let open: Vec<usize> = (0..t.cols.len()).filter(|k| t.cols[*k].ty.integral() && t.cols[*k].generated.is_none()).collect();
+            let open: Vec<usize> = (0..t.cols.len()).filter(|k| t.cols[*k].ty.integral() && t.cols[*k].generated.is_none() && !inh.contains(&t.cols[*k].name)).collect();
             let Some(&k) = rng.pick(&open) else { return "nothing".into() };
             let c = &mut m.tables[ti].cols[k];
             let what = if c.identity && rng.chance(50) {
@@ -1514,6 +1856,421 @@ fn mutation(m: &mut Model, rng: &mut Rng, kind: usize) -> String {
             m.tables[ti].stats.push((name.clone(), vec![cols[a].clone(), cols[b].clone()]));
             format!("statistics {name}")
         }
+        // A table starts or stops inheriting a parent, or its parent goes.
+        31 => {
+            if !m.can_inherit(&m.tables[ti]) {
+                return "nothing".into();
+            }
+            let t = &m.tables[ti];
+            if !t.inherits.is_empty() && rng.chance(50) {
+                let p = rng.pick(&t.inherits).unwrap().clone();
+                let referenced = m.tables.iter().any(|o| o.fks.iter().any(|f| f.2 == p));
+                if rng.chance(20) && !referenced {
+                    m.drop_table(&p);
+                    return format!("inherit: parent {p} dropped");
+                }
+                m.tables[ti].inherits.retain(|x| *x != p);
+                return format!("inherit: {table} stops inheriting {p}");
+            }
+            let open: Vec<String> = m.tables[..ti].iter().filter(|p| m.can_inherit(p) && !t.inherits.contains(&p.name)).map(|p| p.name.clone()).collect();
+            let Some(p) = rng.pick(&open).cloned() else { return "nothing".into() };
+            let mut parents = t.inherits.clone();
+            parents.push(p.clone());
+            if !m.parents_agree(&parents) {
+                return "nothing".into();
+            }
+            // A column it declares over the parent's takes the parent's type, unless something holds its own.
+            let theirs = m.all_cols(m.table(&p).unwrap());
+            for c in &t.cols {
+                if let Some(x) = theirs.iter().find(|x| x.name == c.name) {
+                    let held = multiplied(t, &c.name) || gen_arg(m, t, &c.name).is_some() || t.fks.iter().any(|f| f.1 == c.name) || c.identity;
+                    if x.generated.is_some() || c.generated.is_some() || (x.ty != c.ty && (held || !becomes(m, &c.ty).contains(&x.ty))) {
+                        return "nothing".into();
+                    }
+                }
+            }
+            m.tables[ti].inherits.push(p.clone());
+            format!("inherit: {table} starts inheriting {p}")
+        }
+        // A table that inherits from one or two others.
+        32 => {
+            let open: Vec<String> = m.tables.iter().filter(|t| m.can_inherit(t)).map(|t| t.name.clone()).collect();
+            let Some(p) = rng.pick(&open).cloned() else { return "nothing".into() };
+            let mut parents = vec![p];
+            if rng.chance(35) {
+                let q2 = rng.pick(&open).cloned().unwrap();
+                if q2 != parents[0] {
+                    let mut both = parents.clone();
+                    both.push(q2);
+                    // Its parents in the order the model makes them, or the other order.
+                    if rng.chance(50) {
+                        both.reverse();
+                    }
+                    if m.parents_agree(&both) {
+                        parents = both;
+                    }
+                }
+            }
+            let name = styled(rng, m.fresh("h"));
+            let mut cols = Vec::new();
+            let has_id = parents.iter().any(|p| m.table(p).is_some_and(|t| m.all_cols(t).iter().any(|c| c.name == "id" && c.ty == Ty::Int)));
+            if has_id && rng.chance(50) {
+                let mut id = col("id", Ty::Int);
+                id.not_null = rng.chance(30);
+                cols.push(id);
+            }
+            let pk = if has_id && rng.chance(30) { vec!["id".to_string()] } else { vec![] };
+            m.tables.push(Table { pk, inherits: parents, ..self::table(&name, cols) });
+            // Its own columns, each named after the one before is in the model.
+            let k = m.tables.len() - 1;
+            for _ in 0..(rng.below(3)) {
+                let ty = column_type(m, rng);
+                let n = styled(rng, m.fresh("e"));
+                let default = rng.chance(30).then(|| m.default_of(&ty));
+                m.tables[k].cols.push(Col { default, not_null: rng.chance(20), ..col(&n, ty) });
+            }
+            if m.tables[k].cols.is_empty() {
+                let n = m.fresh("e");
+                m.tables[k].cols.push(col(&n, Ty::Text));
+            }
+            format!("child {name}")
+        }
+        // A column a table inherits declared by the table too (with a default or not null of its
+        // own), or no longer.
+        33 => {
+            let t = &m.tables[ti];
+            if t.inherits.is_empty() {
+                return "nothing".into();
+            }
+            let inherited = m.parent_cols(t);
+            let mine: Vec<String> = t.cols.iter().filter(|c| inh.contains(&c.name) && !m.used(&table, &c.name)).map(|c| c.name.clone()).collect();
+            if !mine.is_empty() && t.cols.len() > 1 && rng.chance(40) {
+                let c = rng.pick(&mine).unwrap().clone();
+                m.tables[ti].cols.retain(|x| x.name != c);
+                return format!("redeclare: {table}.{c} no longer declared");
+            }
+            let open: Vec<&Col> = inherited.iter().filter(|c| c.generated.is_none() && !t.cols.iter().any(|x| x.name == c.name)).collect();
+            if let Some(c) = rng.pick(&open) {
+                let (name, ty) = (c.name.clone(), c.ty.clone());
+                let default = rng.chance(50).then(|| m.default_of(&ty));
+                let not_null = rng.chance(40);
+                m.tables[ti].cols.push(Col { default, not_null, ..col(&name, ty) });
+                return format!("redeclare: {table}.{name}");
+            }
+            // Or a default, or not null, of its own on one it declares.
+            let Some(c) = rng.pick(&mine).cloned() else { return "nothing".into() };
+            let d = inherited.iter().find(|x| x.name == c).map(|x| m.default_of(&x.ty)).unwrap_or_else(|| "null".into());
+            let x = m.tables[ti].cols.iter_mut().find(|x| x.name == c).unwrap();
+            if rng.chance(50) {
+                x.not_null = !x.not_null;
+            } else {
+                x.default = if x.default.is_some() { None } else { Some(d) };
+            }
+            format!("redeclare: {table}.{c} changed")
+        }
+        // A parent gains a column a table inheriting from it already has.
+        34 => {
+            let t = &m.tables[ti];
+            if t.inherits.is_empty() {
+                return "nothing".into();
+            }
+            let open: Vec<Col> = t.cols.iter().filter(|c| !inh.contains(&c.name) && c.generated.is_none() && !c.identity && c.name != "id").cloned().collect();
+            let Some(c) = rng.pick(&open).cloned() else { return "nothing".into() };
+            let p = rng.pick(&t.inherits).unwrap().clone();
+            let mut under = m.descendants(&p);
+            under.push(p.clone());
+            let clash = under.iter().filter_map(|d| m.table(d)).any(|d| m.all_cols(d).iter().any(|x| x.name == c.name && (x.ty != c.ty || x.generated.is_some())));
+            if clash || m.table(&p).is_none_or(|t| t.of_type.is_some()) {
+                return "nothing".into();
+            }
+            let default = rng.chance(30).then(|| m.default_of(&c.ty));
+            let pi = m.tables.iter().position(|t| t.name == p).unwrap();
+            m.tables[pi].cols.push(Col { default, ..col(&c.name, c.ty.clone()) });
+            format!("parent-gains {p}.{}", c.name)
+        }
+        // A table made a typed table of a type of its columns, a typed one made plain, or a typed
+        // table's type changed under it.
+        35 => {
+            let typed_tables: Vec<usize> = (0..m.tables.len()).filter(|k| m.tables[*k].of_type.is_some()).collect();
+            if let (Some(&k), true) = (rng.pick(&typed_tables), rng.chance(60)) {
+                let name = m.tables[k].name.clone();
+                if rng.chance(30) {
+                    m.tables[k].of_type = None;
+                    return format!("typed: {name} made plain");
+                }
+                let ty = m.tables[k].of_type.clone().unwrap();
+                let Some(ci) = m.composites.iter().position(|c| c.name == ty) else { return "nothing".into() };
+                return format!("typed: {}", composite_change(m, rng, ci));
+            }
+            let t = &m.tables[ti];
+            if typed || t.part.is_some() || !t.inherits.is_empty() || m.has_children(&table) || t.twin_of.is_some() || t.cols.iter().any(|c| c.generated.is_some() || c.identity) {
+                return "nothing".into();
+            }
+            let name = styled(rng, m.fresh("ty"));
+            let attrs = t.cols.iter().map(|c| (c.name.clone(), c.ty.clone())).collect();
+            m.composites.push(Composite { name: name.clone(), attrs, comment: None });
+            m.tables[ti].of_type = Some(name.clone());
+            format!("typed: {table} made a table of {name}")
+        }
+        // A typed table of an existing composite type, with options on its columns.
+        36 => {
+            let Some(c) = rng.pick(&m.composites).cloned() else { return "nothing".into() };
+            let name = styled(rng, m.fresh("w"));
+            let mut cols: Vec<Col> = c.attrs.iter().map(|(n, t)| col(n, t.clone())).collect();
+            for x in &mut cols {
+                if rng.chance(30) {
+                    x.default = Some(m.default_of(&x.ty));
+                }
+                x.not_null = rng.chance(20);
+            }
+            let first = cols[0].clone();
+            let pk = if first.ty.integral() && rng.chance(40) { vec![first.name] } else { vec![] };
+            m.tables.push(Table { pk, of_type: Some(c.name.clone()), ..self::table(&name, cols) });
+            format!("typed-table {name}")
+        }
+        // A table with a partitioned table's columns made a partition of it.
+        37 => {
+            let twins: Vec<usize> = (0..m.tables.len())
+                .filter(|k| {
+                    let t = &m.tables[*k];
+                    t.base > 0 && t.inherits.is_empty() && t.of_type.is_none() && !m.has_children(&t.name) && t.twin_of.as_ref().is_some_and(|p| m.table(p).is_some_and(|p| p.part.is_some()))
+                })
+                .collect();
+            let Some(&k) = rng.pick(&twins) else { return "nothing".into() };
+            let (name, p, base) = (m.tables[k].name.clone(), m.tables[k].twin_of.clone().unwrap(), m.tables[k].base as i64);
+            m.drop_table(&name);
+            let pi = m.tables.iter().position(|t| t.name == p).unwrap();
+            m.tables[pi].part.as_mut().unwrap().children.push((name.clone(), Some((base + 1, base + 4))));
+            format!("attach {name} to {p}")
+        }
+        // A partition detached, a table of its own.
+        38 => {
+            let parts: Vec<usize> = (0..m.tables.len()).filter(|k| m.tables[*k].part.as_ref().is_some_and(|p| p.children.len() > 1)).collect();
+            let Some(&pi) = rng.pick(&parts) else { return "nothing".into() };
+            let p = m.tables[pi].name.clone();
+            let referenced = m.tables.iter().any(|o| o.fks.iter().any(|f| f.2 == p));
+            let children = m.tables[pi].part.as_ref().unwrap().children.clone();
+            let open: Vec<usize> = (0..children.len()).filter(|k| !referenced || children[*k].1.is_some_and(|(lo, _)| lo >= 10)).collect();
+            let Some(&k) = rng.pick(&open) else { return "nothing".into() };
+            let child = children[k].0.clone();
+            let mut cols = m.all_cols(&m.tables[pi]);
+            cols.iter_mut().for_each(|c| c.comment = None);
+            let pk = m.tables[pi].pk.clone();
+            m.tables[pi].part.as_mut().unwrap().children.remove(k);
+            m.tables.push(Table { pk, twin_of: Some(p.clone()), ..self::table(&child, cols) });
+            format!("detach {child} from {p}")
+        }
+        // A publication added, dropped or changed: its tables, `only`, and its column lists.
+        39 => {
+            let parents: Vec<String> = m.tables.iter().filter(|t| m.has_children(&t.name)).map(|t| t.name.clone()).collect();
+            let pick_table = |m: &Model, rng: &mut Rng| -> String {
+                match rng.pick(&parents).filter(|_| rng.chance(60)) {
+                    Some(p) => p.clone(),
+                    None => m.tables[rng.below(m.tables.len())].name.clone(),
+                }
+            };
+            let entry = |m: &Model, rng: &mut Rng, t: String| {
+                let cols: Vec<String> = m.table(&t).map(|x| m.all_cols(x)).unwrap_or_default().into_iter().filter(|c| c.generated.is_none()).map(|c| c.name).collect();
+                let list = (rng.chance(40) && !cols.is_empty()).then(|| {
+                    let mut l: Vec<String> = cols.iter().filter(|c| *c == "id").cloned().collect();
+                    if let Some(c) = rng.pick(&cols).filter(|c| *c != "id") {
+                        l.push(c.clone());
+                    }
+                    if l.is_empty() {
+                        l.push(cols[0].clone());
+                    }
+                    l
+                });
+                (t, rng.chance(40), list)
+            };
+            if m.pubs.is_empty() || rng.chance(30) {
+                let name = styled(rng, m.fresh("pub"));
+                let mut tables = vec![];
+                for _ in 0..(1 + rng.below(2)) {
+                    let t = pick_table(m, rng);
+                    if !tables.iter().any(|e: &(String, bool, Option<Vec<String>>)| e.0 == t) {
+                        tables.push(entry(m, rng, t));
+                    }
+                }
+                m.pubs.push(Publication { name: name.clone(), tables, root: rng.chance(20) });
+                return format!("publication {name}");
+            }
+            let k = rng.below(m.pubs.len());
+            match rng.below(6) {
+                0 => {
+                    m.pubs.remove(k);
+                    "publication dropped".into()
+                }
+                5 => {
+                    m.pubs[k].root = !m.pubs[k].root;
+                    "publication via root".into()
+                }
+                1 if !m.pubs[k].tables.is_empty() => {
+                    let e = rng.below(m.pubs[k].tables.len());
+                    m.pubs[k].tables[e].1 = !m.pubs[k].tables[e].1;
+                    "publication only".into()
+                }
+                2 if !m.pubs[k].tables.is_empty() => {
+                    let e = rng.below(m.pubs[k].tables.len());
+                    let t = m.pubs[k].tables[e].0.clone();
+                    let (_, _, list) = entry(m, rng, t);
+                    m.pubs[k].tables[e].2 = if m.pubs[k].tables[e].2.is_some() && rng.chance(50) { None } else { list };
+                    "publication columns".into()
+                }
+                3 if m.pubs[k].tables.len() > 1 => {
+                    let e = rng.below(m.pubs[k].tables.len());
+                    m.pubs[k].tables.remove(e);
+                    "publication table removed".into()
+                }
+                _ => {
+                    let t = pick_table(m, rng);
+                    if m.pubs[k].tables.iter().any(|e| e.0 == t) {
+                        return "nothing".into();
+                    }
+                    let e = entry(m, rng, t);
+                    m.pubs[k].tables.push(e);
+                    "publication table added".into()
+                }
+            }
+        }
+        // Storage parameters: a table's (its toast table's too), or a key's index's fillfactor.
+        40 => {
+            let t = &mut m.tables[ti];
+            match rng.below(4) {
+                0 if !t.pk.is_empty() => {
+                    t.pk_fill = match t.pk_fill {
+                        None => Some(*rng.pick(&[60, 70, 90]).unwrap()),
+                        Some(_) if rng.chance(50) => None,
+                        Some(f) => Some(f + 5),
+                    };
+                    "storage: primary key fillfactor".into()
+                }
+                1 if !t.uniques.is_empty() => {
+                    let u = rng.pick(&t.uniques).unwrap().0.clone();
+                    match t.key_fill.get(&u).copied() {
+                        Some(_) if rng.chance(50) => {
+                            t.key_fill.remove(&u);
+                        }
+                        Some(f) => {
+                            t.key_fill.insert(u, f + 5);
+                        }
+                        None => {
+                            t.key_fill.insert(u, *rng.pick(&[50, 80]).unwrap());
+                        }
+                    }
+                    "storage: unique fillfactor".into()
+                }
+                _ if t.part.is_none() => {
+                    const OPTIONS: &[(&str, &[&str])] = &[
+                        ("fillfactor", &["70", "80"]),
+                        ("autovacuum_enabled", &["false", "true"]),
+                        ("toast.autovacuum_enabled", &["false", "true"]),
+                        ("toast.autovacuum_vacuum_cost_delay", &["23", "7"]),
+                        ("toast_tuple_target", &["256", "512"]),
+                        ("parallel_workers", &["2"]),
+                    ];
+                    let (k, vs) = rng.pick(OPTIONS).unwrap();
+                    let v = rng.pick(vs).unwrap();
+                    if t.options.get(*k).is_some_and(|x| x == v) || (t.options.contains_key(*k) && rng.chance(40)) {
+                        t.options.remove(*k);
+                    } else {
+                        t.options.insert(k.to_string(), v.to_string());
+                    }
+                    "storage: table options".into()
+                }
+                _ => "nothing".into(),
+            }
+        }
+        // An index on an expression of a column, and its expression's statistics target.
+        41 => {
+            let t = &m.tables[ti];
+            let exprs: Vec<String> = t.fn_indexes.iter().map(|i| i.0.clone()).chain(t.expr_indexes.iter().map(|i| i.0.clone())).collect();
+            if let (Some(n), true) = (rng.pick(&exprs).cloned(), rng.chance(50)) {
+                let t = &mut m.tables[ti];
+                match t.idx_stats.get(&n).copied() {
+                    Some(_) if rng.chance(40) => {
+                        t.idx_stats.remove(&n);
+                    }
+                    Some(k) => {
+                        t.idx_stats.insert(n, k * 2);
+                    }
+                    None => {
+                        t.idx_stats.insert(n, *rng.pick(&[100, 500, 1000]).unwrap());
+                    }
+                }
+                return "expr-index statistics".into();
+            }
+            let Some(c) = rng.pick(&t.cols).map(|c| c.name.clone()) else { return "nothing".into() };
+            let name = styled(rng, m.fresh("x"));
+            let two = rng.chance(40);
+            let stats = rng.chance(50).then(|| *rng.pick(&[100, 500, 1000]).unwrap());
+            let t = &mut m.tables[ti];
+            t.expr_indexes.push((name.clone(), c, two));
+            if let Some(k) = stats {
+                t.idx_stats.insert(name.clone(), k);
+            }
+            format!("expr-index {name}")
+        }
+        // A view's column given a default, or its default taken off.
+        42 => {
+            let open: Vec<usize> = (0..m.views.len()).filter(|k| !m.views[*k].materialized && !m.views[*k].cols.is_empty()).collect();
+            let Some(&k) = rng.pick(&open) else { return "nothing".into() };
+            let c = rng.pick(&m.views[k].cols).unwrap().clone();
+            let v = &mut m.views[k];
+            if v.defaults.contains(&c) {
+                v.defaults.retain(|x| *x != c);
+            } else {
+                v.defaults.push(c);
+            }
+            "view-default".into()
+        }
+        // A partitioned table's index made on the table alone, or on its partitions too.
+        43 => {
+            let parts: Vec<usize> = (0..m.tables.len()).filter(|k| m.tables[*k].part.is_some()).collect();
+            let Some(&pi) = rng.pick(&parts) else { return "nothing".into() };
+            let t = &mut m.tables[pi];
+            match rng.pick(&t.indexes).map(|i| i.0.clone()) {
+                Some(n) if rng.chance(70) => {
+                    if !t.only_indexes.remove(&n) {
+                        t.only_indexes.insert(n);
+                    }
+                    "only-index toggled".into()
+                }
+                _ => {
+                    let c = rng.pick(&t.cols).unwrap().name.clone();
+                    let name = styled(rng, m.fresh("i"));
+                    let t = &mut m.tables[pi];
+                    t.indexes.push((name.clone(), vec![c], None));
+                    if rng.chance(50) {
+                        t.only_indexes.insert(name.clone());
+                    }
+                    format!("only-index {name}")
+                }
+            }
+        }
+        // A table with a partitioned table's columns, whose rows fit a partition of its own.
+        44 => {
+            let parts: Vec<usize> = (0..m.tables.len()).filter(|k| m.tables[*k].part.is_some()).collect();
+            let Some(&pi) = rng.pick(&parts) else { return "nothing".into() };
+            let p = m.tables[pi].name.clone();
+            let mut cols = m.all_cols(&m.tables[pi]);
+            cols.iter_mut().for_each(|c| c.comment = None);
+            let pk = m.tables[pi].pk.clone();
+            let base = 100 * (1 + m.tables.iter().filter(|t| t.base > 0).count());
+            let name = styled(rng, m.fresh("x"));
+            // Its parent's indexes, which it is to have attached once it is a partition.
+            if rng.chance(50) {
+                let c = rng.pick(&m.tables[pi].cols).unwrap().name.clone();
+                let iname = styled(rng, m.fresh("i"));
+                let t = &mut m.tables[pi];
+                t.indexes.push((iname.clone(), vec![c], None));
+                if rng.chance(30) {
+                    t.only_indexes.insert(iname);
+                }
+            }
+            m.tables.push(Table { pk, base, twin_of: Some(p.clone()), ..self::table(&name, cols) });
+            format!("twin {name} of {p}")
+        }
         // A partition added or dropped.
         _ => {
             let name = m.fresh(&format!("{table}_p"));
@@ -1537,6 +2294,51 @@ fn mutation(m: &mut Model, rng: &mut Rng, kind: usize) -> String {
     }
 }
 
+/// A composite type's attribute added, dropped or retyped, with the typed tables of it following.
+fn composite_change(m: &mut Model, rng: &mut Rng, k: usize) -> String {
+    let name = m.composites[k].name.clone();
+    let typed: Vec<String> = m.tables.iter().filter(|t| t.of_type.as_deref() == Some(name.as_str())).map(|t| t.name.clone()).collect();
+    let c = &mut m.composites[k];
+    let what = match rng.below(3) {
+        0 => {
+            let name = (0..).map(|k| format!("b{k}")).find(|n| !c.attrs.iter().any(|a| &a.0 == n)).unwrap();
+            c.attrs.push((name, Ty::Int));
+            "attribute added"
+        }
+        1 if c.attrs.len() > 1 => {
+            let at = 1 + rng.below(c.attrs.len() - 1);
+            let attr = c.attrs[at].0.clone();
+            // A typed table's column something reads stays.
+            let snapshot = m.clone();
+            if typed.iter().any(|t| snapshot.used(t, &attr)) {
+                return "nothing".into();
+            }
+            m.composites[k].attrs.remove(at);
+            "attribute dropped"
+        }
+        _ => {
+            let at = rng.below(c.attrs.len());
+            c.attrs[at].1 = match c.attrs[at].1 {
+                Ty::Int => Ty::BigInt,
+                Ty::BigInt => Ty::Numeric,
+                Ty::Numeric => Ty::Text,
+                _ => return "nothing".into(),
+            };
+            "attribute retyped"
+        }
+    };
+    let snapshot = m.clone();
+    // A default of the type holds a row of its attributes, which changed.
+    for t in &mut m.tables {
+        for x in &mut t.cols {
+            if x.ty == Ty::Composite(name.clone()) && x.default.is_some() {
+                x.default = Some(snapshot.default_of(&x.ty));
+            }
+        }
+    }
+    format!("composite {name} {what}{}", if typed.is_empty() { "" } else { " under a typed table" })
+}
+
 /// Something new that calls a function: a column's default, a check, a view or a policy.
 fn use_func(m: &mut Model, rng: &mut Rng, name: &str) -> &'static str {
     let Some(f) = m.func(name).cloned() else { return "nothing" };
@@ -1546,9 +2348,11 @@ fn use_func(m: &mut Model, rng: &mut Rng, name: &str) -> &'static str {
     let open_default: Vec<&Col> = cols.iter().filter(|c| c.generated.is_none() && !c.identity && !c.seq && call_fits(&f, &c.ty)).collect();
     let arg_cols: Vec<&Col> = cols.iter().filter(|c| f.args.first().is_some_and(|a| arg_fits(a, &c.ty))).collect();
     let immutable = f.reads().is_none() && !f.args.is_empty() && !arg_cols.is_empty();
+    let typed = m.tables[ti].of_type.is_some();
+    let in_tree = m.has_children(&table) || !m.tables[ti].inherits.is_empty();
     match rng.below(7) {
         // A generated column reads no generated column.
-        5 if immutable && arg_cols.iter().any(|c| c.generated.is_none()) => {
+        5 if immutable && !typed && arg_cols.iter().any(|c| c.generated.is_none()) => {
             let plain: Vec<&&Col> = arg_cols.iter().filter(|c| c.generated.is_none()).collect();
             let c = rng.pick(&plain).unwrap().name.clone();
             let cname = styled(rng, m.fresh("g"));
@@ -1568,8 +2372,9 @@ fn use_func(m: &mut Model, rng: &mut Rng, name: &str) -> &'static str {
             "default"
         }
         // Adding a column to a partitioned table evaluates its default partition by partition, so a
-        // default that reads the table finds the column missing in the next: Postgres refuses it.
-        0 | 1 if !(f.reads().is_some() && m.tables[ti].part.is_some()) => {
+        // default that reads the table finds the column missing in the next: Postgres refuses it,
+        // and so it does for a table that inherits or is inherited from.
+        0 | 1 if !typed && !(f.reads().is_some() && (m.tables[ti].part.is_some() || in_tree)) => {
             let ty = if f.ret.family() && !matches!(f.body, Body::Min(..)) && rng.chance(30) { rng.pick(RESULTS).unwrap().clone() } else { f.ret.clone() };
             let cname = styled(rng, m.fresh("n"));
             // A default that reads a table may read only nulls, which a column refusing null can't hold.
@@ -1587,9 +2392,9 @@ fn use_func(m: &mut Model, rng: &mut Rng, name: &str) -> &'static str {
             let vname = styled(rng, m.fresh("v"));
             let shown: Vec<String> = cols.iter().take(1 + rng.below(2)).map(|c| c.name.clone()).collect();
             if f.args.is_empty() || c.is_some() || rng.chance(50) {
-                m.views.push(View { name: vname, table, cols: shown, call: Some((name.into(), if f.args.is_empty() { None } else { c })), over: None, materialized: rng.chance(20), invoker: rng.chance(20) });
+                m.views.push(View { name: vname, table, cols: shown, call: Some((name.into(), if f.args.is_empty() { None } else { c })), over: None, materialized: rng.chance(20), invoker: rng.chance(20), defaults: vec![] });
             } else {
-                m.views.push(View { name: vname, table, cols: shown, call: Some((name.into(), None)), over: None, materialized: rng.chance(20), invoker: rng.chance(20) });
+                m.views.push(View { name: vname, table, cols: shown, call: Some((name.into(), None)), over: None, materialized: rng.chance(20), invoker: rng.chance(20), defaults: vec![] });
             }
             "view"
         }
@@ -1653,11 +2458,12 @@ async fn checked(admin: &mut Db, base: &str, tag: &str, v1: &str, seed: &str, v2
         diff::postgres::declare(&mut b, &mut target, v2).await.unwrap();
         let before = snapshot(&mut a).await;
         // Rows a column's new type can't hold (a 1.5 made a boolean, through two changes) are the
-        // generator's: no plan takes them there.
+        // generator's: no plan takes them there. They are cast where both types exist: the first
+        // database, or the target's where the new type is the target's own.
         let target_types = snapshot(&mut b).await;
         for (col, (ty, vals)) in &before {
             if let Some((to_ty, _)) = target_types.get(col).filter(|(t, _)| t != ty) {
-                if converted(&mut a, vals, ty, to_ty).await.is_none() {
+                if converted(&mut a, vals, ty, to_ty).await.is_none() && converted(&mut b, vals, ty, to_ty).await.is_none() {
                     a.close().await;
                     b.close().await;
                     return finish(admin, &names, Some("setup rows: a column's values don't convert".into()), true).await;
@@ -1771,7 +2577,8 @@ async fn run(db: &mut Db, plan: &diff::Plan) -> Option<String> {
     db.exec("commit").await.err().map(|e| format!("commit: {e}"))
 }
 
-/// Each column's type and values as text, by `table.column` as SQL writes the names, the values sorted.
+/// Each column's type and values as text, by `table.column` as SQL writes the names, the values sorted:
+/// each table's own rows, without those of the tables inheriting from it.
 async fn snapshot(db: &mut Db) -> BTreeMap<String, (String, Vec<String>)> {
     let mut out = BTreeMap::new();
     let cols = db
@@ -1780,7 +2587,7 @@ async fn snapshot(db: &mut Db) -> BTreeMap<String, (String, Vec<String>)> {
         .unwrap();
     for r in cols {
         let (t, c) = (r.text("t").to_string(), r.text("c").to_string());
-        let mut vals: Vec<String> = db.rows(&format!("select coalesce(({c})::text, 'NULL') as v from {t}")).await.map(|rows| rows.iter().map(|r| r.text("v").to_string()).collect()).unwrap_or_default();
+        let mut vals: Vec<String> = db.rows(&format!("select coalesce(({c})::text, 'NULL') as v from only {t}")).await.map(|rows| rows.iter().map(|r| r.text("v").to_string()).collect()).unwrap_or_default();
         vals.sort();
         out.insert(format!("{t}.{c}"), (r.text("ty").to_string(), vals));
     }
@@ -1882,6 +2689,10 @@ enum Cut {
     Comments,
     Grants,
     Security,
+    Pub(String),
+    Inherit(String, String),
+    Typed(String),
+    Storage,
 }
 
 impl Cut {
@@ -1892,8 +2703,14 @@ impl Cut {
         out.extend(m.views.iter().map(|t| Cut::View(t.name.clone())));
         out.extend(m.triggers.iter().map(|t| Cut::Trigger(t.name.clone())));
         out.extend(m.policies.iter().map(|t| Cut::Policy(t.name.clone())));
-        out.extend([Cut::Comments, Cut::Grants, Cut::Security]);
+        out.extend([Cut::Comments, Cut::Grants, Cut::Security, Cut::Storage]);
+        out.extend(m.pubs.iter().map(|p| Cut::Pub(p.name.clone())));
         for t in &m.tables {
+            out.extend(t.inherits.iter().map(|p| Cut::Inherit(t.name.clone(), p.clone())));
+            if t.of_type.is_some() {
+                out.push(Cut::Typed(t.name.clone()));
+            }
+            out.extend(t.expr_indexes.iter().map(|c| Cut::Index(t.name.clone(), c.0.clone())));
             out.extend(t.checks.iter().map(|c| Cut::Check(t.name.clone(), c.name.clone())));
             out.extend(t.indexes.iter().map(|c| Cut::Index(t.name.clone(), c.0.clone())));
             out.extend(t.fn_indexes.iter().map(|c| Cut::Index(t.name.clone(), c.0.clone())));
@@ -1920,7 +2737,7 @@ impl Cut {
             Cut::Trigger(v) => m.triggers.retain(|x| &x.name != v),
             Cut::Policy(v) => m.policies.retain(|x| &x.name != v),
             Cut::Col(t, c) => {
-                if m.used(t, c) {
+                if m.used(t, c) || m.table(t).is_some_and(|x| x.of_type.is_some()) {
                     return None;
                 }
                 if let Some(x) = m.tables.iter_mut().find(|x| &x.name == t) {
@@ -1932,6 +2749,7 @@ impl Cut {
                     x.checks.retain(|y| &y.name != n);
                     x.indexes.retain(|y| &y.0 != n);
                     x.fn_indexes.retain(|y| &y.0 != n);
+                    x.expr_indexes.retain(|y| &y.0 != n);
                     x.stats.retain(|y| &y.0 != n);
                     x.uniques.retain(|y| &y.0 != n);
                     if let Some(p) = x.part.as_mut() {
@@ -1978,7 +2796,29 @@ impl Cut {
                 m.policies.clear();
                 m.tables.iter_mut().for_each(|t| t.rls = false);
             }
+            Cut::Pub(n) => m.pubs.retain(|p| &p.name != n),
+            Cut::Inherit(t, p) => {
+                if let Some(x) = m.tables.iter_mut().find(|x| &x.name == t) {
+                    x.inherits.retain(|y| y != p);
+                }
+            }
+            Cut::Typed(t) => {
+                if let Some(x) = m.tables.iter_mut().find(|x| &x.name == t) {
+                    x.of_type = None;
+                }
+            }
+            Cut::Storage => {
+                for t in &mut m.tables {
+                    t.options.clear();
+                    t.pk_fill = None;
+                    t.key_fill.clear();
+                    t.idx_stats.clear();
+                    t.only_indexes.clear();
+                }
+                m.views.iter_mut().for_each(|v| v.defaults.clear());
+            }
         }
+        m.normalize();
         Some(m)
     }
 }
@@ -2054,6 +2894,9 @@ async fn postgres() {
     // Every seed its own stream: an odd multiple of the golden ratio's, never two seeds alike.
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut found = BTreeSet::new();
+    // `REYLO_FUZZ_KNOWN=<file>` names kinds of failure already reported, one a line, which are
+    // counted but not shrunk again.
+    let known: BTreeSet<String> = std::env::var("REYLO_FUZZ_KNOWN").ok().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
     let mut tally: BTreeMap<String, usize> = BTreeMap::new();
     for step in 0..steps {
         let from = generate(&mut rng);
@@ -2066,8 +2909,27 @@ async fn postgres() {
             skipped("rows don't fit");
             continue;
         }
-        let Some(problem) = check(&mut admin, &base, &tag, &from.sql(), &from.seed(), &to.sql(), &alterer).await else { continue };
+        let skips_before: BTreeSet<String> = SKIPPED.lock().unwrap().keys().cloned().collect();
+        let Some(problem) = check(&mut admin, &base, &tag, &from.sql(), &from.seed(), &to.sql(), &alterer).await else {
+            // `REYLO_FUZZ_SKIPS=<dir>` keeps the first step of each kind of skip, to trace it.
+            if let Ok(dir) = std::env::var("REYLO_FUZZ_SKIPS") {
+                let new: Vec<String> = SKIPPED.lock().unwrap().keys().filter(|k| !skips_before.contains(*k)).cloned().collect();
+                for why in new {
+                    let dir = PathBuf::from(&dir).join(format!("{seed}-{step}"));
+                    std::fs::create_dir_all(&dir).unwrap();
+                    std::fs::write(dir.join("v1.sql"), from.sql()).unwrap();
+                    std::fs::write(dir.join("seed.sql"), from.seed()).unwrap();
+                    std::fs::write(dir.join("v2.sql"), to.sql()).unwrap();
+                    std::fs::write(dir.join("problem.txt"), format!("mutations: {}\nskipped: {why}\n", mutations.join(", "))).unwrap();
+                }
+            }
+            continue;
+        };
         if !found.insert(kind(&problem)) {
+            continue;
+        }
+        if known.contains(&kind(&problem)) {
+            eprintln!("step {step}: known: {}", kind(&problem));
             continue;
         }
         let (a, b, problem) = shrink(&mut admin, &base, &tag, from, to, problem, &alterer).await;
