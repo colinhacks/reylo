@@ -507,7 +507,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
     let settled = settle(sql, lexed, &rewritten, parsed.as_ref(), &raw, views.as_ref());
     // An IF or a CASE that returns a BIT's bytes under another type ([`bit_results`]).
     let bits = match &parsed {
-        Some(Statement::Query(q)) => bit_results(q, &raw, host)?,
+        Some(Statement::Query(q)) => bit_results(q, &raw, views.as_ref(), host)?,
         // In an unread query, any column it computes as a BIT may hold a BIT's digits
         // ([`BIT_DIGITS`]), and where it calls IF or CASE, any column of a type such a call over a
         // BIT prepares as may hold the BIT's bytes.
@@ -1527,8 +1527,26 @@ fn uncorrelated(q: &Query, columns: &crate::mysql_shape::Columns) -> bool {
 ///
 /// So are the columns that call one of [`BIT_DIGITS`] and are prepared as a BIT: the value is the
 /// BIT's number in decimal digits, `65` for `b'01000001'` (measured on 8.4.11).
-fn bit_results(q: &Query, raw: &MysqlDescribe, host: &Host) -> Lazy<Vec<usize>> {
+///
+/// And so is a BIT that a view, a derived table or a WITH query computes, read as a column, by
+/// name or through a wildcard: it holds the BIT's bytes (`max`) or its digits (`coalesce`) by what
+/// computes it there, which the prepare does not say. The prepare names no schema for it, where it
+/// names the table's for a table's own column read the same way.
+fn bit_results(q: &Query, raw: &MysqlDescribe, views: Option<&HashSet<String>>, host: &Host) -> Lazy<Vec<usize>> {
     const BIT: u32 = 16;
+    /// Whether `e` reads a column and computes nothing.
+    fn reads_column(e: &Expr) -> bool {
+        match e {
+            Expr::Nested(inner) => reads_column(inner),
+            Expr::Identifier(_) | Expr::CompoundIdentifier(_) => true,
+            _ => false,
+        }
+    }
+    // A host that reports no schema says only whether the column names a table that is no view.
+    let computed_elsewhere = |i: usize| {
+        let c = &raw.columns[i];
+        c.r#type == BIT && !c.schema.as_deref().map_or_else(|| table_column(c, views), |schema| !schema.is_empty())
+    };
     /// The results of an IF or a CASE, through the ones that are an IF or a CASE themselves;
     /// false where `e` is neither.
     fn results<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) -> bool {
@@ -1561,13 +1579,20 @@ fn bit_results(q: &Query, raw: &MysqlDescribe, host: &Host) -> Lazy<Vec<usize>> 
     }
     let SetExpr::Select(select) = q.body.as_ref() else { return Some(Vec::new()) };
     if select.projection.len() != raw.columns.len() {
-        return Some(Vec::new());
+        // A wildcard's columns, which the select list's own expressions are not told from.
+        return Some((0..raw.columns.len()).filter(|&i| computed_elsewhere(i)).collect());
     }
     let mut found: Vec<(usize, &Expr)> = Vec::new();
     let mut bits: Vec<usize> = Vec::new();
     for (i, item) in select.projection.iter().enumerate() {
-        let (SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. }) = item else { continue };
-        if bit_digits(e) && raw.columns[i].r#type == BIT {
+        let (SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. }) = item else {
+            // A wildcard of one column.
+            if computed_elsewhere(i) {
+                bits.push(i);
+            }
+            continue;
+        };
+        if raw.columns[i].r#type == BIT && (bit_digits(e) || reads_column(e) && computed_elsewhere(i)) {
             bits.push(i);
             continue;
         }
