@@ -67,17 +67,45 @@ export const SQLEAN_FUNCTIONS: ReadonlySet<string> = new Set([
   "translate", "translit", "trunc", "uuid4", "uuid7", "uuid7_timestamp_ms", "uuid_blob", "uuid_str", "var_pop", "var_samp", "variance"
 ]);
 
+/** sqlean's aggregates, by the number of arguments each takes: every other function of `SQLEAN_FUNCTIONS` is scalar or table-valued. */
+export const SQLEAN_AGGREGATES: ReadonlyMap<string, number> = new Map([
+  ...["median", "percentile_25", "percentile_75", "percentile_90", "percentile_95", "percentile_99", "stddev", "stddev_pop", "stddev_samp", "variance", "var_pop", "var_samp"].map((n) => [n, 1] as const),
+  ...["stats_median", "stats_p25", "stats_p75", "stats_p90", "stats_p95", "stats_p99", "stats_stddev", "stats_stddev_pop", "stats_stddev_samp", "stats_var", "stats_var_pop", "stats_var_samp"].map((n) => [n, 1] as const),
+  ["percentile", 2],
+  ["stats_perc", 2],
+]);
+
 /**
  * A driver over libSQL's engine, `@libsql/client` and the `libsql` package, runs a statement on a
  * local file with the SQLite it carries, which loads no extension, and on Turso Cloud, or any libSQL
- * server, with the server's, which loads sqlean's. So the check takes a call of a sqlean function
- * its SQLite lacks as one of `char`, which it has and which takes any number of arguments, and
- * `stats_seq` as `generate_series`, and checks the rest of the statement: a statement that only
- * such a call keeps from preparing is refused by neither, and fails on a local file when it runs.
- * The statement runs as written; only the check reads it so.
+ * server, with the server's, which loads sqlean's. So the check reads a call of a sqlean function
+ * its SQLite lacks as a call of one it has, of the same kind, and checks the rest of the statement:
+ * a scalar function as `char`, which takes any number of arguments, an aggregate as `total` or, of
+ * two arguments, `group_concat`, and `stats_seq` as `generate_series`. A statement that only such a
+ * call keeps from preparing is refused by neither, and fails on a local file when it runs. The
+ * statement runs as written; only the check reads it so.
  */
 export function withoutSqlean(sql: string, name: string): string | undefined {
-  const stand = name.toLowerCase() === "stats_seq" ? "generate_series" : "char";
+  const lower = name.toLowerCase();
+  const stand = lower === "stats_seq" ? "generate_series" : SQLEAN_AGGREGATES.get(lower) === 2 ? "group_concat" : SQLEAN_AGGREGATES.has(lower) ? "total" : "char";
+  // Where the next thing after `at` is an opening parenthesis, past spaces and comments.
+  const opens = (at: number): boolean => {
+    let j = at;
+    for (;;) {
+      while (j < sql.length && /\s/.test(sql[j]!)) j++;
+      if (sql.startsWith("--", j)) {
+        const end = sql.indexOf("\n", j);
+        if (end < 0) return false;
+        j = end + 1;
+      } else if (sql.startsWith("/*", j)) {
+        const end = sql.indexOf("*/", j + 2);
+        if (end < 0) return false;
+        j = end + 2;
+      } else {
+        return sql[j] === "(";
+      }
+    }
+  };
   let out = "";
   let changed = false;
   let i = 0;
@@ -87,17 +115,26 @@ export function withoutSqlean(sql: string, name: string): string | undefined {
     if (close) {
       // A quote written twice inside is the quote itself; a bracket ends at the first `]`.
       let j = i + 1;
+      let inner = "";
       while (j < sql.length) {
         if (sql[j] === close) {
           if (close !== "]" && sql[j + 1] === close) {
+            inner += close;
             j += 2;
             continue;
           }
           break;
         }
+        inner += sql[j];
         j++;
       }
-      out += sql.slice(i, j + 1);
+      // A quoted name that is called, never a string.
+      if (close !== "'" && inner.toLowerCase() === lower && opens(j + 1)) {
+        out += stand;
+        changed = true;
+      } else {
+        out += sql.slice(i, j + 1);
+      }
       i = j + 1;
     } else if (sql.startsWith("--", i) || sql.startsWith("/*", i)) {
       const end = sql.startsWith("--", i) ? sql.indexOf("\n", i) : sql.indexOf("*/", i + 2) + 1;
@@ -106,8 +143,7 @@ export function withoutSqlean(sql: string, name: string): string | undefined {
       i = j;
     } else if (/[A-Za-z_]/.test(c)) {
       const word = /^[A-Za-z_][\w$]*/.exec(sql.slice(i))![0];
-      const call = /^\s*\(/.test(sql.slice(i + word.length));
-      if (call && word.toLowerCase() === name.toLowerCase()) {
+      if (word.toLowerCase() === lower && opens(i + word.length)) {
         out += stand;
         changed = true;
       } else {
