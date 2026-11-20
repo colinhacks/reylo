@@ -15,7 +15,7 @@
 </p>
 
 <div align="center">
-  <a href="https://reylo.dev">Read the docs →</a>
+  <a href="https://reylo.dev/docs">Read the docs →</a>
 </div>
 
 <br/>
@@ -165,7 +165,7 @@ Reylo is bring-your-own-driver. Pass `.run()` a client from any of these, or a D
 
 - **Postgres** — `pg`, postgres.js, `Bun.sql`, PGlite, Neon, `pg-promise`, `slonik`, `@vercel/postgres`
 - **MySQL** — `mysql2`, `mariadb`, PlanetScale, `Bun.sql`
-- **SQLite** — `better-sqlite3`, `node:sqlite`, `Bun.sql`, libSQL, Turso, SQLite Wasm, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite`
+- **SQLite** — `better-sqlite3`, `node:sqlite`, `Bun.sql`, libSQL, Turso, SQLite Wasm, sql.js, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite`
 
 ## Documentation
 

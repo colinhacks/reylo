@@ -1,6 +1,6 @@
 ---
 title: Turso
-description: How to use Reylo with Turso. Queries on Turso Cloud through the libSQL client, migrations on Turso Cloud, the local file the type check reads, libSQL's older SQLite, libSQL's vectors, and Turso's own engine.
+description: How to use Reylo with Turso. Queries on Turso Cloud through the libSQL client, migrations on Turso Cloud, the local file the type check reads, libSQL's older SQLite, libSQL's vectors, the extensions Turso Cloud loads, and Turso's own engine.
 ---
 
 <p className="dk-subheader">Reylo on Turso Cloud and Turso's own engine</p>
@@ -16,6 +16,7 @@ Turso Cloud runs libSQL, a fork of SQLite, so everything on the [SQLite](/sqlite
 | Migrations | [`reylo migrate`](/migrate/docs), on Turso Cloud through its `libsql://` URL |
 | SQLite versions | Reylo's 3.53, and the SQLite of each driver your `package.json` lists: 3.45.1 for `@libsql/client` |
 | libSQL's own SQL | Vector columns and indexes, the vector functions, `vector_top_k` and `alter table … alter column` ([Vectors](#vectors)) |
+| Extensions | The functions of the sqlean extensions Turso Cloud loads ([Extensions](#extensions)) |
 <Rust>
 | Rust | Types against the same local file; sqlx has no libSQL client, so its queries can't run on Turso Cloud |
 </Rust>
@@ -178,6 +179,34 @@ insert into docs (title, emb) values (:title, vector32(:embedding))
 - A vector column is typed as a `BLOB` column outside a `STRICT` table, since libSQL refuses vector types in a `STRICT` table. `.run()` returns a vector as a `Uint8Array`, and `vector_extract(emb)` returns its text.
 - A driver whose SQLite has no vectors, such as `better-sqlite3`, refuses these queries in the type check. Turso's own engine can't open a schema with a vector index, so the type check doesn't run queries on it then.
 - `alter table … alter column` type-checks as a statement that returns nothing.
+
+## Extensions
+
+Reylo types the functions of the sqlean extensions Turso Cloud loads: uuid, crypto, fuzzy, math, stats, text and regexp.
+
+```ts twoslash tab="main.ts"
+import { createClient } from "@libsql/client";
+import similarUsers from "./similar_users.sql";
+
+const db = createClient({
+  url: process.env.TURSO_DATABASE_URL!, // libsql://…
+  authToken: process.env.TURSO_AUTH_TOKEN,
+});
+
+const users = await similarUsers.run(db, { name: "Ada" });
+```
+
+```sql tab="similar_users.sql" dialect="sqlite"
+select id, name, levenshtein(name, :name) as distance
+from users
+where regexp_like(name, '^[A-Z]')
+order by distance
+limit 5
+```
+
+- They run on Turso Cloud and any libSQL server. The SQLite in `@libsql/client` has none of them, so a query that calls one fails on a local `file:` database, though the type check lets it through for `@libsql/client`.
+- Another driver in your `package.json`, such as `better-sqlite3`, refuses them in the type check.
+- Turso Cloud's `soundex` is sqlean's, which returns `NULL` for `NULL`, so Reylo types `soundex(x)` as `string | null` wherever `x` may be `NULL`.
 
 ## Turso's own engine [#turso-engine]
 

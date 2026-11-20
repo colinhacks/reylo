@@ -1,22 +1,35 @@
 // Compiles libSQL's engine (`csrc/libsql.c`, over the amalgamation the prepare step writes into
-// `engine/migrate/.libsql/`), which the oracle's libSQL cases run on (`src/libsql.rs`), as libSQL's
-// own `libsql-ffi` build compiles it, but for loadable extensions, which no case loads.
+// `engine/migrate/.libsql/`) and the sqlean extensions it loads, as Turso Cloud loads them, which
+// the oracle's libSQL cases run on (`src/libsql.rs`): as libSQL's own `libsql-ffi` build compiles
+// them, and as `engine/migrate/build.rs` does, under names of the oracle's own.
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// The sqlean sources of each extension the engine loads, as libsql-ffi's build lists them.
+const SQLEAN: [&str; 9] = ["crypto", "fuzzy", "math", "stats", "text", "text/utf8", "uuid", "regexp", "regexp/pcre2"];
 
 fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
     let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let libsql = root.join("../engine/migrate/.libsql");
-    if !libsql.join("sqlite3-private.c").exists() {
-        panic!("{} is missing: run `engine/build.sh --prepare` (fetches libSQL's amalgamation)", libsql.join("sqlite3-private.c").display());
+    if !libsql.join("sqlite3-private.c").exists() || !libsql.join("sqlean").exists() {
+        panic!("{} is missing: run `engine/build.sh --prepare` (fetches libSQL's amalgamation)", libsql.display());
     }
-    let mut build = cc::Build::new();
-    build
+    let target = env::var("TARGET").unwrap();
+    let msvc = target.contains("msvc");
+    // Both libraries reach the engine through the extension routines' table under this name alone.
+    let common = |build: &mut cc::Build| {
+        build.include(&libsql).include(libsql.join("sqlean")).warnings(false).opt_level(2).define("sqlite3_api", "reylo_oracle_libsql_api");
+        if !msvc {
+            build.flag("-w");
+        }
+    };
+    let mut engine = cc::Build::new();
+    common(&mut engine);
+    engine
         .file(root.join("csrc/libsql.c"))
-        .include(&libsql)
-        .flag_if_supported("-w")
-        .opt_level(2)
         .define("SQLITE_CORE", None)
+        .define("SQLITE_EXTRA_INIT", "reylo_oracle_libsql_extra_init")
         .define("SQLITE_DEFAULT_FOREIGN_KEYS", "1")
         .define("SQLITE_ENABLE_API_ARMOR", None)
         .define("SQLITE_ENABLE_COLUMN_METADATA", None)
@@ -25,18 +38,45 @@ fn main() {
         .define("SQLITE_ENABLE_FTS3_PARENTHESIS", None)
         .define("SQLITE_ENABLE_FTS5", None)
         .define("SQLITE_ENABLE_JSON1", None)
+        .define("SQLITE_ENABLE_LOAD_EXTENSION", "1")
         .define("SQLITE_ENABLE_RTREE", None)
         .define("SQLITE_ENABLE_STAT4", None)
         .define("SQLITE_SOUNDEX", None)
         .define("SQLITE_THREADSAFE", "1")
         .define("SQLITE_USE_URI", None)
-        .define("SQLITE_OMIT_LOAD_EXTENSION", None)
         .define("HAVE_USLEEP", "1");
-    if env::var("TARGET").unwrap().contains("linux") {
-        build.define("_GNU_SOURCE", None);
+    if target.contains("linux") {
+        engine.define("_GNU_SOURCE", None);
     }
-    build.compile("reylo_oracle_libsql");
-    println!("cargo:rerun-if-changed=build.rs");
+    engine.compile("reylo_oracle_libsql");
+
+    let mut sqlean = cc::Build::new();
+    common(&mut sqlean);
+    // The crypto extension's SHA-2 writes the message's length through a cast pointer, which gcc's
+    // optimizer, holding to strict aliasing, reorders.
+    if !msvc {
+        sqlean.flag("-fno-strict-aliasing");
+    } else {
+        sqlean.define("LITTLE_ENDIAN", "1234").define("BIG_ENDIAN", "4321").define("BYTE_ORDER", "1234");
+    }
+    // PCRE2, which the regexp extension carries, takes its settings from a header included first.
+    let constants = libsql.join("sqlean/regexp/constants.h");
+    if msvc {
+        sqlean.flag(format!("/FI{}", constants.display()));
+    } else {
+        sqlean.flag("-include").flag(constants.to_string_lossy().as_ref());
+    }
+    for dir in SQLEAN {
+        sqlean.files(c_files(&libsql.join("sqlean").join(dir)));
+    }
+    sqlean.compile("reylo_oracle_libsql_sqlean");
     println!("cargo:rerun-if-changed=csrc/libsql.c");
-    println!("cargo:rerun-if-changed=../engine/migrate/.libsql/sqlite3-private.c");
+    println!("cargo:rerun-if-changed=../engine/migrate/.libsql");
+}
+
+/// The `.c` files directly in `dir`, in name order.
+fn c_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())).filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "c")).collect();
+    files.sort();
+    files
 }

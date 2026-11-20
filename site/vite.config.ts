@@ -2,6 +2,7 @@ import path from 'node:path';
 import { docsKit } from 'docs-kit/vite';
 import { defineConfig } from 'vite';
 import { compareCards } from './lib/compare-cards.ts';
+import { homeExamples } from './lib/home-examples.ts';
 import { live } from './lib/live/plugin.ts';
 import { playground } from './lib/playground-plugin.ts';
 import { mapperDependents } from './lib/remark-mapper.ts';
@@ -16,7 +17,7 @@ import * as mdxConfig from './source.config.ts';
 // generated .source/ (lib/source.ts). First of all, each file of content/ with its Rust content
 // left out while the docs leave Rust out (lib/rust-content.ts).
 export default defineConfig({
-  plugins: [rustContentPlugin(), ...docsKit(mdxConfig), mapperDependents(), playground(), live(), compareCards()],
+  plugins: [rustContentPlugin(), ...docsKit(mdxConfig), mapperDependents(), playground(), live(), compareCards(), homeExamples()],
   resolve: {
     alias: {
       '@': import.meta.dirname,

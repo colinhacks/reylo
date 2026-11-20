@@ -45,6 +45,12 @@ pub mod post_statuses {}
 #[reylo::query("select id, role from users where id = :id::int")]
 pub mod get_role {}
 
+#[reylo::query("select id, case when published_at is not null then 'published' else 'draft' end as status from posts")]
+pub mod derived_statuses {}
+
+#[reylo::query("update posts set status = :status where id = :id::int")]
+pub mod set_status {}
+
 // Your own types.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Role { Admin, Member }
@@ -132,6 +138,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ada = get_role::Query { id: 1 }.run(&pool).await?.expect("ada");
     let admins = users_by_role::Query { role: ada.role.cast() }.run(&pool).await?;
     println!("enums       {label} {status:?} {admins:?}");
+
+    for post in derived_statuses::Query.run(&pool).await? {
+        set_status::Query { status: post.status.cast(), id: post.id }.run(&pool).await?;
+    }
+    let statuses = post_statuses::Query.run(&pool).await?;
+    assert_eq!((statuses[0].status, statuses[1].status), (post_statuses::Status::Published, post_statuses::Status::Draft));
+    println!("enum lists  {statuses:?}");
 
     let member = get_member::Query { id: 2 }.run(&pool).await?.expect("bob");
     let role: Role = member.role;

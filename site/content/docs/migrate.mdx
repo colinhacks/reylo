@@ -259,6 +259,14 @@ grant select on room_totals to reporting;
 comment on column users.verified_at is 'When they confirmed their email';
 ```
 
+On MySQL, an account sees only its own grants unless it may read the privilege tables. An account that isn't an administrator needs them granted:
+
+```sql
+grant select on mysql.tables_priv to 'app'@'%';
+grant select on mysql.columns_priv to 'app'@'%';
+grant select on mysql.procs_priv to 'app'@'%';
+```
+
 A change to any of them is a migration:
 
 ```sql title="schema.sql"
@@ -271,7 +279,7 @@ drop policy docs_read on docs;
 create policy docs_read on docs for select to reader, writer using (owner_name = current_user or body is null);
 ```
 
-Text search configurations, security labels and a few other kinds are compared by name only, or not at all: write their changes by hand.
+Text search configurations, security labels and a few other kinds are compared by name only, or not at all: write them, and their changes, by hand. On MySQL, so is a routine, trigger or event made under another `sql_mode` than the server's.
 
 ## Schemaless mode
 
@@ -333,11 +341,11 @@ Migrations on postgres://localhost:5432/app
   ✓ init.sql                 applied 2026-11-04 12:00 UTC
   ✓ 20261105090000_tags.sql  applied 2026-11-05 09:00 UTC
 ✓ Unchanged since its last migration
-» No lock: migrations run in name order
-  Write one:
+» With no lock, migrations run in name order
+  To write one:
     reylo migrate lock
 » With no lock to hold its checksum, reylo/schema.sql is checked against the migrations by a dry run
-  Check it:
+  To check it:
     reylo migrate deploy --dry-run
 ```
 
@@ -427,8 +435,8 @@ $ reylo migrate init
   ├── schema.sql          empty: declare your tables here
   ├── migrations/
   └── reylo.lock
-» No migrations yet
-  Write the first:
+» There are no migrations yet
+  To write the first:
     reylo migrate new <name>
 ```
 
@@ -656,9 +664,9 @@ Migrations on postgres://db.example.com/app
 ✓ The migration files match reylo/reylo.lock
 ✓ The migrations match reylo/schema.sql
 » This database hasn't run 20261105090000_tags.sql
-  Run it in development:
+  To run it in development:
     reylo migrate dev
-  Run it in production:
+  To run it in production:
     reylo migrate deploy
 ```
 
@@ -672,7 +680,7 @@ Migrations on postgres://localhost:5432/app
 ✓ Unchanged since its last migration
 ✓ The migration files match reylo/reylo.lock
 
-✗ Changes in reylo/schema.sql since the lock was written
+✗ The schema changed since the lock was written
   The lock holds a checksum of reylo/schema.sql from when the migrations last matched it.
 
   If the schema changed, write its migration and run it:
@@ -781,8 +789,8 @@ It refuses until `reylo migrate dev` has run. Until you write the migration, `re
 ```terminal
 $ reylo migrate dev
 ✓ Up to date with the migrations
-» Changes in reylo/schema.sql that no migration makes yet
-  Write them as a migration:
+» The schema is ahead of the migrations
+  To write the changes to a migration file:
     reylo migrate new <name>
 ```
 

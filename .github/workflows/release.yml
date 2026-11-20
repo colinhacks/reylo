@@ -89,7 +89,8 @@ jobs:
 
   stage:
     needs: [preflight, test, build, playground]
-    runs-on: ubuntu-latest
+    # ubuntu-24.04, not ubuntu-latest: on ubuntu-26.04 setup-nub fronts the image's own Node in /usr/local/bin rather than the one it provisions, and the global npm install below fails writing to /usr/local (EACCES)
+    runs-on: ubuntu-24.04
     name: Stage on npm
     # a required reviewer approves every run, and the environment only deploys main; npm's trusted publishers are bound to it so no other branch or workflow can even stage. The environment is the first of two gates — the second is the 2FA approval of each staged version, which this job cannot perform.
     environment: npm
