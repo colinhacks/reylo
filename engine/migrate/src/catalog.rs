@@ -652,7 +652,8 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         ))
         .await?
     {
-        lines.push(r.text("line").to_string());
+        let line = r.text("line");
+        lines.push(line.strip_prefix("statistics ").map(|d| format!("statistics {}", statistics_def(d))).unwrap_or_else(|| line.to_string()));
     }
 
     // Privileges on sequences, functions and types, and comments on what is not a relation.
@@ -850,6 +851,29 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
 
 /// An identity column's sequence options where they aren't the defaults, as `generated … as
 /// identity (…)` writes them, or null: SQL for the column whose `pg_attribute` row is `att`.
+/// An extended statistics object's definition with its columns as a set: the server writes them in
+/// the table's order of its columns, which a table that starts inheriting keeps otherwise.
+pub(crate) fn statistics_def(def: &str) -> String {
+    let Some((head, rest)) = def.split_once(" ON ") else { return def.to_string() };
+    let Some((list, tail)) = rest.rsplit_once(" FROM ") else { return def.to_string() };
+    let (mut items, mut item, mut depth, mut quoted) = (Vec::new(), String::new(), 0, false);
+    for ch in list.chars().chain([',']) {
+        match ch {
+            '"' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => depth -= 1,
+            ',' if !quoted && depth == 0 => {
+                items.push(std::mem::take(&mut item).trim().to_string());
+                continue;
+            }
+            _ => {}
+        }
+        item.push(ch);
+    }
+    items.sort();
+    format!("{head} ON {} FROM {tail}", items.join(", "))
+}
+
 pub(crate) fn identity_options(att: &str) -> String {
     format!(
         "(select nullif(concat_ws(' ',

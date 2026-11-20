@@ -1,0 +1,10 @@
+set check_function_bodies = off;
+drop function f(d);
+alter type e rename to e__old;
+create type e as enum ('a', 'x', 'c');
+alter domain d rename to d__old;
+create domain d as e;
+drop domain d__old;
+drop type e__old;
+create function f(a d) returns numeric language sql immutable as $$ select 7.5 $$;
+reset check_function_bodies;

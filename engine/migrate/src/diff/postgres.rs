@@ -858,7 +858,10 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 col_defs.push(format!("{} {made}", c.text("name")));
                 members.push((c.text("name").to_string(), made.clone()));
             }
-            let def = if unvalidated { format!("{full} not valid") } else { full.clone() };
+            // A default beside an identity (a child's, of its parent's sequence), which the column's
+            // statements can't write: dropped where the target has none.
+            let beside = !c.text("identity").is_empty() && c.get("def").is_some();
+            let def = format!("{}{}", if unvalidated { format!("{full} not valid") } else { full.clone() }, if beside { format!("{CALLS}(a default beside its identity)") } else { String::new() });
             if c.flag("local") {
                 let caution = (c.flag("notnull") && c.get("def").is_none() && c.text("identity").is_empty() && kind != "c")
                     .then(|| format!("{} is not null with no default, so adding it fails on a table that has rows: give it a default, or add it nullable, fill it, then set not null", c.text("name")));
@@ -868,7 +871,23 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     kind: Some(Kind::Column),
                     owner: Some(id.clone()),
                     def: def.clone(),
-                    create: [Some(if kind == "c" { format!("alter type {name} add attribute {} {made}{cascade}", c.text("name")) } else { format!("alter table {name} add column {} {made}", c.text("name")) }), unvalidated.then(|| add_not_null.clone())].into_iter().flatten().collect(),
+                    create: if c.flag("inherited") && !partition && kind != "c" {
+                        // One a parent has too, which the parent's own column, added in the same plan,
+                        // makes on the table already: added where it isn't, then given what it
+                        // declares of its own.
+                        let at = format!("alter table {name} alter column {}", c.text("name"));
+                        let mut out = vec![format!("alter table {name} add column if not exists {} {made}", c.text("name"))];
+                        if let Some(d) = c.get("def").filter(|_| c.text("generated").is_empty() && c.text("identity").is_empty()) {
+                            out.push(format!("{at} set default {d}"));
+                        }
+                        if c.flag("notnull") && !unvalidated {
+                            out.push(format!("{at} set not null"));
+                        }
+                        out.extend(unvalidated.then(|| add_not_null.clone()));
+                        out
+                    } else {
+                        [Some(if kind == "c" { format!("alter type {name} add attribute {} {made}{cascade}", c.text("name")) } else { format!("alter table {name} add column {} {made}", c.text("name")) }), unvalidated.then(|| add_not_null.clone())].into_iter().flatten().collect()
+                    },
                     extra: c
                         .get("nn_name")
                         .map(|n| format!("not null name {n}"))
@@ -1473,7 +1492,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             id,
             kind: Some(Kind::Statistics),
             owner: relations.get(&oid(&r, "rel")).map(|(t, _)| t.clone()),
-            def: r.text("def").to_string(),
+            // Its columns as a set, which the server writes in the table's order of them.
+            def: crate::catalog::statistics_def(r.text("def")),
             create: vec![r.text("def").to_string()],
             drop: vec![format!("drop statistics {}", r.text("name"))],
             ..Object::default()
@@ -1498,6 +1518,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let id = format!("operator {ident}");
         ids.operators.insert(oid(&r, "oid"), id.clone());
         let drop_args = format!("({}, {})", r.get("lt").unwrap_or("none"), r.get("rt").unwrap_or("none"));
+        // An expression index's statistics, which the server's rebuild of the index around a change
+        // of its column loses: on the index's columns, to be set again.
         // A shell operator, which an operator naming it as its commutator or negator made: made
         // again by that operator, and dropped on its own.
         if r.text("proc") == "-" {
@@ -2013,6 +2035,19 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     o.deps.insert(to);
                 }
             }
+        }
+    }
+    // An expression index's statistics depend on what its index reads: the server's rebuild of the
+    // index around a change of one of them loses them, and the plan sets them again after.
+    let index_columns: Vec<(String, BTreeSet<String>)> = s
+        .objects
+        .values()
+        .filter(|o| o.kind == Some(Kind::ColumnSetting) && o.id.starts_with("statistics index "))
+        .filter_map(|o| Some((o.id.clone(), s.objects.get(o.owner.as_deref()?)?.deps.iter().filter(|d| d.starts_with("column ")).cloned().collect())))
+        .collect();
+    for (id, columns) in index_columns {
+        if let Some(o) = s.objects.get_mut(&id) {
+            o.deps.extend(columns);
         }
     }
     // A schema's objects depend on it, as the records say; a column depends on nothing of its own
@@ -2995,7 +3030,10 @@ fn columns_left(from: &Object, to: &Object) -> Vec<(String, String)> {
     }
     let name = from.id.strip_prefix("table ").unwrap_or_default();
     let has: BTreeSet<&str> = to.extra.iter().filter_map(|l| l.strip_prefix(TABLE_COLUMN)?.split(SEP).next()).collect();
-    held_columns(from).into_iter().filter(|(id, _, _)| !has.contains(id.as_str())).map(|(id, column, _)| (id, format!("alter table {name} drop column if exists {column}"))).collect()
+    // A generated column before the columns it reads.
+    let mut left: Vec<(String, String, String)> = held_columns(from).into_iter().filter(|(id, _, _)| !has.contains(id.as_str())).collect();
+    left.sort_by_key(|(_, _, add)| !add.contains(" generated always as ("));
+    left.into_iter().map(|(id, column, _)| (id, format!("alter table {name} drop column if exists {column}"))).collect()
 }
 
 /// A table's own constraint (its id, name and definition), and its copy of another table's (its
@@ -3646,8 +3684,9 @@ impl Alterer for PostgresAlterer {
             std::sync::LazyLock::new(|| regex::Regex::new(r"(?is)^create\s+(or\s+replace\s+)?(function|procedure|operator)\b").expect("a valid pattern"));
         static SQL_BODY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?is)\blanguage\s+sql\b").expect("a valid pattern"));
         let checked = |s: &String| ROUTINE.is_match(s) && SQL_BODY.is_match(s) && !s.to_ascii_lowercase().contains("begin atomic");
-        let routines = statements.iter().filter(|s| ROUTINE.is_match(s)).count();
-        if routines < 2 || !statements.iter().any(checked) {
+        // One alone may read what the plan drops later or never makes (a table `schema.sql` dropped
+        // after it), which the server checked as `schema.sql` ran.
+        if !statements.iter().any(checked) {
             return;
         }
         statements.insert(0, "set check_function_bodies = off".into());
@@ -3680,6 +3719,9 @@ impl Alterer for PostgresAlterer {
     }
 
     fn around(&self, from: &Object, to: &Object, under: &Object) -> Option<(Vec<String>, Vec<String>)> {
+        if from.kind == Some(Kind::ColumnSetting) && from.id.starts_with("statistics index ") && from.def == to.def {
+            return Some((vec![], to.create.clone()));
+        }
         // An index made on a partitioned table alone, not yet valid, which the server would make
         // again on every partition around a change of its column, making it valid: dropped before,
         // and made again after as the target has it.
@@ -3720,8 +3762,10 @@ impl Alterer for PostgresAlterer {
         if from.kind != Some(Kind::Column) || !from.extra.iter().any(|l| l == "inherited") || to.deps.iter().any(|d| *d != gone.id && d.starts_with("column ") && from.deps.contains(d)) {
             return None;
         }
+        // A column it declares keeps itself, and keeps a not null of its own too: only one a parent's
+        // not null gave it needs the parent left.
         let declared = !from.create.is_empty();
-        if declared && !parse_column(&from.def).not_null {
+        if declared && !(parse_column(&from.def).not_null && parse_column(&gone.def).not_null) {
             return None;
         }
         let table = from.owner.as_deref()?.strip_prefix("table ")?;
@@ -3734,6 +3778,23 @@ impl Alterer for PostgresAlterer {
             return None;
         }
         Some((kept.iter().map(|p| format!("alter table {table} no inherit {p}")).collect(), kept.iter().map(|p| format!("alter table {table} inherit {p}")).collect()))
+    }
+
+    fn waits_for(&self, from: &Object, to: &Object) -> Vec<String> {
+        // A table that joins a parent adds copies of the parent's checks first: after the parent's
+        // own, which wait for what they call.
+        // And after the parents' columns it is to hold, which it must have alike as it joins.
+        if to.kind != Some(Kind::Table) || !joins_or_leaves(from, to).0 {
+            return Vec::new();
+        }
+        let part = |what: &str| to.extra.iter().find_map(|l| l.strip_prefix(what)).map(String::from);
+        let mut parents = part("inherits ").map(|p| names_in(&p)).unwrap_or_default();
+        parents.extend(part("partition of ").as_deref().and_then(split_qualified).map(|(p, _)| p.to_string()));
+        let copies: Vec<String> = to.extra.iter().filter_map(|l| l.strip_prefix(COPIED_CONSTRAINT)?.split(SEP).next()).map(String::from).collect();
+        let columns: Vec<String> = to.extra.iter().filter_map(|l| l.strip_prefix(TABLE_COLUMN)?.split(SEP).nth(2)).map(String::from).collect();
+        let mut out: Vec<String> = parents.iter().flat_map(|p| copies.iter().map(move |c| format!("constraint {p}.{c}"))).collect();
+        out.extend(parents.iter().flat_map(|p| columns.iter().map(move |c| format!("column {p}.{c}"))));
+        out
     }
 
     fn releases(&self, from: &Object, to: &Object) -> bool {
@@ -3943,13 +4004,21 @@ impl Alterer for PostgresAlterer {
                 Some(statements.into_iter().map(|s| if s.contains(" type ") { s.split(" using ").next().unwrap_or(&s).to_string() } else { s }).collect())
             }
             Kind::Column => {
-                let (a, mut b) = (parse_column(&from.def), parse_column(&to.def));
+                let (mut a, mut b) = (parse_column(&from.def), parse_column(&to.def));
                 // The text `schema.sql` declared its default and generation with, where it is known.
                 let declared = |what: &str| to.extra.iter().find_map(|l| l.strip_prefix(what)).map(String::from);
                 let declared_default = declared("default ");
                 let declared_generated = declared("generated ");
                 let at = format!("alter table {table} alter column {name}");
                 let mut out = Vec::new();
+                // Which no `drop default` reaches while the identity stands: the identity goes, the
+                // default after, and the identity comes back past the rows (below).
+                if from.def.contains("(a default beside its identity)") && !to.def.contains("(a default beside its identity)") {
+                    if a.identity.take().is_some() {
+                        out.push(format!("{at} drop identity"));
+                    }
+                    out.push(format!("{at} drop default"));
+                }
                 if a.generated != b.generated {
                     // An expression changes in place from Postgres 17; anything else about generation is a new column.
                     match (&a.generated, &b.generated) {
@@ -4175,7 +4244,16 @@ impl Alterer for PostgresAlterer {
                         }
                     }
                     // Each with the default the target gives it, which is set back where unchanged.
-                    let targets: Vec<String> = kept.iter().filter_map(|c| to.extra.iter().filter(plain).find(|t| t.splitn(3, SEP).take(2).eq(c.splitn(3, SEP).take(2))).cloned()).collect();
+                    // A column the target holds from another (one that is to be a partition) has its
+                    // default there.
+                    let targets: Vec<String> = kept
+                        .iter()
+                        .filter_map(|c| {
+                            to.extra.iter().filter(plain).find(|t| t.splitn(3, SEP).take(2).eq(c.splitn(3, SEP).take(2))).cloned().or_else(|| {
+                                to.extra.iter().filter_map(|l| l.strip_prefix(HELD_COLUMN)).find(|h| h.splitn(3, SEP).take(2).eq(c.splitn(3, SEP).take(2))).map(String::from)
+                            })
+                        })
+                        .collect();
                     let mut swap = swap_enum(name, &to.create[0], &kept, &targets);
                     let last = swap.pop();
                     let (before, after) = carried_over(from, to);

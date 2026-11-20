@@ -1,1 +1,1 @@
-insert into x (id, c) values (1, 'a');
+insert into x values (1, 'a');
