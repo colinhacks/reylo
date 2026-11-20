@@ -96,6 +96,15 @@ fn needs_not_null(plan: &Plan) -> BTreeSet<(String, String)> {
             let Some(N::AlterTableCmd(cmd)) = &cmd.node else { continue };
             if is(cmd.subtype, At::AtAddIdentity) {
                 out.insert((rel.clone(), cmd.name.clone()));
+            } else if is(cmd.subtype, At::AtAddInherit) {
+                // A table that takes a parent must have its not nulls already: every column of it.
+                out.insert((rel.clone(), "*".to_string()));
+            } else if is(cmd.subtype, At::AtAttachPartition) {
+                if let Some(N::PartitionCmd(p)) = cmd.def.as_ref().and_then(|d| d.node.as_ref()) {
+                    if let Some(part) = p.name.as_ref() {
+                        out.insert((named(part), "*".to_string()));
+                    }
+                }
             } else if is(cmd.subtype, At::AtAddConstraint) {
                 if let Some(N::Constraint(c)) = cmd.def.as_ref().and_then(|d| d.node.as_ref()) {
                     if is(c.contype, ConstrType::ConstrPrimary) {
@@ -111,7 +120,9 @@ fn needs_not_null(plan: &Plan) -> BTreeSet<(String, String)> {
     out
 }
 
-/// What one statement of a plan becomes in the lock-safe shape.
+/// What one statement of a plan becomes in the lock-safe shape. A table's columns a later statement
+/// needs not null are `(table, column)`, or `(table, "*")` for every column of a table that joins a
+/// parent, which must have its not nulls as it joins.
 enum Shape {
     /// Kept as it is, in the file being written.
     Kept(String),
@@ -154,7 +165,7 @@ fn shape(statement: &str, existing: &BTreeSet<String>, needs_not_null: &BTreeSet
             // A validated check that the column is not null lets `set not null` skip its scan.
             // Unless a later statement needs the column not null, which an identity and a primary
             // key do: then it stays where it is, and the lint says what it holds.
-            if is(cmd.subtype, At::AtSetNotNull) && !cmd.name.is_empty() && !needs_not_null.contains(&(rel.clone(), cmd.name.clone())) {
+            if is(cmd.subtype, At::AtSetNotNull) && !cmd.name.is_empty() && !needs_not_null.contains(&(rel.clone(), cmd.name.clone())) && !needs_not_null.contains(&(rel.clone(), "*".to_string())) {
                 let column = quote_ident(&cmd.name);
                 let check = quote_ident(&not_null_check(&cmd.name));
                 return Shape::Later(
@@ -180,6 +191,14 @@ fn shape(statement: &str, existing: &BTreeSet<String>, needs_not_null: &BTreeSet
 /// that already has rows) while they read every row: where any statement does, the files in order,
 /// comments kept with the statement they come before; `None` where the plan holds no such lock.
 pub fn lock_safe(plan: &Plan, existing: &BTreeSet<String>) -> Option<Vec<Vec<String>>> {
+    // A table the plan makes (again, perhaps partitioned now) holds no rows the plan reads under a
+    // lock: none of it is the database's as it stands.
+    let made: BTreeSet<String> = plan.statements.iter().filter_map(|s| match parsed(s) {
+        Some(N::CreateStmt(c)) => c.relation.as_ref().map(named),
+        _ => None,
+    }).collect();
+    let existing: BTreeSet<String> = existing.iter().filter(|t| !made.contains(*t)).cloned().collect();
+    let existing = &existing;
     let needs_not_null = needs_not_null(plan);
     let mut files: Vec<Vec<String>> = Vec::new();
     let mut current: Vec<String> = Vec::new();
@@ -197,6 +216,19 @@ pub fn lock_safe(plan: &Plan, existing: &BTreeSet<String>) -> Option<Vec<Vec<Str
     for statement in &plan.statements {
         if statement.starts_with("--") {
             comments.push(statement.clone());
+            continue;
+        }
+        // Where the plan commits partway (an enum's label added before what uses it), a file ends.
+        if statement == crate::diff::COMMIT {
+            changed = true;
+            current.append(&mut comments);
+            if does_something(&current) {
+                current.extend(resets(&settings));
+                files.push(std::mem::take(&mut current));
+            } else {
+                current.retain(|s| s.starts_with("--"));
+            }
+            current.extend(settings.iter().cloned());
             continue;
         }
         let lower = statement.trim_start().to_ascii_lowercase();

@@ -2232,6 +2232,7 @@ dependencies = [
 name = "reylo-migrate"
 version = "0.8.0"
 dependencies = [
+ "cc",
  "libc",
  "mysql_async",
  "prost",
@@ -2242,6 +2243,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2 0.10.9",
  "tokio",
  "tokio-postgres",
  "ureq",
@@ -2253,6 +2255,7 @@ version = "0.0.0"
 dependencies = [
  "boon",
  "bytes",
+ "cc",
  "futures-util",
  "mysql_async",
  "regex",
@@ -2285,7 +2288,6 @@ name = "reylo-sqlparser"
 version = "0.63.0"
 dependencies = [
  "log",
- "reylo-engine-build",
 ]
 
 [[package]]

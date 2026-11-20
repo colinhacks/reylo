@@ -122,7 +122,7 @@ export interface TextType extends Base {
   pattern?: string;
   /** What the text is, as a media type (`text/html`): JSON Schema's `contentMediaType`. */
   media_type?: string;
-  /** What the text is, by JSON Schema's format name (`email`, `uri`, `hostname`, `ipv4`) or a source's own. It narrows the values, and a consumer that does not know a format ignores it. A format the format has a kind for is written as that kind: `date-time` is an `instant`, `uuid` a `uuid` and `binary` `bytes`. */
+  /** What the text is meant to be, by JSON Schema's format name (`email`, `uri`, `hostname`, `ipv4`) or a source's own. It is a name alone, which says nothing of the values: a rule every value keeps is written as a `pattern`. A consumer that does not know a format ignores it. A format the format has a kind for is written as that kind: `date-time` is an `instant`, `uuid` a `uuid` and `binary` `bytes`. */
   format?: string;
 }
 
@@ -405,8 +405,8 @@ export interface UnknownType {
 
 /** What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo analyze` writes the file a statement was read from. */
 export interface StatementDescriptor {
-  /** The version of the format the descriptor is written in, as the URL of that version's JSON Schema, which a validator or an editor reads. Versions are semantic, and until 1.0.0 a new minor version may change anything. */
-  $schema: "https://reylo.dev/typedefs/0.1.1.json";
+  /** The format the descriptor is written in, as the URL of its JSON Schema, which a validator or an editor reads. Until 1.0.0 the format is a preview, which changes in place and has no version number; from 1.0.0 the URL names the version. */
+  $schema: "https://reylo.dev/typedefs/preview.json";
   dialect: Dialect;
   /** The statement as the database runs it, with its own placeholders (`$1` on Postgres, `?` on MySQL and SQLite), in the order `params` lists them. */
   sql: string;

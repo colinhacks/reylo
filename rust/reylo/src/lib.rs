@@ -18,7 +18,7 @@ pub use reylo_macros::migrate;
 
 mod enums;
 mod exact;
-pub use enums::{Enum, EnumId, UnexpectedRow};
+pub use enums::{Covers, Enum, EnumId, HasLabel, HasLabels, Label, Labels, UnexpectedRow};
 pub use exact::Exact;
 
 #[cfg(all(feature = "sqlx_0_9", feature = "sqlx_0_8"))]
@@ -50,9 +50,43 @@ pub mod __private {
 
     pub use futures_core::stream::BoxStream;
 
+    /// Whether a value of the enum of `a_type` and `a_labels` casts into the enum of `b_type` and
+    /// `b_labels`, in a constant: a Postgres enum type's into the same type with the same values in
+    /// the same order, and a list's (no type) into any enum that has each of its values.
+    pub const fn casts_into(a_type: &str, a_labels: &[&str], b_type: &str, b_labels: &[&str]) -> bool {
+        if !a_type.is_empty() {
+            return same_enum(a_type, a_labels, b_type, b_labels);
+        }
+        let mut i = 0;
+        while i < a_labels.len() {
+            let mut j = 0;
+            while j < b_labels.len() && !same_str(a_labels[i], b_labels[j]) {
+                j += 1;
+            }
+            if j == b_labels.len() {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    /// FNV-1a over a value's text and a zero byte: the value as a type, `reylo::Label`.
+    pub const fn label_hash(label: &str) -> u64 {
+        let bytes = label.as_bytes();
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut i = 0;
+        while i <= bytes.len() {
+            hash ^= if i < bytes.len() { bytes[i] as u64 } else { 0 };
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+            i += 1;
+        }
+        hash
+    }
+
     /// Whether two enums are the same database enum, in a constant: the same type, and the same
     /// values in the same order.
-    pub const fn same_enum(a_type: &str, a_labels: &[&str], b_type: &str, b_labels: &[&str]) -> bool {
+    const fn same_enum(a_type: &str, a_labels: &[&str], b_type: &str, b_labels: &[&str]) -> bool {
         if !same_str(a_type, b_type) || a_labels.len() != b_labels.len() {
             return false;
         }
@@ -136,7 +170,24 @@ pub mod __private {
 
     #[cfg(test)]
     mod tests {
-        use super::same_text;
+        use super::{casts_into, label_hash, same_text};
+
+        #[test]
+        fn a_list_casts_into_any_enum_with_each_of_its_values_and_a_type_only_into_itself() {
+            assert!(casts_into("", &["done", "todo"], "", &["todo", "doing", "done"]));
+            assert!(casts_into("", &["sad", "ok"], "public.mood", &["ok", "sad"]));
+            assert!(!casts_into("", &["todo", "doing", "done"], "", &["done", "todo"]));
+            assert!(casts_into("public.mood", &["ok", "sad"], "public.mood", &["ok", "sad"]));
+            assert!(!casts_into("public.mood", &["ok", "sad"], "", &["ok", "sad"]));
+            assert!(!casts_into("public.mood", &["ok", "sad"], "public.feeling", &["ok", "sad"]));
+        }
+
+        #[test]
+        fn a_label_hash_is_fnv_1a_of_the_text_and_a_zero_byte() {
+            assert_eq!(label_hash(""), 0xaf63_bd4c_8601_b7df);
+            assert_ne!(label_hash("ab"), label_hash("a"));
+            assert_ne!(label_hash("draft"), label_hash("Draft"));
+        }
 
         #[test]
         fn a_text_is_the_same_whichever_way_its_lines_end() {

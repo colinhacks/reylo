@@ -1,0 +1,2 @@
+public.t.a keeps only each array's first element
+public.t.b keeps only each array's first element

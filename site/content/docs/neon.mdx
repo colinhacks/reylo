@@ -5,7 +5,7 @@ description: How to use Reylo with Neon. The connection string the type check re
 
 <p className="dk-subheader">Reylo on Neon's serverless Postgres</p>
 
-Reylo works with Neon. Neon is Postgres, so everything on the [Postgres](/postgres) page holds for it. This page covers what's specific to Neon: its two connection strings, its serverless driver and its branches.
+Neon is Postgres, so everything on the [Postgres](/postgres) page holds for it.
 
 | | |
 | --- | --- |
@@ -45,7 +45,7 @@ Point [`direct_url`](/configuration#direct_url) at the direct one:
 direct_url: ${DATABASE_URL_UNPOOLED}
 ```
 
-- Neon's pooler is PgBouncer in transaction mode. Your app's queries can go through it, but the type check can fail there.
+- Neon's pooler is PgBouncer in transaction mode. Your app's queries can go through it, but the type check can fail there, and [migrations](/migrations) refuse it: a run holds a session, which the pooler shares between clients.
 - Without this line, Reylo reads `DATABASE_URL` and nothing else. `DATABASE_URL_UNPOOLED` is the name Neon's Vercel integration gives the direct string.
 - The type check takes the string as Neon writes it, `sslmode=require` and `channel_binding=require` included ([TLS](/configuration#tls)).
 
@@ -135,11 +135,11 @@ let user = get_user::Query { id: 1 }.run(&db).await?;
 ```
 </Rust>
 
-Each runs a transaction its own way: on a client checked out of the pool with `pg`,<NoRust> and</NoRust> in `db.begin()` with postgres.js ([Drivers](/postgres#drivers))<Rust>, and in `db.begin()` with sqlx ([Rust](/rust#run))</Rust>.
+Each runs a transaction its own way: on a client checked out of the pool with `pg`,<NoRust> and</NoRust> in `db.begin()` with postgres.js ([Drivers](/postgres#drivers))<Rust>, and in `db.begin()` with sqlx ([Rust](/rust#transactions))</Rust>.
 
 ## Branches
 
-Each branch has connection strings of its own. Neon's CLI prints a branch's direct one:
+Neon's CLI prints a branch's direct connection string:
 
 ```sh title="Terminal"
 # add --pooled for the pooled one

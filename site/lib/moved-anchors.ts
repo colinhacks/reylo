@@ -74,7 +74,7 @@ const MOVED: Record<string, string> = {
   "filter-by-a-list": "/inference#filtering-by-a-list",
   "filter-on-an-optional-value": "/inference#dynamic-filtering",
   "filtering-by-a-list": "/inference#filtering-by-a-list",
-  "freshness-check": "/typescript#when-the-schema-changes",
+  "freshness-check": "/typescript",
   "get-a-row": "/typescript#run",
   "how-it-works": "/inference",
   "in-ci": "/faq#in-ci",
@@ -204,10 +204,14 @@ const MOVED: Record<string, string> = {
   "what-an-error-looks-like": "/typescript#editors",
   "what-is-inferred": "/inference",
   "what-run-resolves-to": "/typescript#run",
-  "when-the-schema-changes": "/typescript#when-the-schema-changes",
+  "when-the-schema-changes": "/typescript",
   "window-functions": "/inference#window-functions",
   "with": "/typescript#with",
   "write-queries": "/typescript#usage",
 };
 
-export const movedAnchorsScript = `(function(){var m=${JSON.stringify(MOVED)};var t=m[location.hash.slice(1)];if(t)location.replace(t)})()`;
+/**
+ * On the homepage, /, where the docs' intro was until it moved to /docs: a link to a section that moved
+ * goes to its page, and a link to any other heading to the intro's.
+ */
+export const movedAnchorsScript = `(function(){var h=location.hash.slice(1);if(!h)return;var m=${JSON.stringify(MOVED)};location.replace(m[h]||'/docs#'+h)})()`;

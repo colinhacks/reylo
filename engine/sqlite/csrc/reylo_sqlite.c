@@ -5,16 +5,17 @@
 ** one-line hooks, five of them right after name resolution), so the SQLITE_PRIVATE internals are
 ** callable here. The engine gives this file the schema DDL and one statement; the hooks fire while
 ** SQLite prepares the statement against an in-memory replay of that schema, and the walker
-** serializes what SQLite resolved: every expression with sqlite3ExprAffinity and
-** sqlite3ExprCanBeNull, every column reference with its Table, Column, NOT NULL and outer-join
-** mark (EP_CanBeNull), the FROM items with their join type and cursor, the DML target columns per
-** value position, and each table's columns and unique keys. The rules (function result types,
+** serializes what SQLite resolved: every expression with sqlite3ExprAffinity, every column
+** reference with its Table, Column, NOT NULL and outer-join mark (EP_CanBeNull), the FROM items
+** with their join type and cursor, the DML target columns per value position, and each table's
+** columns and unique keys. The rules (function result types,
 ** arithmetic, the row-count proof) live in Rust; nothing here decides a type. A host that
 ** registers scalar functions of its own on its connection names them with their argument counts,
 ** and the replay registers a stub for each, so a statement calling one prepares here as it does
 ** there. A host that lists the functions of its own SQLite (pragma_function_list) decides which
 ** functions exist: one it has and this build lacks gets a stub too, and one this build has and it
-** lacks is refused.
+** lacks is refused. libSQL's vector functions and its vector_top_k are on every replay, whatever
+** the host lists (openLibsql).
 */
 #include <stdio.h>
 #include <string.h>
@@ -40,6 +41,7 @@ static reylo_insert_select_fn reylo_insert_select_hook;
 
 static sqlite3 *gDb;            /* the in-memory schema replay */
 static char *gDdlKey;           /* the DDL it was built from */
+static char *gReplayErrors;     /* what its replay reported, as openSchema's errors list them */
 static sqlite3_str *gStmt;      /* the top-level SELECT, or a DML's SELECT source */
 static sqlite3_str *gDml;       /* the INSERT / UPDATE / DELETE */
 static sqlite3_str *gReturning; /* the RETURNING list */
@@ -135,6 +137,7 @@ static const char *opName(int op){
 }
 
 static void selectJson(sqlite3_str *s, Select *p);
+static const char *vectorTopKTable(SrcItem *pItem);
 static void expr(sqlite3_str *s, Expr *p, Select *pSel);
 
 static void exprList(sqlite3_str *s, ExprList *pList, Select *pSel){
@@ -181,13 +184,14 @@ static int callsOrReadsGenerated(Table *pTab, Expr *p){
   return 0;
 }
 
-/* The provenance members of a column reference (the object is already open). */
+/* The provenance members of a column reference (the object is already open). One SQLite resolved
+** to no Table has a null "table" and no member after it. */
 static void columnRef(sqlite3_str *s, Expr *p, Select *pSel){
   Table *pTab = ExprUseYTab(p) ? p->y.pTab : 0;
   int iCol = p->iColumn;
   kv_int(s, "cursor", p->iTable);
   kv_int(s, "index", iCol);
-  if( pTab==0 ){ kv_bool(s, "resolved", 0); return; }
+  if( pTab==0 ){ kv_str(s, "table", 0); return; }
   tableSeen(pTab);
   kv_str(s, "table", pTab->zName);
   if( iCol<0 ) iCol = pTab->iPKey;
@@ -196,6 +200,8 @@ static void columnRef(sqlite3_str *s, Expr *p, Select *pSel){
     kv_str(s, "affinity", "integer");
     kv_bool(s, "notNull", 1);
     kv_bool(s, "rowid", 1);
+    kv_bool(s, "generated", 0);
+    kv_bool(s, "subtype", 0);
   }else{
     Column *pCol = &pTab->aCol[iCol];
     kv_str(s, "column", pCol->zCnName);
@@ -205,12 +211,12 @@ static void columnRef(sqlite3_str *s, Expr *p, Select *pSel){
     kv_str(s, "coll", sqlite3ColumnColl(pCol) ? sqlite3ColumnColl(pCol) : sqlite3StrBINARY);
     kv_bool(s, "notNull", pCol->notNull!=0);
     kv_bool(s, "rowid", p->iColumn<0 || iCol==pTab->iPKey);
-    if( pCol->colFlags & COLFLAG_GENERATED ) kv_bool(s, "generated", 1);
-    if( (pCol->colFlags & COLFLAG_VIRTUAL) && callsOrReadsGenerated(pTab, sqlite3ColumnExpr(pTab, pCol)) ) kv_bool(s, "subtype", 1);
+    kv_bool(s, "generated", (pCol->colFlags & COLFLAG_GENERATED)!=0);
+    kv_bool(s, "subtype", (pCol->colFlags & COLFLAG_VIRTUAL) && callsOrReadsGenerated(pTab, sqlite3ColumnExpr(pTab, pCol)));
   }
   kv_bool(s, "outer", ExprHasProperty(p, EP_CanBeNull) || (p->op==TK_COLUMN && outerCursor(pSel, p->iTable)));
-  if( pTab->tabFlags & TF_Strict ) kv_bool(s, "strict", 1);
-  if( IsView(pTab) ) kv_bool(s, "view", 1);
+  kv_bool(s, "strict", (pTab->tabFlags & TF_Strict)!=0);
+  kv_bool(s, "view", IsView(pTab));
 }
 
 /* A row assigned fewer values than it has columns (`SET (a, b, c) = (SELECT x, y)`) is SQLite's
@@ -228,18 +234,18 @@ static void expr(sqlite3_str *s, Expr *p, Select *pSel){
   sqlite3_str_appendchar(s, 1, '{');
   kv_str(s, "op", opName(op));
   kv_str(s, "aff", affName(missingField(p) ? SQLITE_AFF_NONE : sqlite3ExprAffinity(p)));
-  kv_bool(s, "canBeNull", sqlite3ExprCanBeNull(p));
   /* SQLite moves every ON term into the WHERE; one from an outer join's ON says so, and names the
   ** cursor of the join's right side, which the term restricts without removing a row. */
-  if( ExprHasProperty(p, EP_OuterON) ){ kv_bool(s, "outerOn", 1); kv_int(s, "join", p->w.iJoin); }
+  kv_bool(s, "outerOn", ExprHasProperty(p, EP_OuterON));
+  if( ExprHasProperty(p, EP_OuterON) ) kv_int(s, "join", p->w.iJoin);
   /* One from an inner join's ON, which a RIGHT or FULL JOIN after it does not apply to the rows it
   ** null-extends. */
-  if( ExprHasProperty(p, EP_InnerON) ) kv_bool(s, "innerOn", 1);
+  kv_bool(s, "innerOn", ExprHasProperty(p, EP_InnerON));
   switch( op ){
     case TK_COLUMN: case TK_AGG_COLUMN: case TK_TRIGGER:
       columnRef(s, p, pSel);
       /* RETURNING reads the row the statement wrote from registers, not from a cursor. */
-      if( p->op==TK_REGISTER ) kv_bool(s, "register", 1);
+      kv_bool(s, "register", p->op==TK_REGISTER);
       break;
     case TK_VARIABLE:
       if( ExprHasProperty(p, EP_IntValue) ){ key(s, "name"); sqlite3_str_appendf(s, "\"?%d\",", p->iColumn); }
@@ -264,7 +270,6 @@ static void expr(sqlite3_str *s, Expr *p, Select *pSel){
       /* A FILTER alone is held as a window too; `over` is a call with an OVER clause. */
       kv_bool(s, "over", IsWindowFunc(p));
       kv_bool(s, "distinct", ExprHasProperty(p, EP_Distinct));
-      kv_bool(s, "infix", ExprHasProperty(p, EP_InfixFunc));
       key(s, "args");
       if( !ExprHasProperty(p, EP_TokenOnly|EP_Reduced) && ExprUseXList(p) ) exprList(s, p->x.pList, pSel);
       else sqlite3_str_appendall(s, "[]");
@@ -291,7 +296,6 @@ static void expr(sqlite3_str *s, Expr *p, Select *pSel){
       break;
     }
     case TK_CAST:
-      kv_str(s, "to", ExprHasProperty(p, EP_IntValue) ? "" : p->u.zToken);
       kv_str(s, "affinity", affName(sqlite3AffinityType(ExprHasProperty(p, EP_IntValue) ? "" : p->u.zToken, 0)));
       /* fall through: the operand is pLeft */
       key(s, "left"); expr(s, ExprHasProperty(p, EP_TokenOnly) ? 0 : p->pLeft, pSel); sqlite3_str_appendchar(s, 1, ',');
@@ -363,19 +367,17 @@ static void selectJson(sqlite3_str *s, Select *pTop){
     kv_str(s, "table", pItem->pSTab && !pItem->fg.isSubquery ? pItem->pSTab->zName : pItem->zName);
     kv_str(s, "alias", pItem->zAlias);
     kv_bool(s, "outer", (pItem->fg.jointype & (JT_LEFT|JT_LTORJ))!=0);
-    kv_bool(s, "cross", (pItem->fg.jointype & JT_CROSS)!=0);
     kv_bool(s, "right", (pItem->fg.jointype & JT_RIGHT)!=0);
     kv_bool(s, "leftOfRight", (pItem->fg.jointype & JT_LTORJ)!=0);
     kv_bool(s, "tabFunc", pItem->fg.isTabFunc);
-    if( pItem->fg.isTabFunc ){ key(s, "args"); exprList(s, pItem->u1.pFuncArg, p); sqlite3_str_appendchar(s, 1, ','); }
+    key(s, "args"); exprList(s, pItem->fg.isTabFunc ? pItem->u1.pFuncArg : 0, p); sqlite3_str_appendchar(s, 1, ',');
+    kv_str(s, "vectorTable", vectorTopKTable(pItem));
     kv_bool(s, "cte", pItem->fg.isCte);
     /* A recursive WITH query's read of itself, inside the query: it has no subquery of its own. */
     kv_bool(s, "recursive", pItem->fg.isRecursive);
-    if( pItem->pSTab ){
-      tableSeen(pItem->pSTab);
-      if( IsView(pItem->pSTab) ) kv_bool(s, "view", 1);
-      if( IsVirtual(pItem->pSTab) ) kv_bool(s, "virtual", 1);
-    }
+    if( pItem->pSTab ) tableSeen(pItem->pSTab);
+    kv_bool(s, "view", pItem->pSTab && IsView(pItem->pSTab));
+    kv_bool(s, "virtual", pItem->pSTab && IsVirtual(pItem->pSTab));
     key(s, "subquery");
     if( pItem->fg.isSubquery && pItem->u4.pSubq ) selectJson(s, pItem->u4.pSubq->pSelect); else sqlite3_str_appendall(s, "null");
     sqlite3_str_appendchar(s, 1, ',');
@@ -391,7 +393,6 @@ static void selectJson(sqlite3_str *s, Select *pTop){
   key(s, "limit"); expr(s, pTop->pLimit ? pTop->pLimit->pLeft : 0, pTop); sqlite3_str_appendchar(s, 1, ',');
   key(s, "offset"); expr(s, pTop->pLimit ? pTop->pLimit->pRight : 0, pTop); sqlite3_str_appendchar(s, 1, ',');
   kv_bool(s, "distinct", (p->selFlags & SF_Distinct)!=0);
-  kv_bool(s, "hasAgg", (p->selFlags & SF_HasAgg)!=0);
   kv_bool(s, "aggregate", (p->selFlags & SF_Aggregate)!=0);
   kv_bool(s, "values", (p->selFlags & SF_Values)!=0);
   kv_bool(s, "window", p->pWin!=0);
@@ -494,6 +495,7 @@ static void insertHook(Parse *pParse, Table *pTab, IdList *pColumn, ExprList *pL
 }
 static void updateHook(Parse *pParse, Table *pTab, ExprList *pChanges, Expr *pWhere, int *aXRef, SrcList *pTabList, int onError, Upsert *pUpsert){
   int i, j;
+  (void)pTabList;
   if( skipHook(pParse) || gCaptured ) return;
   gCaptured = 1;
   tableSeen(pTab);
@@ -512,7 +514,6 @@ static void updateHook(Parse *pParse, Table *pTab, ExprList *pChanges, Expr *pWh
   }
   closeArr(gDml); sqlite3_str_appendchar(gDml, 1, ',');
   key(gDml, "where"); expr(gDml, pWhere, 0); sqlite3_str_appendchar(gDml, 1, ',');
-  kv_int(gDml, "fromItems", pTabList ? pTabList->nSrc : 1);
   closeObj(gDml);
 }
 static void deleteHook(Parse *pParse, Table *pTab, Expr *pWhere){
@@ -577,6 +578,16 @@ static int ignoresConflict(Table *pTab){
   return 0;
 }
 
+/* Whether the table declares its PRIMARY KEY or a UNIQUE ON CONFLICT REPLACE: a write that breaks
+** it deletes the row it conflicts with, unless the statement's own OR clause says otherwise. A NOT
+** NULL's REPLACE writes the column's default instead, and deletes nothing. */
+static int replacesConflict(Table *pTab){
+  Index *pIdx;
+  if( pTab->keyConf==OE_Replace ) return 1;
+  for(pIdx=pTab->pIndex; pIdx; pIdx=pIdx->pNext) if( pIdx->onError==OE_Replace ) return 1;
+  return 0;
+}
+
 static void tables(sqlite3_str *s){
   int t, i, k;
   sqlite3_str_appendchar(s, 1, '{');
@@ -588,6 +599,7 @@ static void tables(sqlite3_str *s){
     kv_bool(s, "withoutRowid", (pTab->tabFlags & TF_WithoutRowid)!=0);
     kv_str(s, "rowidAlias", pTab->iPKey>=0 ? pTab->aCol[pTab->iPKey].zCnName : 0);
     kv_bool(s, "ignores", ignoresConflict(pTab));
+    kv_bool(s, "replaces", replacesConflict(pTab));
     key(s, "columns"); sqlite3_str_appendchar(s, 1, '[');
     for(i=0; i<pTab->nCol; i++){
       Column *pCol = &pTab->aCol[i];
@@ -597,9 +609,6 @@ static void tables(sqlite3_str *s){
       kv_str(s, "affinity", affName(pCol->affinity));
       kv_bool(s, "notNull", pCol->notNull!=0);
       kv_bool(s, "checkedNotNull", checkedNotNull(pTab, i));
-      kv_bool(s, "pk", (pCol->colFlags & COLFLAG_PRIMKEY)!=0);
-      kv_bool(s, "generated", (pCol->colFlags & COLFLAG_GENERATED)!=0);
-      kv_bool(s, "hidden", (pCol->colFlags & COLFLAG_HIDDEN)!=0);
       closeObj(s); sqlite3_str_appendchar(s, 1, ',');
     }
     closeArr(s); sqlite3_str_appendchar(s, 1, ',');
@@ -648,6 +657,111 @@ static void hostFunctionStub(sqlite3_context *ctx, int argc, sqlite3_value **arg
 }
 static void hostFinalStub(sqlite3_context *ctx){ sqlite3_result_null(ctx); }
 
+/* ---- libSQL's own SQL ------------------------------------------------------------------------ */
+
+/* libSQL, Turso's fork of SQLite, adds vectors: these scalar functions, under these names and
+** argument counts (libSQL 0.10.0's vector.c and vectorIndex.c), and the table-valued
+** vector_top_k below. A libSQL database file reads as SQLite's, with nothing in it to say whose it
+** is, so the replay has them on every database, as it has every optional family of SQLite's, and
+** the SQLite the application runs on decides: the type check also prepares each statement on the
+** application's own drivers (src/sqlite-drivers.ts), and one whose SQLite lacks them refuses it.
+** The analysis only prepares, so a stand-in under libSQL's name, argument count and flags
+** (deterministic and innocuous, as libSQL registers them) resolves as libSQL's own does. */
+static const char *const azLibsql[] = {
+  "vector", "vector32", "vector64", "vector1bit", "vector8", "vector16", "vectorb16", "vector_extract",
+  "vector_distance_cos", "vector_distance_l2", "libsql_vector_idx",
+};
+static const int aLibsqlArg[] = { 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, -1 };
+
+static int isLibsqlFunction(const char *zName){
+  int i;
+  for(i=0; i<(int)(sizeof(azLibsql)/sizeof(azLibsql[0])); i++) if( sqlite3StrICmp(azLibsql[i], zName)==0 ) return 1;
+  return 0;
+}
+
+/* vector_top_k(index, vector, k): the rows of a libSQL vector index nearest the vector, each by
+** the key of the table's row, as libSQL 0.10.0's vectorvtab.c declares it, with its planning:
+** every argument is an equality constraint on a hidden column, which the plan consumes. It is
+** only ever prepared here, so a scan of it has no rows. */
+static int vectorTopKConnect(sqlite3 *db, void *pAux, int argc, const char *const *argv, sqlite3_vtab **ppVtab, char **pzErr){
+  int rc;
+  (void)pAux; (void)argc; (void)argv; (void)pzErr;
+  rc = sqlite3_declare_vtab(db, "CREATE TABLE x(idx hidden, vector hidden, k hidden, id);");
+  if( rc!=SQLITE_OK ) return rc;
+  *ppVtab = sqlite3_malloc(sizeof(sqlite3_vtab));
+  if( *ppVtab==0 ) return SQLITE_NOMEM;
+  memset(*ppVtab, 0, sizeof(sqlite3_vtab));
+  return SQLITE_OK;
+}
+static int vectorTopKDisconnect(sqlite3_vtab *pVtab){ sqlite3_free(pVtab); return SQLITE_OK; }
+static int vectorTopKBestIndex(sqlite3_vtab *pVtab, sqlite3_index_info *pInfo){
+  int i;
+  (void)pVtab;
+  pInfo->estimatedCost = 1.0;
+  pInfo->estimatedRows = 100;
+  pInfo->idxNum = 1;
+  for(i=0; i<pInfo->nConstraint; i++){
+    const struct sqlite3_index_constraint *p = &pInfo->aConstraint[i];
+    if( !p->usable || p->op!=SQLITE_INDEX_CONSTRAINT_EQ || p->iColumn<0 || p->iColumn>2 ) continue;
+    pInfo->aConstraintUsage[i].argvIndex = p->iColumn + 1;
+    pInfo->aConstraintUsage[i].omit = 1;
+  }
+  return SQLITE_OK;
+}
+static int vectorTopKOpen(sqlite3_vtab *pVtab, sqlite3_vtab_cursor **ppCursor){
+  (void)pVtab;
+  *ppCursor = sqlite3_malloc(sizeof(sqlite3_vtab_cursor));
+  if( *ppCursor==0 ) return SQLITE_NOMEM;
+  memset(*ppCursor, 0, sizeof(sqlite3_vtab_cursor));
+  return SQLITE_OK;
+}
+static int vectorTopKClose(sqlite3_vtab_cursor *pCursor){ sqlite3_free(pCursor); return SQLITE_OK; }
+static int vectorTopKFilter(sqlite3_vtab_cursor *pCursor, int idxNum, const char *idxStr, int argc, sqlite3_value **argv){
+  (void)pCursor; (void)idxNum; (void)idxStr; (void)argc; (void)argv;
+  return SQLITE_OK;
+}
+static int vectorTopKNext(sqlite3_vtab_cursor *pCursor){ (void)pCursor; return SQLITE_OK; }
+static int vectorTopKEof(sqlite3_vtab_cursor *pCursor){ (void)pCursor; return 1; }
+static int vectorTopKColumn(sqlite3_vtab_cursor *pCursor, sqlite3_context *ctx, int iCol){
+  (void)pCursor; (void)iCol;
+  sqlite3_result_null(ctx);
+  return SQLITE_OK;
+}
+static int vectorTopKRowid(sqlite3_vtab_cursor *pCursor, sqlite_int64 *pRowid){ (void)pCursor; *pRowid = 0; return SQLITE_OK; }
+static sqlite3_module vectorTopKModule = {
+  0, 0, vectorTopKConnect, vectorTopKBestIndex, vectorTopKDisconnect, 0, vectorTopKOpen, vectorTopKClose,
+  vectorTopKFilter, vectorTopKNext, vectorTopKEof, vectorTopKColumn, vectorTopKRowid,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+
+static void functionError(sqlite3_str *errors, const char *zName);
+
+/* libSQL's functions and vector_top_k on the replay, unless this build has its own of a name. */
+static void openLibsql(sqlite3_str *errors){
+  const int flags = SQLITE_UTF8|SQLITE_DETERMINISTIC|SQLITE_INNOCUOUS;
+  int i;
+  for(i=0; i<(int)(sizeof(azLibsql)/sizeof(azLibsql[0])); i++){
+    if( sqlite3FindFunction(gDb, azLibsql[i], -2, SQLITE_UTF8, 0)!=0 ) continue;
+    if( sqlite3_create_function_v2(gDb, azLibsql[i], aLibsqlArg[i], flags, 0, hostFunctionStub, 0, 0, 0)!=SQLITE_OK ) functionError(errors, azLibsql[i]);
+  }
+  if( sqlite3_create_module(gDb, "vector_top_k", &vectorTopKModule, 0)!=SQLITE_OK ) functionError(errors, "vector_top_k");
+}
+
+/* For vector_top_k('docs_emb', …), the table whose rows its index holds, as its DDL spells the name,
+** which "tables" then describes: what the call returns is that table's key. 0 where the index is
+** not written as a string or names no index. */
+static const char *vectorTopKTable(SrcItem *pItem){
+  ExprList *pArgs;
+  Index *pIdx;
+  if( !pItem->fg.isTabFunc || pItem->zName==0 || sqlite3StrICmp(pItem->zName, "vector_top_k")!=0 ) return 0;
+  pArgs = pItem->u1.pFuncArg;
+  if( pArgs==0 || pArgs->nExpr<1 || pArgs->a[0].pExpr==0 || pArgs->a[0].pExpr->op!=TK_STRING ) return 0;
+  pIdx = sqlite3FindIndex(gDb, pArgs->a[0].pExpr->u.zToken, 0);
+  if( pIdx==0 || pIdx->pTable==0 ) return 0;
+  tableSeen(pIdx->pTable);
+  return pIdx->pTable->zName;
+}
+
 static void functionError(sqlite3_str *errors, const char *zName){
   sqlite3_str_appendchar(errors, 1, '{');
   kv_str(errors, "function", zName);
@@ -667,9 +781,12 @@ static int internalTable(const char *zDdl, const char *zErr){
   int n, ok = 0;
   if( zErr==0 ) return 0;
   if( strncmp(zErr, zReserved, sizeof(zReserved)-1)==0 ){
+    /* Defensive mode makes the schema read-only whatever this says; replayAuth stays on. */
+    sqlite3_db_config(gDb, SQLITE_DBCONFIG_DEFENSIVE, 0, (int*)0);
     sqlite3_db_config(gDb, SQLITE_DBCONFIG_WRITABLE_SCHEMA, 1, (int*)0);
     ok = sqlite3_exec(gDb, zDdl, 0, 0, &zErr2)==SQLITE_OK;
     sqlite3_db_config(gDb, SQLITE_DBCONFIG_WRITABLE_SCHEMA, 0, (int*)0);
+    sqlite3_db_config(gDb, SQLITE_DBCONFIG_DEFENSIVE, 1, (int*)0);
     if( !ok && zErr2 ){
       n = (int)strlen(zErr2);
       ok = n>(int)sizeof(zExists) && strcmp(&zErr2[n-(sizeof(zExists)-1)], zExists)==0;
@@ -691,6 +808,17 @@ static int internalTable(const char *zDdl, const char *zErr){
   return ok;
 }
 
+/* What the schema replay may run: anything but an ATTACH, a DETACH (VACUUM INTO attaches the file
+** it writes) or a PRAGMA given a value, none of which a schema needs, and which may reach past the
+** connection (hard_heap_limit sets the whole process's, temp_store_directory names a directory). A
+** PRAGMA that only reads is let through: FTS3 and R*Tree read page_size as they create a table. */
+static int replayAuth(void *pArg, int code, const char *z1, const char *z2, const char *z3, const char *zInside){
+  (void)pArg; (void)z1; (void)z3; (void)zInside;
+  if( code==SQLITE_ATTACH || code==SQLITE_DETACH ) return SQLITE_DENY;
+  if( code==SQLITE_PRAGMA && z2!=0 ) return SQLITE_DENY;
+  return SQLITE_OK;
+}
+
 /* Replays the DDL into a fresh in-memory database; errors are reported, not fatal. The host's
 ** functions are registered first, so a view, an index or a CHECK that calls one replays too: the
 ** ones it registers on its connection (azFn), and of the ones its SQLite lists (azHost, with the
@@ -705,17 +833,33 @@ static int openSchema(
   char *aMissing = 0;
   int i, rc;
   const int flags = SQLITE_UTF8|SQLITE_DETERMINISTIC|SQLITE_INNOCUOUS;
+  const int nBefore = sqlite3_str_length(errors);
   for(i=0; i<nFn; i++){ sqlite3_str_appendf(k, "%s/%d", azFn[i], aFnArg[i]); sqlite3_str_appendchar(k, 1, '\2'); }
   for(i=0; i<nHost; i++){ sqlite3_str_appendf(k, "%s/%d/%c", azHost[i], aHostArg[i], zHostType[i]); sqlite3_str_appendchar(k, 1, '\3'); }
   for(i=0; i<nDdl; i++){ sqlite3_str_appendall(k, azDdl[i]); sqlite3_str_appendchar(k, 1, '\1'); }
   zKey = sqlite3_str_finish(k);
   if( zKey==0 ) zKey = sqlite3_mprintf("");
-  if( gDb && gDdlKey && strcmp(gDdlKey, zKey)==0 ){ sqlite3_free(zKey); return SQLITE_OK; }
+  /* A replay kept from an earlier statement reports what it reported then, so every statement
+  ** analyzed against the schema can say which of its steps failed. */
+  if( gDb && gDdlKey && strcmp(gDdlKey, zKey)==0 ){
+    sqlite3_free(zKey);
+    if( gReplayErrors ) sqlite3_str_appendall(errors, gReplayErrors);
+    return SQLITE_OK;
+  }
   if( gDb ){ sqlite3_close(gDb); gDb = 0; }
   sqlite3_free(gDdlKey); gDdlKey = zKey;
+  sqlite3_free(gReplayErrors); gReplayErrors = 0;
   rc = sqlite3_open(":memory:", &gDb);
   if( rc!=SQLITE_OK ) return rc;
+  /* The replay runs whatever text the database's sqlite_schema holds, more than one statement to a
+  ** row included, and a database file is anyone's to commit, opened by the type check in an editor
+  ** and in CI: nothing it runs may reach past this in-memory connection. The connection attaches no
+  ** database, ever, since a statement is only prepared on it; while the DDL replays, defensive mode
+  ** is on and replayAuth refuses what it refuses. A refused statement ends its row's replay there,
+  ** reported in errors as any failed step is ("not authorized"). */
+  sqlite3_limit(gDb, SQLITE_LIMIT_ATTACHED, 0);
   installHooks(0);
+  openLibsql(errors);
   for(i=0; i<nFn; i++){
     /* Deterministic and innocuous: whatever the host's own flags, the replay accepts every place
     ** the host's schema could already call it from. */
@@ -734,6 +878,8 @@ static int openSchema(
     if( rc!=SQLITE_OK ) functionError(errors, azHost[i]);
   }
   sqlite3_free(aMissing);
+  sqlite3_db_config(gDb, SQLITE_DBCONFIG_DEFENSIVE, 1, (int*)0);
+  sqlite3_set_authorizer(gDb, replayAuth, 0);
   for(i=0; i<nDdl; i++){
     char *zErr = 0;
     int nTry, rcExec = SQLITE_OK;
@@ -759,12 +905,17 @@ static int openSchema(
     }
     sqlite3_free(zErr);
   }
+  /* The statement is prepared as the application's SQLite prepares it, which writes a virtual
+  ** table's shadow table directly unless the application turns defensive mode on itself. */
+  sqlite3_set_authorizer(gDb, 0, 0);
+  sqlite3_db_config(gDb, SQLITE_DBCONFIG_DEFENSIVE, 0, (int*)0);
   /* A double-quoted word that names no column is a string to SQLite only where the build allows
   ** it. better-sqlite3, node:sqlite, libSQL and Turso build without it (SQLITE_DQS=0) and refuse
   ** `select "hello"`, so a statement is prepared without it too. The replay above keeps it, since
   ** SQLite always reads a schema it loads from a file that way, whatever the build. */
   sqlite3_db_config(gDb, SQLITE_DBCONFIG_DQS_DML, 0, (int*)0);
   sqlite3_db_config(gDb, SQLITE_DBCONFIG_DQS_DDL, 0, (int*)0);
+  if( sqlite3_str_length(errors)>nBefore ) gReplayErrors = sqlite3_mprintf("%s", sqlite3_str_value(errors)+nBefore);
   return SQLITE_OK;
 }
 
@@ -788,6 +939,10 @@ static int functionAuth(void *pArg, int code, const char *z1, const char *zFn, c
   if( code!=SQLITE_FUNCTION || zFn==0 ) return SQLITE_OK;
   for(i=0; i<gnHost; i++) if( sqlite3StrICmp(gHost[i], zFn)==0 ) return SQLITE_OK;
   for(i=0; i<gnExtra; i++) if( sqlite3StrICmp(gExtra[i], zFn)==0 ) return SQLITE_OK;
+  /* libSQL's are refused by no host's list: the SQLite that reads the database file reads a
+  ** libSQL file as its own and lists none of them, and the application's drivers decide whether
+  ** its SQLite has them (openLibsql). */
+  if( isLibsqlFunction(zFn) ) return SQLITE_OK;
   pDef = sqlite3FindFunction(gDb, zFn, -2, SQLITE_UTF8, 0);
   if( pDef==0 || (pDef->funcFlags & SQLITE_FUNC_INTERNAL)!=0 ) return SQLITE_OK;
   if( gnDenied++==0 && zInside ){
@@ -839,6 +994,11 @@ static char *missingSchema(const char *zSql, const char *zMsg, int *piOfst, int 
   return 0;
 }
 
+/* The version of the tree's format, reylo_sqlite_analyze's first member: TREE_VERSION in
+** src/sqlite_tree.rs, which refuses a tree of another. A change to what either side reads or writes
+** moves both. */
+#define REYLO_TREE_VERSION 2
+
 /* How deep the user's statement may nest: see reylo_sqlite_analyze. */
 #define REYLO_SQLITE_EXPR_DEPTH 350
 
@@ -848,8 +1008,8 @@ static char *missingSchema(const char *zSql, const char *zMsg, int *piOfst, int 
 ** the same statement as the application runs it, names them (zSql when it is null), and the functions of the
 ** host's SQLite (azHost[i] taking aHostArg[i] arguments, of type zHostType[i]; nHost is negative
 ** when the host did not list them, and every function this build has is then taken to exist).
-** Returns a JSON document (free with reylo_sqlite_free): { statement, dml, returning, tables,
-** columns, params, readonly, error, schemaErrors }.
+** Returns a JSON document (free with reylo_sqlite_free): { version, statement, dml, returning,
+** tables, columns, params, readonly, error, schemaErrors }.
 */
 char *reylo_sqlite_analyze(
   const char *const *azDdl, int nDdl, const char *zSql, const char *zSent, const char *const *azFn, const int *aFnArg, int nFn,
@@ -858,14 +1018,15 @@ char *reylo_sqlite_analyze(
   sqlite3_str *out = sqlite3_str_new(0);
   sqlite3_str *schemaErrors = sqlite3_str_new(0);
   sqlite3_stmt *pStmt = 0, *pNames = 0;
-  const char *zTail = 0;
   int rc, i, n, nDepth;
   sqlite3_str_appendchar(schemaErrors, 1, '[');
   rc = openSchema(azDdl, nDdl, azFn, aFnArg, nFn, azHost, aHostArg, zHostType, nHost, schemaErrors);
   closeArr(schemaErrors);
   sqlite3_str_appendchar(out, 1, '{');
+  kv_int(out, "version", REYLO_TREE_VERSION);
   if( rc!=SQLITE_OK ){
-    key(out, "error"); sqlite3_str_appendall(out, "{\"message\":\"cannot open the schema replay\",\"offset\":-1}");
+    key(out, "error"); sqlite3_str_appendall(out, "{\"message\":\"cannot open the schema replay\",\"offset\":-1},");
+    key(out, "schemaErrors"); sqlite3_str_appendall(out, sqlite3_str_value(schemaErrors) ? sqlite3_str_value(schemaErrors) : "[]");
     closeObj(out);
     sqlite3_free(sqlite3_str_finish(schemaErrors));
     return sqlite3_str_finish(out);
@@ -883,7 +1044,7 @@ char *reylo_sqlite_analyze(
   ** of every shape needs at most 42% (measured on Node 24 and 26, 2026-10-21). The schema's own
   ** statements keep SQLite's bound. */
   nDepth = sqlite3_limit(gDb, SQLITE_LIMIT_EXPR_DEPTH, REYLO_SQLITE_EXPR_DEPTH);
-  rc = sqlite3_prepare_v2(gDb, zSql, -1, &pStmt, &zTail);
+  rc = sqlite3_prepare_v2(gDb, zSql, -1, &pStmt, 0);
   sqlite3_limit(gDb, SQLITE_LIMIT_EXPR_DEPTH, nDepth);
   installHooks(0);
   if( nHost>=0 ) sqlite3_set_authorizer(gDb, 0, 0);
@@ -923,8 +1084,6 @@ char *reylo_sqlite_analyze(
       sqlite3_str_appendchar(out, 1, '{');
       kv_str(out, "name", sqlite3_column_name(pNames ? pNames : pStmt, i));
       kv_str(out, "declared", sqlite3_column_decltype(pStmt, i));
-      kv_str(out, "table", sqlite3_column_table_name(pStmt, i));
-      kv_str(out, "column", sqlite3_column_origin_name(pStmt, i));
       closeObj(out); sqlite3_str_appendchar(out, 1, ',');
     }
     closeArr(out); sqlite3_str_appendchar(out, 1, ',');
@@ -932,13 +1091,11 @@ char *reylo_sqlite_analyze(
     key(out, "params"); sqlite3_str_appendchar(out, 1, '[');
     for(i=1; i<=n; i++){
       sqlite3_str_appendchar(out, 1, '{');
-      kv_int(out, "index", i);
       kv_str(out, "name", sqlite3_bind_parameter_name(pStmt, i));
       closeObj(out); sqlite3_str_appendchar(out, 1, ',');
     }
     closeArr(out); sqlite3_str_appendchar(out, 1, ',');
     kv_bool(out, "readonly", sqlite3_stmt_readonly(pStmt));
-    kv_bool(out, "tail", zTail && zTail[0] && sqlite3_complete(zTail)==0 ? 1 : (zTail && strspn(zTail, " \t\r\n;")!=strlen(zTail)));
     key(out, "tables"); tables(out); sqlite3_str_appendchar(out, 1, ',');
   }
   key(out, "schemaErrors"); sqlite3_str_appendall(out, sqlite3_str_value(schemaErrors) ? sqlite3_str_value(schemaErrors) : "[]");

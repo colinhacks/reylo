@@ -1,3 +1,4 @@
+set check_function_bodies = off;
 create table test (
   id integer not null,
   data text,
@@ -13,3 +14,4 @@ revoke select on table test from diff_anon;
 revoke trigger on table test from diff_anon;
 revoke truncate on table test from diff_anon;
 revoke update on table test from diff_anon;
+reset check_function_bodies;

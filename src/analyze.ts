@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, relative } from "node:path";
-import { anyEngine, engine, reason, MissingEngine, REYLO_VERSION, Unreachable, type Analysis, type Engine, type Lexed } from "./engine.ts";
+import { anyEngine, DIAGNOSTIC, engine, reason, MissingEngine, REYLO_VERSION, Unreachable, type Analysis, type Engine, type Lexed } from "./engine.ts";
 import { packageDir, resolveProject, sqlitePath, type ResolvedProject } from "./project.ts";
 import { NotMysql, refusedLogin } from "./connection.ts";
 import { openProjectDrivers, placeRefusal, projectDriverVersions, type SqliteDriver } from "./sqlite-drivers.ts";
@@ -268,25 +268,25 @@ export class Session {
       if (refusal === undefined) continue;
       const { start, length } = placeRefusal(sql, refusal);
       const message = driver.says(refusal);
-      return { ...outcome, analysis: { ...analysis, diagnostics: [{ message, start, length, code: 6 }] } };
+      return { ...outcome, analysis: { ...analysis, diagnostics: [{ message, start, length, code: DIAGNOSTIC.refused }] } };
     }
     return outcome;
   }
 
   async #analyze(sql: string, options: { force?: boolean; store?: boolean }): Promise<Outcome> {
-    if (this.project.error) return { ok: false, message: this.project.error, code: 11 };
+    if (this.project.error) return { ok: false, message: this.project.error, code: DIAGNOSTIC.project };
     // With no URL, `reylo/.cache/` answers as it does where the database cannot be reached (the dialect
     // is the one its entries record, src/project.ts), and a statement it lacks needs a URL.
     if (!this.project.url) {
       const hit = this.#engine instanceof MissingEngine || options.force ? undefined : this.#offlineEntry(sql);
-      return hit ? { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file, unverified: this.#unverified(hit.entry) } : { ok: false, message: this.project.missingUrl, code: 4 };
+      return hit ? { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file, unverified: this.#unverified(hit.entry) } : { ok: false, message: this.project.missingUrl, code: DIAGNOSTIC.noDatabase };
     }
     // The URL names the database, whose engine reylo has to be able to run.
     const engine = this.#engine;
-    if (engine instanceof MissingEngine) return { ok: false, message: engine.message, code: 11 };
+    if (engine instanceof MissingEngine) return { ok: false, message: engine.message, code: DIAGNOSTIC.project };
     const file = this.entryFile(sql);
     let schema = await this.schema();
-    if (schema.fatal) return { ok: false, message: schema.error!, code: 5 };
+    if (schema.fatal) return { ok: false, message: schema.error!, code: DIAGNOSTIC.unreachable };
     if (schema.value === null) {
       const hit = options.force ? undefined : this.#offlineEntry(sql);
       if (hit) return { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file, unverified: this.#unverified(hit.entry, schema.error) };
@@ -294,7 +294,7 @@ export class Session {
       const elsewhere = !options.force && this.#offlineEntry(sql, true) !== undefined;
       const cache = this.#cacheName();
       const next = elsewhere ? `${cache} has this statement's analysis from another database only, which a build reads where no database URL is set: run the type check or a build where this database can be reached, or build with no URL` : `${cache} has no analysis of this statement, so run the type check or a build where the database can be reached first`;
-      return { ok: false, message: `${this.cannotConnect(schema.error)}; ${next}.`, code: 5 };
+      return { ok: false, message: `${this.cannotConnect(schema.error)}; ${next}.`, code: DIAGNOSTIC.unreachable };
     }
     const entry = options.force || options.store === false ? undefined : readEntry(file);
     // An entry for another fingerprint, written since this session read its own, is another
@@ -304,7 +304,7 @@ export class Session {
     if (entry && entry.schema !== schema.value && entry.at >= this.#schema!.at) {
       await this.recheck();
       schema = await this.schema();
-      if (schema.fatal) return { ok: false, message: schema.error!, code: 5 };
+      if (schema.fatal) return { ok: false, message: schema.error!, code: DIAGNOSTIC.unreachable };
       if (schema.value === null) return { ok: true, analysis: entry.analysis, source: "cache", entry: file, unverified: this.#unverified(entry, schema.error) };
     }
     if (entry && entry.schema === schema.value) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
@@ -320,14 +320,14 @@ export class Session {
       if (e instanceof Unreachable) {
         this.#drop(io);
         this.#schema = { value: null, at: Date.now(), error: reason(e) };
-        return { ok: false, message: this.cannotConnect(reason(e)), code: 5 };
+        return { ok: false, message: this.cannotConnect(reason(e)), code: DIAGNOSTIC.unreachable };
       }
       if (e instanceof NotMysql) {
         this.#drop(io);
         this.#schema = { value: null, at: Date.now(), error: this.notMysql(e), fatal: true };
-        return { ok: false, message: this.#schema.error!, code: 5 };
+        return { ok: false, message: this.#schema.error!, code: DIAGNOSTIC.unreachable };
       }
-      return { ok: false, message: (e as Error).message, code: 5 };
+      return { ok: false, message: (e as Error).message, code: DIAGNOSTIC.unreachable };
     }
     if (options.store !== false) {
       writeEntry(this.project.cache, file, { version: ENTRY_VERSION, dialect: this.project.dialect, schema: schema.value, analysis, at: Date.now() });
@@ -605,7 +605,7 @@ function writeEntry(cache: string, file: string, entry: Entry): void {
 /**
  * One query per dialect whose rows change when anything an analysis reads changes: relations and
  * their columns with their type modifiers (a `varchar(n)`'s size, a `numeric(p,s)`'s precision) and whether each is an identity or a generated one, inheritance, constraints, indexes, row triggers and rules (nullability and the row
- * count read them), enum labels, domains with their base type's modifier, functions with their arguments' names, their result columns, their defaults, volatility, strictness,
+ * count read them), enum labels, a user's collations with whether each is deterministic (a key's equality and a CHECK's narrowing read it), domains with their base type's modifier, functions with their arguments' names, their result columns, their defaults, volatility, strictness,
  * kind and variadic argument, user operators and casts (the trust check reads them), view
  * definitions and column comments (a field's doc comment), and the server settings that change a statement's types;
  * and what the errors a statement may raise are read from: defaults (a domain's too), generated columns, policies and
@@ -653,6 +653,7 @@ const POSTGRES_FINGERPRINT = `select pg_catalog.md5(coalesce(pg_catalog.string_a
     union all select ${line("u", relation("w.ev_class"), txt("w.rulename"), txt("w.ev_type"), txt("w.ev_enabled"), md5("pg_catalog.pg_get_ruledef(w.oid)"))} from pg_catalog.pg_rewrite w ${rel("w", "ev_class")} where w.rulename operator(pg_catalog.<>) '_RETURN'::pg_catalog.name and ${NS}
     union all select ${line("o", named("regoperator", "o.oid"), named("regprocedure", "o.oprcode::pg_catalog.oid"))} from pg_catalog.pg_operator o where o.oid operator(pg_catalog.>=) ${USER}
     union all select ${line("e", type("e.enumtypid"), out("float4", "e.enumsortorder"), txt("e.enumlabel"))} from pg_catalog.pg_enum e
+    union all select ${line("l", named("regcollation", "l.oid"), txt("l.collprovider"), txt("l.collisdeterministic"), or(txt("l.collcollate")))} from pg_catalog.pg_collation l where l.oid operator(pg_catalog.>=) ${USER}
     union all select ${line("t", type("t.oid"), txt("t.typname"), txt("t.typtype"), type("t.typbasetype"), out("int4", "t.typtypmod"), txt("t.typnotnull"), md5(or("t.typdefault")))} from pg_catalog.pg_type t join pg_catalog.pg_namespace n on ${eq("n.oid", "t.typnamespace")} where ${NS}
     union all select ${line("f", named("regprocedure", "p.oid"), type("p.prorettype"), txt("p.proretset"), md5(or("p.prosrc")), md5(or("pg_catalog.pg_get_function_sqlbody(p.oid)")), or(txt("p.proconfig")), md5(or("pg_catalog.pg_get_expr(p.proargdefaults, 0::pg_catalog.oid)")), txt("p.prokind"), txt("p.provolatile"), txt("p.proisstrict"), out("int2", "p.pronargdefaults"), type("p.provariadic"), or(txt("p.proargnames")), or(txt("p.proargmodes")), or(txt("p.proallargtypes::pg_catalog.regtype[]")))} from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on ${eq("n.oid", "p.pronamespace")} where ${NS}
     union all select ${line("k", type("k.castsource"), type("k.casttarget"), named("regprocedure", "k.castfunc"), txt("k.castcontext"), txt("k.castmethod"))} from pg_catalog.pg_cast k where k.oid operator(pg_catalog.>=) ${USER}
@@ -666,15 +667,15 @@ const POSTGRES_FINGERPRINT = `select pg_catalog.md5(coalesce(pg_catalog.string_a
 export const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
   postgres: POSTGRES_FINGERPRINT,
   mysql: `select concat_ws(' ', @@version, @@sql_mode, count(*), sum(crc32(x)), bit_xor(crc32(x))) from (
-    select concat_ws(' ', 'c', table_name, column_name, ordinal_position, column_type, coalesce(character_set_name, ''), is_nullable, column_key, extra, coalesce(generation_expression, ''), md5(column_comment)) as x from information_schema.columns where table_schema = database()
+    select concat_ws(' ', 'c', table_name, column_name, ordinal_position, column_type, coalesce(character_set_name, ''), is_nullable, column_key, extra, coalesce(generation_expression, ''), sha2(column_comment, 256)) as x from information_schema.columns where table_schema = database()
     union all select concat_ws(' ', 's', table_name, index_name, non_unique, seq_in_index, column_name) from information_schema.statistics where table_schema = database()
-    union all select concat_ws(' ', 'v', table_name, md5(view_definition)) from information_schema.views where table_schema = database()
-    union all select concat_ws(' ', 'r', routine_name, routine_type, coalesce(dtd_identifier, ''), md5(coalesce(routine_definition, ''))) from information_schema.routines where routine_schema = database()
+    union all select concat_ws(' ', 'v', table_name, sha2(view_definition, 256)) from information_schema.views where table_schema = database()
+    union all select concat_ws(' ', 'r', routine_name, routine_type, coalesce(dtd_identifier, ''), sha2(coalesce(routine_definition, ''), 256)) from information_schema.routines where routine_schema = database()
     union all select concat_ws(' ', 'p', routine_schema, routine_name) from information_schema.routines where routine_schema <> database() and routine_type = 'FUNCTION'
     union all select concat_ws(' ', 'g', event_object_table, trigger_name, event_manipulation, action_timing) from information_schema.triggers where event_object_schema = database()
     union all select concat_ws(' ', 'f', table_name, constraint_name, referenced_table_name, update_rule, delete_rule) from information_schema.referential_constraints where constraint_schema = database()
     union all select concat_ws(' ', 'k', table_name, constraint_name, constraint_type, enforced) from information_schema.table_constraints where table_schema = database()
-    union all select concat_ws(' ', 'h', constraint_name, md5(check_clause)) from information_schema.check_constraints where constraint_schema = database()
+    union all select concat_ws(' ', 'h', constraint_name, sha2(check_clause, 256)) from information_schema.check_constraints where constraint_schema = database()
   ) t`,
   sqlite: `select type, name, tbl_name, coalesce(sql, '') from sqlite_schema
     union all select 'function', name, type, narg from pragma_function_list order by 1, 2, 3, 4`,

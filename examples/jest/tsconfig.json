@@ -11,8 +11,6 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
-  "contentMappers": [
-    { "package": "reylo", "extensions": [".sql", ".reylo.yaml", ".reylo.yml"] }
-  ],
+  "contentMappers": [{ "package": "reylo" }],
   "include": ["src", "setup.ts"]
 }

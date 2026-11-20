@@ -2,6 +2,7 @@ import path from 'node:path';
 import { docsKit } from 'docs-kit/vite';
 import { defineConfig } from 'vite';
 import { compareCards } from './lib/compare-cards.ts';
+import { homeExamples } from './lib/home-examples.ts';
 import { live } from './lib/live/plugin.ts';
 import { playground } from './lib/playground-plugin.ts';
 import { mapperDependents } from './lib/remark-mapper.ts';
@@ -16,14 +17,15 @@ import * as mdxConfig from './source.config.ts';
 // generated .source/ (lib/source.ts). First of all, each file of content/ with its Rust content
 // left out while the docs leave Rust out (lib/rust-content.ts).
 export default defineConfig({
-  plugins: [rustContentPlugin(), ...docsKit(mdxConfig), mapperDependents(), playground(), live(), compareCards()],
+  plugins: [rustContentPlugin(), ...docsKit(mdxConfig), mapperDependents(), playground(), live(), compareCards(), homeExamples()],
   resolve: {
     alias: {
       '@': import.meta.dirname,
       collections: path.join(import.meta.dirname, '.source'),
     },
   },
-  server: { port: 3311 },
+  // The build writes build/ inside the site; a dev server watching it reloaded every page on each build.
+  server: { port: 3311, watch: { ignored: ['**/build/**', '**/.share/**'] } },
   // The live card's worker (lib/live/worker.ts) loads PGlite as a chunk of its own, which a module
   // worker can; PGlite finds its files by the URLs it is handed, so Vite leaves it unbundled in dev.
   // PGlite's data file, which its own code and the worker both name, ships as a `.tar`: the CDN

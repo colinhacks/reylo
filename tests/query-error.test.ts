@@ -10,7 +10,7 @@ import { defineQuery, type MysqlClient, type MysqlCode, type MysqlNarrowing, typ
 import { readMysqlError, readPostgresError, readSqliteError } from "../src/query-error.ts";
 import { queryErrorType } from "../src/module-types.ts";
 import type { Analysis, Dialect } from "../src/engine.ts";
-import { DRIVERS, MYSQL, ROOT, pgLive, mysqlLive, postgresDatabase, driver, languageServer } from "./helpers.ts";
+import { DRIVERS, MYSQL, ROOT, pgLive, mysqlLive, postgresDatabase, driver, handWritten, languageServer } from "./helpers.ts";
 import { pgPool } from "./stand-ins.ts";
 
 // `.try()` and the database's error it reads from each driver's own (src/query-error.ts). The
@@ -207,8 +207,8 @@ test("try resolves to the value or to the database's error, and rejects with eve
   const refused = thrown("connect ECONNREFUSED 127.0.0.1:1", { errno: -61, code: "ECONNREFUSED" });
   const answering = (rows: unknown[]) => (pgPool(async () => ({ rows })));
   const failing = (error: Error) => (pgPool(async () => Promise.reject(error)));
-  const many = defineQuery<{ id: number }, { id: number }, "many", "postgres">({ dialect: "postgres", sql: "select id from users where id = :id", params: ["id"], cardinality: "many" });
-  const one = defineQuery<{ id: number }, { id: number }, "one", "postgres">({ dialect: "postgres", sql: "select id from users where id = :id", params: ["id"], cardinality: "one", source: "get_user.sql" });
+  const many = defineQuery<{ id: number }, { id: number }, "many", "postgres">({ dialect: "postgres", ...handWritten("select id from users where id = :id", "postgres"), cardinality: "many" });
+  const one = defineQuery<{ id: number }, { id: number }, "one", "postgres">({ dialect: "postgres", ...handWritten("select id from users where id = :id", "postgres"), cardinality: "one", source: "get_user.sql" });
 
   const ok = await many.try(answering([{ id: 1 }]), { id: 1 });
   assert.deepEqual(ok, { value: [{ id: 1 }] });
@@ -230,8 +230,8 @@ test("try resolves to the value or to the database's error, and rejects with eve
 test("trySync returns the value or the database's error on a synchronous SQLite client, and throws every other error", () => {
   const db = new DatabaseSync(":memory:");
   db.exec("create table users (id integer primary key, email text unique not null)");
-  const insert = defineQuery<{ email: string | null }, never, "none", "sqlite">({ dialect: "sqlite", sql: "insert into users (email) values (:email)", params: ["email"], cardinality: "none" });
-  const get = defineQuery<{ id: number }, { id: number }, "one", "sqlite">({ dialect: "sqlite", sql: "select id from users where id = :id", params: ["id"], cardinality: "one" });
+  const insert = defineQuery<{ email: string | null }, never, "none", "sqlite">({ dialect: "sqlite", ...handWritten("insert into users (email) values (:email)", "sqlite"), cardinality: "none" });
+  const get = defineQuery<{ id: number }, { id: number }, "one", "sqlite">({ dialect: "sqlite", ...handWritten("select id from users where id = :id", "sqlite"), cardinality: "one" });
   try {
     assert.deepEqual(insert.trySync(db, { email: "a" }), { value: undefined });
     const unique = insert.trySync(db, { email: "a" });

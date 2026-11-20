@@ -8,8 +8,8 @@
 //! Two things stand between that tree and the statement the server runs. MySQL reads some text by
 //! the session's `sql_mode` (`||`, a double-quoted word, a backslash in a string, a space before a
 //! call's parenthesis), so where the statement has such text the engine asks for the mode. The
-//! placeholders and the tree are read as the session reads its strings and double quotes
-//! ([`analyze_text`], [`SessionDialect`]), and where the rest reads otherwise than the parser, the
+//! placeholders and the tree are read as the session reads its strings, its double quotes and
+//! `||` ([`analyze_text`], [`SessionDialect`]), and where the rest reads otherwise than the parser, the
 //! engine reads nothing off its own tree ([`misread`]). And an execution
 //! answers with column types of its own, which are the prepare's except where a bound value or
 //! the plan decides them: such a column is typed as either ([`settle`]).
@@ -121,15 +121,16 @@ fn analyze_text_plain(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysi
     if !repeated.is_empty() {
         return Some(crate::analysis::bare(sql, &lexed, Dialect::Mysql, repeated));
     }
-    analyze(sql, &lexed, text, host, marked)
+    analyze(sql, &lexed, text, host, marked).map(|analysis| Analysis { sql_mode: text.filter(|_| !alike), ..analysis })
 }
 
 /// `sqlparser`'s MySQL dialect, reading strings and double quotes as a session of this reading
 /// does: a backslash escapes only where it does there, and `"` quotes a name under ANSI_QUOTES.
-/// Everything else is `MySqlDialect`'s, which it also says it is, so the parser's own checks for
-/// MySQL hold for it.
+/// Beside the reading, whether `||` is OR, as it is unless the session's `sql_mode` has
+/// PIPES_AS_CONCAT, where it joins strings ([`pipes_are_or`]). Everything else is
+/// `MySqlDialect`'s, which it also says it is, so the parser's own checks for MySQL hold for it.
 #[derive(Debug)]
-struct SessionDialect(MysqlText);
+struct SessionDialect(MysqlText, bool);
 
 impl sqlparser::dialect::Dialect for SessionDialect {
     fn dialect(&self) -> std::any::TypeId {
@@ -140,6 +141,9 @@ impl sqlparser::dialect::Dialect for SessionDialect {
     }
     fn supports_string_literal_backslash_escape(&self) -> bool {
         self.0.backslash_escapes
+    }
+    fn supports_double_pipe_or_operator(&self) -> bool {
+        self.1
     }
     // The rest is `MySqlDialect`'s (sqlparser 0.63): every method it overrides, delegated.
     fn is_identifier_start(&self, ch: char) -> bool {
@@ -246,7 +250,7 @@ impl sqlparser::dialect::Dialect for SessionDialect {
 /// `text` is how the session reads its strings, `None` where it would not say and the statement
 /// turns on it; `marked` names the parameters cast to `nullable(…)`.
 pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, marked: &[String]) -> Lazy<Analysis> {
-    let dialect = SessionDialect(text.unwrap_or_default());
+    let dialect = SessionDialect(text.unwrap_or_default(), true);
     // What the engine prints of the statement, for the probes it describes, writes its strings
     // as the session reads them back.
     sqlparser::ast::set_backslash_escapes(dialect.0.backslash_escapes);
@@ -290,14 +294,30 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         Some(_) => misread(sql, lexed, host),
         None => Some(Some("the server did not say its sql_mode, which decides how it reads this statement's strings and double quotes, so nothing bounds its rows".into())),
     };
-    // A tree the server would read otherwise still says what kind of statement it is, and nothing more.
-    let read = parse(&dialect, &rewritten.sql).ok().and_then(|mut v| if v.len() == 1 { v.pop() } else { None });
+    let pipes = match text {
+        Some(_) => pipes_are_or(sql, lexed, host),
+        None => Some(Ok(true)),
+    };
+    // The tree as the session reads `||`, as MySQL's default mode reads it (OR) until the session
+    // says, which what the statement reads and writes does not turn on. A tree the server would
+    // read otherwise still says what kind of statement it is, and nothing more.
+    let read_as = |dialect: &SessionDialect| parse(dialect, &rewritten.sql).ok().and_then(|mut v| if v.len() == 1 { v.pop() } else { None });
+    let read = read_as(&dialect);
     let names = crate::mysql_params::names(&rewritten);
     if let Some(statement) = &read {
         crate::mysql_params::prefetch(statement, &names, host);
         crate::errors::prefetch(kind(Some(statement)), &crate::mysql_params::tables(statement), &rewritten.sql, host);
     }
-    let (raw, misread) = (raw?, misread?);
+    let (raw, misread, pipes) = (raw?, misread?, pipes?);
+    let misread = misread.or_else(|| pipes.clone().err());
+    let (dialect, read) = match pipes {
+        Ok(false) => {
+            let concatenates = SessionDialect(dialect.0, false);
+            let read = read_as(&concatenates);
+            (concatenates, read)
+        }
+        _ => (dialect, read),
+    };
     let raw = match raw {
         Ok(r) => r,
         Err(e) => {
@@ -362,11 +382,11 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             ordered: false,
             value: false,
             rewritten: vectors_as_text(rewritten, &raw),
+            sql_mode: None,
             style: lexed.style,
             diagnostics: Vec::new(),
             unresolved: Vec::new(),
             structured: Vec::new(),
-            fresh: None,
             errors: None,
             capabilities: None,
             read_only: false,
@@ -376,6 +396,9 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         });
     }
     let parsed = if misread.is_some() { None } else { read.clone() };
+    // A query with no tree the engine reads, set aside or never parsed: nothing that only the tree
+    // shows is known of its columns (below).
+    let unread = parsed.is_none() && !matches!(&read, Some(statement) if !matches!(statement, Statement::Query(_)));
     // A parameter as a whole sort or group key is an error; the rest is typed all the same.
     let mut diagnostics = parsed.as_ref().map(|statement| constant_keys(sql, statement, &rewritten)).unwrap_or_default();
     // The parameters the caller may pass null for, which the prepare does not say: each one cast
@@ -459,6 +482,10 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             let views: HashSet<String> = host.query(VIEWS_QUERY, Vec::new(), Scope::Session)?.ok().map(|rows| rows.iter().filter_map(|row| row.first().and_then(as_str)).map(str::to_ascii_lowercase).collect()).unwrap_or_default();
             prove(q, Some(&raw), &views, host, &dialect, 0)?
         }
+        // An unread query claims no column non-null: the server flags a column of a derived table,
+        // a WITH query or a view merged into the null-extended side of an outer join NOT NULL
+        // ([`crate::mysql_derived`]), and only the tree says where one stands.
+        _ if unread => Proven { flags: vec![false; raw.columns.len()], ..Proven::default() },
         _ => Proven { flags: raw.columns.iter().map(|c| c.flags & 1 != 0).collect(), ..Proven::default() },
     };
     // The unique keys, columns and views of the tables the query reads, which its cardinality
@@ -468,9 +495,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         _ => None,
     };
     let mut never_null = proven.never_null(&raw.columns);
-    let no_views = HashMap::new();
-    let views = keys.as_ref().map_or(&no_views, |keys| &keys.views);
-    for position in flagged_wrongly(parsed.as_ref(), never_null.len(), views) {
+    for position in flagged_wrongly(parsed.as_ref(), never_null.len(), keys.as_ref()) {
         never_null[position] = (false, None);
     }
     // A column of a view may be an expression, which the prepare does not tell from a table's:
@@ -483,6 +508,13 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
     // An IF or a CASE that returns a BIT's bytes under another type ([`bit_results`]).
     let bits = match &parsed {
         Some(Statement::Query(q)) => bit_results(q, &raw, host)?,
+        // In an unread query, any column it computes as a BIT may hold a BIT's digits
+        // ([`BIT_DIGITS`]), and where it calls IF or CASE, any column of a type such a call over a
+        // BIT prepares as may hold the BIT's bytes.
+        _ if unread => {
+            let branched = branches(sql, lexed);
+            raw.columns.iter().enumerate().filter(|(_, c)| !table_column(c, views.as_ref()) && (c.r#type == 16 || branched && matches!(c.r#type, 0 | 4 | 5 | 246))).map(|(i, _)| i).collect()
+        }
         _ => Vec::new(),
     };
     // A JSON column a CHECK holds to a JSON Schema: the values the schema lets in.
@@ -597,18 +629,18 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         ordered: false,
         value: false,
         rewritten,
+        sql_mode: None,
         style: lexed.style,
         diagnostics,
         unresolved: Vec::new(),
         structured: Vec::new(),
-        fresh: None,
         errors: None,
         // A table named by its schema is one the walk of the catalog does not reach.
         capabilities: read.as_ref().filter(|r| crate::mysql_params::reads_by_schema(r)).map(|_| crate::capabilities::by_schema()),
         read_only: false,
         notes: Vec::new(),
         // From the tree as the session reads the statement, also where it reads some part of it
-        // otherwise than the parser (`||`, a spaced `count (`): which tables a FROM names does not
+        // otherwise than the parser (a spaced `count (`): which tables a FROM names does not
         // turn on that.
         tables: read.as_ref().map(crate::mysql_params::tables),
         domains: Default::default(),
@@ -793,6 +825,7 @@ impl Proven {
 /// subqueries (`mysql_shape`), and its derived tables' and WITH queries' own columns
 /// ([`through_derived`]). `depth` is how many derived tables the query is inside.
 fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: &Host, dialect: &SessionDialect, depth: usize) -> Lazy<Proven> {
+    let written = q;
     let mut pending = false;
     let mut materialized = crate::mysql_derived::materialized(q, views);
     let mut outcome = materialized.as_ref().map(|m| host.describe(&m.to_string()));
@@ -903,8 +936,15 @@ fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: 
         None => pending = true,
     }
     // The columns of the tables the subquery items of an aggregate with no GROUP BY read, which
-    // say whether such a subquery reads the row it stands in ([`rowless`]).
-    let read = match rowless_tables(q) {
+    // say whether such a subquery reads the row it stands in ([`rowless`]), and of those the
+    // queries nested in the select list and the HAVING read, which say whose aggregate a call
+    // there is ([`hides_aggregate`]), read as written: the copy reads each view through a derived
+    // table, whose columns a wildcard hides.
+    let mut tables = rowless_tables(q);
+    hides_aggregate(written, &Default::default(), &mut tables);
+    tables.sort_unstable();
+    tables.dedup();
+    let read = match tables {
         tables if tables.is_empty() => Some(Default::default()),
         tables => table_columns(host, &tables),
     };
@@ -921,11 +961,13 @@ fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: 
         .columns
         .iter()
         .map(|(name, shape)| {
-            let (ty, non_null) = resolve(shape, &outcomes, &plan, &flows, &documents, views);
+            let (ty, non_null) = resolve(shape, &outcomes, &plan, &flows, &documents, views, false);
             (name.clone(), ty, non_null)
         })
         .collect();
-    let (rowless, rowless_flagged) = rowless(q, described.columns.len(), &read.unwrap_or_default());
+    let read = read.unwrap_or_default();
+    let hidden = hides_aggregate(written, &read, &mut Vec::new());
+    let (rowless, rowless_flagged) = rowless(q, described.columns.len(), &read, hidden);
     Some(Proven { flags: described.columns.iter().map(|c| c.flags & 1 != 0).collect(), columns: described.columns, not_null, shaped, rowless, rowless_flagged })
 }
 
@@ -941,10 +983,11 @@ fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: 
 /// Beside the positions, whether the server's own flags hold for them: it flags such a column
 /// nullable where the select list or the HAVING calls the aggregate itself, which it knows before
 /// it reads any column. An outer query's aggregate in a subquery's WHERE it finds only on reading
-/// that subquery, and the columns before it keep the flags of a query that is no aggregate.
-fn rowless(q: &Query, width: usize, columns: &crate::mysql_shape::Columns) -> (Vec<usize>, bool) {
+/// that subquery, and the columns before it keep the flags of a query that is no aggregate; so
+/// does one in a subquery's select list (`hidden`, [`hides_aggregate`]).
+fn rowless(q: &Query, width: usize, columns: &crate::mysql_shape::Columns, hidden: bool) -> (Vec<usize>, bool) {
     let SetExpr::Select(s) = q.body.as_ref() else { return (Vec::new(), false) };
-    if !lone_aggregate(s) {
+    if !lone_aggregate(s) && !hidden {
         return (Vec::new(), false);
     }
     let flagged = s.having.as_ref().is_some_and(has_aggregate) || s.projection.iter().filter_map(item_expr).any(has_aggregate);
@@ -1066,6 +1109,318 @@ pub(crate) fn calls_aggregate(e: &Expr) -> bool {
     }
 }
 
+/// Whether a SELECT with no GROUP BY is an aggregate by a call written in a query nested in its
+/// select list or its HAVING: MySQL aggregates a call in the query block it is written in unless
+/// every column its arguments read (inside a subquery among them, every one that subquery's own
+/// FROM does not bind) is bound outside that block, and one is; it then belongs to the innermost
+/// block that binds one. A LATERAL derived table's own block takes the FROM it stands in as its
+/// own, as a reference to a table beside it is aggregated in it (measured on 8.4.11); a plain one
+/// sees no table beside it, and a name its FROM does not bind is the blocks' around. A column binds
+/// where the engine knows it does: a name qualified with a FROM item's own name as written, or a
+/// bare name a table has by the catalog (`columns`) or a derived table's select list names; else
+/// it is taken to bind further out, which only makes the call more likely the outer query's, and
+/// a column bound nowhere the walk sees, or a part it does not read, binds at this query. The
+/// tables whose columns the walk needed and `columns` did not hold go into `wanted`.
+pub(crate) fn hides_aggregate(q: &Query, columns: &crate::mysql_shape::Columns, wanted: &mut Vec<String>) -> bool {
+    let SetExpr::Select(s) = q.body.as_ref() else { return false };
+    if !matches!(&s.group_by, GroupByExpr::Expressions(keys, modifiers) if keys.is_empty() && modifiers.is_empty()) {
+        return false;
+    }
+    // A list and a HAVING whose text names no aggregate hide none.
+    if !s.projection.iter().filter_map(item_expr).chain(s.having.iter()).any(|e| crate::mysql_shape::aggregates_in(&e.to_string()).0 > 0) {
+        return false;
+    }
+    let ctes = q.with.iter().flat_map(|w| w.cte_tables.iter().map(cte_columns)).collect();
+    let mut owners = Owners { columns, levels: vec![Vec::new()], ctes, wanted: Vec::new(), reading: None, found: false };
+    for e in s.projection.iter().filter_map(item_expr).chain(s.having.iter()) {
+        owners.expr(e);
+    }
+    wanted.extend(owners.wanted);
+    owners.found
+}
+
+/// A FROM item as a column reference resolves against it: the name its columns are qualified
+/// with, and the names (in lower case) of the columns it certainly has, where those are known.
+type FromItem = (String, Option<HashSet<String>>);
+
+/// The walk of [`hides_aggregate`].
+struct Owners<'c> {
+    columns: &'c crate::mysql_shape::Columns,
+    /// The FROM items of each query block the walk stands in, the statement's own (index 0,
+    /// left empty: a column bound there or nowhere is the statement's alike) first.
+    levels: Vec<Vec<FromItem>>,
+    /// The WITH queries in scope, outermost first, each by its name as written and its columns
+    /// ([`cte_columns`]): a table of such a name is no catalog table.
+    ctes: Vec<(String, HashSet<String>)>,
+    wanted: Vec<String>,
+    /// While reading an aggregate's arguments: the level it is written at, and the level each
+    /// column they read binds at, those its own subqueries bind left out.
+    reading: Option<(usize, Vec<usize>)>,
+    /// Whether an aggregate nested in the statement's select list or HAVING is, or may be, the
+    /// statement's.
+    found: bool,
+}
+
+impl Owners<'_> {
+    fn expr(&mut self, e: &Expr) {
+        match e {
+            Expr::Identifier(i) => self.reference(std::slice::from_ref(&i.value)),
+            Expr::CompoundIdentifier(parts) => self.reference(&parts.iter().map(|p| p.value.clone()).collect::<Vec<_>>()),
+            Expr::Value(_) | Expr::TypedString { .. } => {}
+            Expr::Function(f) => self.function(f),
+            Expr::Nested(inner)
+            | Expr::UnaryOp { expr: inner, .. }
+            | Expr::Cast { expr: inner, .. }
+            | Expr::Collate { expr: inner, .. }
+            | Expr::IsNull(inner)
+            | Expr::IsNotNull(inner)
+            | Expr::IsTrue(inner)
+            | Expr::IsNotTrue(inner)
+            | Expr::IsFalse(inner)
+            | Expr::IsNotFalse(inner)
+            | Expr::IsUnknown(inner)
+            | Expr::IsNotUnknown(inner) => self.expr(inner),
+            Expr::BinaryOp { left, right, .. } | Expr::IsDistinctFrom(left, right) | Expr::IsNotDistinctFrom(left, right) => {
+                self.expr(left);
+                self.expr(right);
+            }
+            Expr::Like { expr, pattern, .. } | Expr::ILike { expr, pattern, .. } | Expr::RLike { expr, pattern, .. } | Expr::SimilarTo { expr, pattern, .. } => {
+                self.expr(expr);
+                self.expr(pattern);
+            }
+            Expr::Between { expr, low, high, .. } => {
+                self.expr(expr);
+                self.expr(low);
+                self.expr(high);
+            }
+            Expr::InList { expr, list, .. } => {
+                self.expr(expr);
+                list.iter().for_each(|x| self.expr(x));
+            }
+            Expr::Case { operand, conditions, else_result, .. } => {
+                for part in operand.as_deref().into_iter().chain(conditions.iter().flat_map(|c| [&c.condition, &c.result])).chain(else_result.as_deref()) {
+                    self.expr(part);
+                }
+            }
+            Expr::Tuple(items) => items.iter().for_each(|x| self.expr(x)),
+            Expr::Subquery(q) | Expr::Exists { subquery: q, .. } => self.query(q, None),
+            Expr::InSubquery { expr, subquery, .. } => {
+                self.expr(expr);
+                self.query(subquery, None);
+            }
+            // A part the walk does not read: a column it reads may bind anywhere, and an aggregate
+            // it names may be the statement's.
+            _ => match &mut self.reading {
+                Some((_, levels)) => levels.push(0),
+                None => self.found |= crate::mysql_shape::aggregates_in(&e.to_string()).0 > 0,
+            },
+        }
+    }
+
+    /// A column an aggregate's arguments read, at the level it binds at.
+    fn reference(&mut self, parts: &[String]) {
+        let Some((top, _)) = self.reading else { return };
+        let at = (0..self.levels.len())
+            .rev()
+            .find(|&i| {
+                let items = &self.levels[i];
+                match parts {
+                    [qualifier, _] => items.iter().any(|(name, _)| name == qualifier),
+                    [column] => {
+                        let column = column.to_ascii_lowercase();
+                        items.iter().any(|(_, columns)| columns.as_ref().is_some_and(|c| c.contains(&column)))
+                    }
+                    _ => false,
+                }
+            })
+            .unwrap_or(0);
+        if at <= top {
+            if let Some((_, levels)) = &mut self.reading {
+                levels.push(at);
+            }
+        }
+    }
+
+    fn function(&mut self, f: &ast::Function) {
+        let top = self.levels.len() - 1;
+        if f.over.is_none() && AGGREGATES.contains(&builtin(f).as_str()) && self.reading.is_none() && top > 0 {
+            self.reading = Some((top, Vec::new()));
+            self.arguments(f);
+            let (_, levels) = self.reading.take().expect("reading an aggregate's arguments");
+            // The innermost block a column binds at, where none binds at the call's own.
+            self.found |= levels.iter().max() == Some(&0);
+        }
+        self.arguments(f);
+        if let Some(ast::WindowType::WindowSpec(spec)) = &f.over {
+            for e in spec.partition_by.iter().chain(spec.order_by.iter().map(|o| &o.expr)) {
+                self.expr(e);
+            }
+        }
+    }
+
+    fn arguments(&mut self, f: &ast::Function) {
+        match &f.args {
+            ast::FunctionArguments::None => {}
+            ast::FunctionArguments::Subquery(q) => self.query(q, None),
+            ast::FunctionArguments::List(list) => {
+                for arg in &list.args {
+                    match arg {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(x)) | FunctionArg::Named { arg: FunctionArgExpr::Expr(x), .. } | FunctionArg::ExprNamed { arg: FunctionArgExpr::Expr(x), .. } => self.expr(x),
+                        // `count(*)` reads no column.
+                        FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => {}
+                        other => self.unread(&other.to_string()),
+                    }
+                }
+                for clause in &list.clauses {
+                    match clause {
+                        ast::FunctionArgumentClause::OrderBy(order) => order.iter().for_each(|o| self.expr(&o.expr)),
+                        ast::FunctionArgumentClause::Limit(x) | ast::FunctionArgumentClause::Where(x) => self.expr(x),
+                        ast::FunctionArgumentClause::Separator(_) => {}
+                        other => self.unread(&other.to_string()),
+                    }
+                }
+            }
+        }
+        if let Some(filter) = &f.filter {
+            self.expr(filter);
+        }
+        for o in &f.within_group {
+            self.expr(&o.expr);
+        }
+    }
+
+    /// A part of a call the walk does not read ([`Owners::expr`]).
+    fn unread(&mut self, text: &str) {
+        match &mut self.reading {
+            Some((_, levels)) => levels.push(0),
+            None => self.found |= crate::mysql_shape::aggregates_in(text).0 > 0,
+        }
+    }
+
+    /// A query nested where the walk stands; `lateral`, for a derived table, the FROM it stands
+    /// in, whose items it reads as its own.
+    fn query(&mut self, q: &Query, lateral: Option<Vec<FromItem>>) {
+        let depth = self.ctes.len();
+        if let Some(with) = &q.with {
+            self.ctes.extend(with.cte_tables.iter().map(cte_columns));
+            for cte in &with.cte_tables {
+                self.query(&cte.query, None);
+            }
+        }
+        let order: Vec<&Expr> = match q.order_by.as_ref().map(|o| &o.kind) {
+            Some(ast::OrderByKind::Expressions(exprs)) => exprs.iter().map(|o| &o.expr).collect(),
+            _ => Vec::new(),
+        };
+        self.body(&q.body, &order, lateral);
+        self.ctes.truncate(depth);
+    }
+
+    fn body(&mut self, body: &SetExpr, order: &[&Expr], lateral: Option<Vec<FromItem>>) {
+        match body {
+            SetExpr::Select(s) => self.select(s, order, lateral),
+            SetExpr::Query(q) => self.query(q, lateral),
+            SetExpr::SetOperation { left, right, .. } => {
+                self.body(left, &[], lateral.clone());
+                self.body(right, &[], lateral.clone());
+                // A set operation's ORDER BY names its output columns.
+                self.levels.push(lateral.unwrap_or_default());
+                order.iter().for_each(|e| self.expr(e));
+                self.levels.pop();
+            }
+            SetExpr::Values(values) => values.rows.iter().flat_map(|row| &row.content).for_each(|e| self.expr(e)),
+            other => self.unread(&other.to_string()),
+        }
+    }
+
+    fn select(&mut self, s: &Select, order: &[&Expr], lateral: Option<Vec<FromItem>>) {
+        let mut items = lateral.unwrap_or_default();
+        let mut factors: Vec<&TableFactor> = Vec::new();
+        let mut ons: Vec<&Expr> = Vec::new();
+        for t in &s.from {
+            factors.push(&t.relation);
+            for j in &t.joins {
+                factors.push(&j.relation);
+                ons.extend(join_on(&j.join_operator));
+            }
+        }
+        let mut derived: Vec<(&Query, bool)> = Vec::new();
+        while let Some(factor) = factors.pop() {
+            match factor {
+                TableFactor::Table { name, alias, args: None, .. } => {
+                    let table = name.0.last().and_then(|p| p.as_ident()).map(|i| i.value.clone());
+                    // A WITH query hides a table of its name; only one named exactly as the
+                    // reference names it is surely the one read.
+                    let known = match name.0.as_slice() {
+                        [ast::ObjectNamePart::Identifier(t)] if alias.as_ref().is_none_or(|a| a.columns.is_empty()) => match self.ctes.iter().rev().find(|(cte, _)| cte.eq_ignore_ascii_case(&t.value)) {
+                            Some((cte, columns)) if *cte == t.value => Some(columns.clone()),
+                            Some(_) => None,
+                            None => match self.columns.get(&t.value) {
+                                Some(columns) => Some(columns.clone()),
+                                None => {
+                                    self.wanted.push(t.value.clone());
+                                    None
+                                }
+                            },
+                        },
+                        _ => None,
+                    };
+                    if let Some(qualifier) = alias.as_ref().map(|a| a.name.value.clone()).or(table) {
+                        items.push((qualifier, known));
+                    }
+                }
+                TableFactor::Derived { lateral, subquery, alias, .. } => {
+                    if let Some(alias) = alias {
+                        items.push((alias.name.value.clone(), Some(crate::mysql_shape::output_columns(subquery, &alias.columns))));
+                    }
+                    derived.push((subquery, *lateral));
+                }
+                TableFactor::NestedJoin { table_with_joins, alias } => {
+                    if let Some(alias) = alias {
+                        items.push((alias.name.value.clone(), None));
+                    }
+                    factors.push(&table_with_joins.relation);
+                    for j in &table_with_joins.joins {
+                        factors.push(&j.relation);
+                        ons.extend(join_on(&j.join_operator));
+                    }
+                }
+                TableFactor::Table { alias: Some(alias), .. } | TableFactor::JsonTable { alias: Some(alias), .. } | TableFactor::Function { alias: Some(alias), .. } | TableFactor::UNNEST { alias: Some(alias), .. } => items.push((alias.name.value.clone(), None)),
+                _ => {}
+            }
+        }
+        self.levels.push(items);
+        let group_by: Vec<&Expr> = match &s.group_by {
+            GroupByExpr::Expressions(keys, _) => keys.iter().collect(),
+            GroupByExpr::All(_) => Vec::new(),
+        };
+        let exprs = s.projection.iter().filter_map(item_expr).chain(s.selection.iter()).chain(s.having.iter()).chain(s.qualify.iter()).chain(group_by).chain(ons).chain(order.iter().copied());
+        for e in exprs {
+            self.expr(e);
+        }
+        let here = self.levels.pop().unwrap_or_default();
+        // A derived table reads the blocks around this query as outer ones, and a LATERAL one this
+        // query's FROM as its own block.
+        for (q, lateral) in derived {
+            self.query(q, lateral.then(|| here.clone()));
+        }
+    }
+}
+
+/// A WITH query's name as written, and the names of its columns that are certain
+/// ([`crate::mysql_shape::output_columns`]).
+fn cte_columns(cte: &ast::Cte) -> (String, HashSet<String>) {
+    (cte.alias.name.value.clone(), crate::mysql_shape::output_columns(&cte.query, &cte.alias.columns))
+}
+
+/// The ON condition of a join, where it has one.
+fn join_on(op: &ast::JoinOperator) -> Option<&Expr> {
+    use ast::JoinOperator::*;
+    match op {
+        Join(ast::JoinConstraint::On(e)) | Inner(ast::JoinConstraint::On(e)) | Left(ast::JoinConstraint::On(e)) | LeftOuter(ast::JoinConstraint::On(e)) | Right(ast::JoinConstraint::On(e)) | RightOuter(ast::JoinConstraint::On(e)) | FullOuter(ast::JoinConstraint::On(e)) | CrossJoin(ast::JoinConstraint::On(e)) | StraightJoin(ast::JoinConstraint::On(e)) => Some(e),
+        _ => None,
+    }
+}
+
 /// Whether an expression holds a subquery; a part the walk does not read counts as one.
 fn holds_subquery(e: &Expr) -> bool {
     match e {
@@ -1169,6 +1524,9 @@ fn uncorrelated(q: &Query, columns: &crate::mysql_shape::Columns) -> bool {
 /// the results that call an aggregate in one statement, grouped as the query is or not at all,
 /// the others in another, not grouped. Where the server does not prepare one, none of its results
 /// is known not to be a BIT.
+///
+/// So are the columns that call one of [`BIT_DIGITS`] and are prepared as a BIT: the value is the
+/// BIT's number in decimal digits, `65` for `b'01000001'` (measured on 8.4.11).
 fn bit_results(q: &Query, raw: &MysqlDescribe, host: &Host) -> Lazy<Vec<usize>> {
     const BIT: u32 = 16;
     /// The results of an IF or a CASE, through the ones that are an IF or a CASE themselves;
@@ -1206,15 +1564,19 @@ fn bit_results(q: &Query, raw: &MysqlDescribe, host: &Host) -> Lazy<Vec<usize>> 
         return Some(Vec::new());
     }
     let mut found: Vec<(usize, &Expr)> = Vec::new();
+    let mut bits: Vec<usize> = Vec::new();
     for (i, item) in select.projection.iter().enumerate() {
         let (SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. }) = item else { continue };
+        if bit_digits(e) && raw.columns[i].r#type == BIT {
+            bits.push(i);
+            continue;
+        }
         let mut of = Vec::new();
         if results(e, &mut of) {
             // A literal and a placeholder are no BIT.
             found.extend(of.into_iter().filter(|e| !matches!(e, Expr::Value(_))).map(|e| (i, e)));
         }
     }
-    let mut bits: Vec<usize> = Vec::new();
     for aggregated in [false, true] {
         let part: Vec<&(usize, &Expr)> = found.iter().filter(|(_, e)| calls_aggregate(e) == aggregated).collect();
         if part.is_empty() {
@@ -1243,6 +1605,47 @@ fn bit_results(q: &Query, raw: &MysqlDescribe, host: &Host) -> Lazy<Vec<usize>> 
         }
     }
     Some(bits)
+}
+
+/// The functions that, given BITs alone, are prepared as a BIT and return the decimal digits of its
+/// number, where `max`, `min`, `nullif` and a subquery return its bytes (measured on 8.4.11).
+pub(crate) const BIT_DIGITS: &[&str] = &["coalesce", "ifnull", "greatest", "least", "any_value"];
+
+/// Whether `e` calls one of [`BIT_DIGITS`].
+pub(crate) fn bit_digits(e: &Expr) -> bool {
+    match e {
+        Expr::Nested(inner) => bit_digits(inner),
+        Expr::Function(f) => BIT_DIGITS.contains(&builtin(f).as_str()),
+        _ => false,
+    }
+}
+
+/// Whether the statement's code, outside its strings, names and comments, calls IF or writes a
+/// CASE, either of which may return a BIT's bytes under another type ([`bit_results`]).
+fn branches(sql: &str, lexed: &Lexed) -> bool {
+    let mut code = String::with_capacity(sql.len());
+    let mut at = 0;
+    for &(start, end) in &lexed.opaque {
+        code.push_str(&sql[at..start]);
+        code.push(' ');
+        at = end;
+    }
+    code.push_str(&sql[at..]);
+    let lower = code.to_ascii_lowercase();
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    let mut rest = lower.as_str();
+    while let Some(start) = rest.find(word) {
+        let tail = &rest[start..];
+        let end = tail.find(|c: char| !word(c)).unwrap_or(tail.len());
+        let after = tail[end..].trim_start();
+        match &tail[..end] {
+            "case" => return true,
+            "if" if after.starts_with('(') => return true,
+            _ => {}
+        }
+        rest = &tail[end..];
+    }
+    false
 }
 
 /// The positions of the columns that are an aggregate called as a window function over a frame
@@ -1384,13 +1787,12 @@ const SPACE_SENSITIVE: &[&str] = &[
 ];
 
 /// Why the engine's parser does not read the statement as this server does, if it does not.
-/// `sqlparser` reads `||` as a concatenation that binds tighter than `=`, `count (x)` as the
-/// aggregate and NOT as MySQL ranks it by default; the server reads each by the session's
-/// `sql_mode`, where `a = b || c` is `(a = b) OR c` unless PIPES_AS_CONCAT is set, `count (x)`
-/// calls a stored function `count` unless IGNORE_SPACE is set, and HIGH_NOT_PRECEDENCE moves NOT.
-/// (Strings and double quotes the parser reads by the mode itself: [`SessionDialect`].) The mode
-/// is asked for only when the text has one of these; an optimizer hint that sets a variable for
-/// the statement leaves no mode to ask for.
+/// `sqlparser` reads `count (x)` as the aggregate and NOT as MySQL ranks it by default; the server
+/// reads each by the session's `sql_mode`, where `count (x)` calls a stored function `count` unless
+/// IGNORE_SPACE is set, and HIGH_NOT_PRECEDENCE moves NOT. (Strings, double quotes and `||` the
+/// parser reads by the mode itself: [`SessionDialect`], [`pipes_are_or`].) The mode is asked for
+/// only when the text has one of these; an optimizer hint that sets a variable for the statement
+/// leaves no mode to ask for.
 fn misread(sql: &str, lexed: &Lexed, host: &Host) -> Lazy<Option<String>> {
     let text = |&(start, end): &(usize, usize)| &sql[start..end];
     let is_comment = |span: &str| span.starts_with("--") || span.starts_with("/*") || span.starts_with('#');
@@ -1422,9 +1824,6 @@ fn misread(sql: &str, lexed: &Lexed, host: &Host) -> Lazy<Option<String>> {
         i = end;
     }
     let mut readings: Vec<(&str, bool, &str)> = Vec::new();
-    if code.contains("||") {
-        readings.push(("PIPES_AS_CONCAT", false, "`||` is OR, and binds looser than a comparison"));
-    }
     // A built-in's name, then a space or a comment, then its parenthesis.
     let parted = |commented: bool| {
         words.iter().any(|(name, before, after)| {
@@ -1459,6 +1858,29 @@ fn misread(sql: &str, lexed: &Lexed, host: &Host) -> Lazy<Option<String>> {
     Some(readings.iter().find(|(name, when_set, _)| set(name) == *when_set).map(|(name, when_set, what)| {
         format!("under this server's sql_mode ({} {name}) {what}, which is not how the engine's parser reads the statement, so nothing bounds its rows", if *when_set { "with" } else { "without" })
     }))
+}
+
+/// Whether the session reads `||` as OR, which it does unless its `sql_mode` has PIPES_AS_CONCAT,
+/// where it joins strings; asked only where the statement's code, outside its strings, names and
+/// comments, has one. `Err` with why where the server would not say its mode.
+fn pipes_are_or(sql: &str, lexed: &Lexed, host: &Host) -> Lazy<Result<bool, String>> {
+    let mut code = String::with_capacity(sql.len());
+    let mut at = 0;
+    for &(start, end) in &lexed.opaque {
+        code.push_str(&sql[at..start]);
+        code.push(' ');
+        at = end;
+    }
+    code.push_str(&sql[at..]);
+    if !code.contains("||") {
+        return Some(Ok(true));
+    }
+    let rows = host.query(SQL_MODE_QUERY, Vec::new(), Scope::Session)?;
+    let mode = rows.ok().and_then(|rows| rows.first().and_then(|row| row.first()).and_then(as_str).map(str::to_ascii_uppercase));
+    Some(match mode {
+        Some(mode) => Ok(!mode.split(',').any(|m| m.trim() == "PIPES_AS_CONCAT")),
+        None => Err("the server did not say its sql_mode, which decides whether `||` is OR or joins strings, so nothing bounds its rows".into()),
+    })
 }
 
 // ---- the types an execution may answer with ---------------------------------------------------
@@ -2262,25 +2684,28 @@ fn param_type(code: u32, charset: u32) -> Type {
 
 /// One shape plus its probes' prepares as the column's type and whether it is never NULL. A leaf
 /// stored under its definition ([`stored_column`]) takes its narrowing, its `TEXT`'s capacity
-/// counted in code points, since the probe's origin may be a derived column's own name.
-fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysql_shape::Plan, flows: &[Vec<u8>], documents: &[Vec<Option<Value>>], views: &HashSet<String>) -> (Type, bool) {
+/// counted in code points, since the probe's origin may be a derived column's own name. `inside`
+/// says the shape stands inside a document, where a JSON value that is JSON's null is a null.
+fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysql_shape::Plan, flows: &[Vec<u8>], documents: &[Vec<Option<Value>>], views: &HashSet<String>, inside: bool) -> (Type, bool) {
     match shape {
         Shape::Object { fields, non_null } => {
             let fields = fields
                 .iter()
                 .map(|(k, s)| {
-                    let (ty, nn) = resolve(s, outcomes, plan, flows, documents, views);
+                    let (ty, nn) = resolve(s, outcomes, plan, flows, documents, views, true);
                     Field::new(k.clone(), ty, !nn)
                 })
                 .collect();
             (Type::structure(fields), *non_null)
         }
         Shape::Array { items, non_null, .. } => {
-            let (ty, nn) = resolve(items, outcomes, plan, flows, documents, views);
+            let (ty, nn) = resolve(items, outcomes, plan, flows, documents, views, true);
             (Type::array(Slot::new(ty, !nn)), *non_null)
         }
         Shape::Column { probe, index } => match outcomes.get(*probe).and_then(|o| o.as_ref()).and_then(|o| o.columns.get(*index)) {
             Some(c) if plan.booleans.contains(&(*probe, *index)) => (Type::boolean(), c.flags & 1 != 0),
+            // A BIT's digits, written as a BIT's bytes ([`BIT_DIGITS`]).
+            Some(c) if c.r#type == 16 && plan.digits.contains(&(*probe, *index)) => (Type::unknown(), c.flags & 1 != 0),
             // A truth value is an integer to the server, so no other type is in doubt.
             Some(c) => {
                 let ty = defined_type(c, Some(views), None);
@@ -2292,18 +2717,28 @@ fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysq
                 };
                 // A JSON document a column holds is, inside another, what it holds.
                 let ty = crate::mysql_types::content(ty);
+                // JSON the statement did not build may be JSON's null (`'null'` in a NOT NULL JSON
+                // column), which a document holds as a null, unless the JSON Schema a CHECK holds
+                // it to refuses null; at the top it is the column's value.
+                let non_null = c.flags & 1 != 0 && !(inside && may_be_json_null(&ty));
                 if plan.either.contains(&(*probe, *index)) && crate::mysql_types::has_integer(&ty) {
-                    (Type::union(vec![Type::boolean(), ty]), c.flags & 1 != 0)
+                    (Type::union(vec![Type::boolean(), ty]), non_null)
                 } else {
-                    (ty, c.flags & 1 != 0)
+                    (ty, non_null)
                 }
             }
             None => (Type::unknown(), false),
         },
         // A value the query may hand back NULL whatever its probe says ([`crate::mysql_shape`]).
-        Shape::Nullable(inner) => (resolve(inner, outcomes, plan, flows, documents, views).0, false),
+        Shape::Nullable(inner) => (resolve(inner, outcomes, plan, flows, documents, views, inside).0, false),
         _ => (Type::unknown(), false),
     }
+}
+
+/// Whether a value of the type may be JSON's null: JSON the statement did not build, unless the
+/// JSON Schema a CHECK holds it to refuses null.
+fn may_be_json_null(ty: &Type) -> bool {
+    matches!(&ty.kind, TyKind::Json(crate::types::JsonType { content: None, .. })) && ty.schema().is_none_or(|schema| crate::schema_type::admits(&schema, &Value::Null))
 }
 
 // ---- the row count ------------------------------------------------------------------------------
@@ -2319,6 +2754,8 @@ pub(crate) struct Keys {
     columns: HashMap<String, Vec<(String, Class)>>,
     /// Per view, its defining SELECT, which names its tables with the view's schema.
     views: HashMap<String, Query>,
+    /// The text of each view's definition the engine's parser does not read.
+    unparsed: Vec<String>,
     /// The schema the views are in, which their statements qualify each name with.
     pub(crate) schema: Option<String>,
 }
@@ -2328,8 +2765,16 @@ pub(crate) struct Keys {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Class {
     Text,
-    /// An integer or a decimal, which compare exactly.
+    /// An integer or a decimal, which compare exactly: as a column, a TINYINT to an INT or a YEAR,
+    /// each of whose values a double holds as well.
     Number,
+    /// A BIGINT, a DECIMAL or a BIT column: exact, but past 2^53 two of its values are one double.
+    Wide,
+    /// A number the statement computes from a placeholder (`? + 0`, `-?`, `abs(?)`), which is a
+    /// DOUBLE where the driver binds the placeholder as one, as mysql2's `execute()` binds every
+    /// number that is no integer of the placeholder's type. A key compares with it as a double,
+    /// which tells a narrow number's values apart and not a wide one's.
+    Computed,
     /// A FLOAT or a DOUBLE column, or a value read from a placeholder through one. An exact
     /// number compared with one compares as a double, where two integers past 2^53 are one value,
     /// so it pins no exact key. A constant of the kind is converted to the key's own type first,
@@ -2342,6 +2787,13 @@ pub(crate) enum Class {
     /// column by that time unless it looks the constant up in the index (it does not under
     /// IGNORE INDEX, or for an invisible index): no comparison is known to bound the rows.
     Instant,
+}
+
+impl Class {
+    /// Whether a column of this class is an exact number, which another compares with exactly.
+    pub(crate) fn exact(self) -> bool {
+        matches!(self, Class::Number | Class::Wide)
+    }
 }
 
 /// A catalog query of one table's name, asked of each of `tables` on its own, so that a later
@@ -2391,6 +2843,11 @@ fn documents(statement: Option<&Statement>, raw: &MysqlDescribe, host: &Host) ->
     for row in rows.unwrap_or_default() {
         let (Some(table), Some(clause)) = (row.first().and_then(as_str), row.get(1).and_then(as_str)) else { continue };
         for (column, schema) in check_documents(clause) {
+            // A schema that names a key twice in one object narrows nothing: MySQL's validator
+            // reads the first, and the engine's reading the last.
+            if repeats_key(&schema) {
+                continue;
+            }
             schemas.entry((table.to_ascii_lowercase(), column.to_ascii_lowercase())).or_default().push((schema, &[&crate::schema_type::MYSQL]));
         }
     }
@@ -2441,12 +2898,13 @@ fn traced_tables(q: &Query) -> Option<Vec<String>> {
     Some(tables)
 }
 
-/// `CHECK_CLAUSE` as the CHECK was written. `information_schema` hands its text back double
+/// `CHECK_CLAUSE` as the CHECK was written, or `GENERATION_EXPRESSION` as the generated column's
+/// expression was, which `information_schema` prints alike. It hands their text back double
 /// encoded, each byte of its UTF-8 as the character of that number, and with one more level of
 /// backslash escapes than the server's own reprint. `None` where that does not read back, or
 /// where a string holds `\a` or `\f`, which `sqlparser` reads as control characters and MySQL as
 /// the letters.
-fn check_clause(text: &str) -> Option<String> {
+pub(crate) fn check_clause(text: &str) -> Option<String> {
     let text = if text.chars().all(|c| (c as u32) <= 0xFF) { String::from_utf8(text.chars().map(|c| c as u8).collect()).ok()? } else { text.to_string() };
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars();
@@ -2460,6 +2918,62 @@ fn check_clause(text: &str) -> Option<String> {
         }
     }
     Some(out)
+}
+
+/// Whether JSON text names a key twice in one of its objects, or nests deeper than a plain read of
+/// it goes. MySQL's JSON Schema validator looks a keyword up by its first member of the name, where
+/// a `serde_json` value keeps the last.
+fn repeats_key(text: &str) -> bool {
+    use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
+    /// Whether a value repeats a key, read as it is deserialized.
+    struct Repeats(bool);
+    struct Walk;
+    impl<'de> Deserialize<'de> for Repeats {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            deserializer.deserialize_any(Walk).map(Repeats)
+        }
+    }
+    impl<'de> Visitor<'de> for Walk {
+        type Value = bool;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a JSON value")
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_str<E>(self, _: &str) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_unit<E>(self) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<bool, A::Error> {
+            let mut repeats = false;
+            while let Some(Repeats(inner)) = seq.next_element()? {
+                repeats |= inner;
+            }
+            Ok(repeats)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<bool, A::Error> {
+            let (mut seen, mut repeats) = (HashSet::new(), false);
+            while let Some(key) = map.next_key::<String>()? {
+                repeats |= !seen.insert(key);
+                let Repeats(inner) = map.next_value()?;
+                repeats |= inner;
+            }
+            Ok(repeats)
+        }
+    }
+    serde_json::from_str::<Repeats>(text).map_or(true, |Repeats(repeats)| repeats)
 }
 
 /// The JSON Schema text each `json_schema_valid('…', column)` of a CHECK holds its column to, as
@@ -2555,8 +3069,12 @@ fn catalog(host: &Host, q: &Query) -> Lazy<Keys> {
         let mut next = Vec::new();
         for row in views.unwrap_or_default() {
             let (Some(name), Some(definition), Some(schema)) = (row.first().and_then(as_str), row.get(1).and_then(as_str), row.get(2).and_then(as_str)) else { continue };
-            // A definition the session may not read is empty, and reads as nothing.
-            let Ok(mut parsed) = Parser::parse_sql(&MySqlDialect {}, definition) else { continue };
+            // A definition the session may not read is empty, and reads as nothing. One the parser
+            // does not read keeps its text, which may still name a call.
+            let Ok(mut parsed) = Parser::parse_sql(&MySqlDialect {}, definition) else {
+                keys.unparsed.push(definition.to_string());
+                continue;
+            };
             let Some(Statement::Query(view)) = parsed.pop() else { continue };
             keys.schema = Some(schema.to_string());
             for table in crate::mysql_keys::tables_anywhere(&view, Some(schema)) {
@@ -2660,7 +3178,8 @@ fn same_name<'m, T>(map: &'m HashMap<String, T>, name: &str) -> Option<&'m T> {
 fn class_of(data_type: &str) -> Class {
     match data_type.to_ascii_lowercase().as_str() {
         "char" | "varchar" | "tinytext" | "text" | "mediumtext" | "longtext" | "enum" | "set" | "binary" | "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob" => Class::Text,
-        "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "decimal" | "numeric" | "bit" | "year" => Class::Number,
+        "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "year" => Class::Number,
+        "bigint" | "decimal" | "numeric" | "bit" => Class::Wide,
         "float" | "double" | "real" => Class::Real,
         "timestamp" => Class::Instant,
         _ => Class::Other,
@@ -2695,12 +3214,12 @@ fn calls_flagged_wrongly(text: &str) -> bool {
 /// The positions of the result columns whose NOT NULL the server's flags, and every proof read
 /// from them, cannot show, since a call of [`FLAGGED_WRONGLY`] may make them: a select list item
 /// that makes one, or every column where one stands where it can reach a column through the FROM
-/// (a derived table, a view's own query, which `views` holds) or a WITH query, or the statement is
-/// a set operation or the list has a wildcard. A call in the WHERE, GROUP BY, HAVING or ORDER BY
-/// only filters or orders, and makes no column.
-fn flagged_wrongly(parsed: Option<&Statement>, columns: usize, views: &HashMap<String, Query>) -> Vec<usize> {
+/// (a derived table, a view's own query, which `keys` holds, or its text where the parser does not
+/// read it) or a WITH query, or the statement is a set operation or the list has a wildcard. A call
+/// in the WHERE, GROUP BY, HAVING or ORDER BY only filters or orders, and makes no column.
+fn flagged_wrongly(parsed: Option<&Statement>, columns: usize, keys: Option<&Keys>) -> Vec<usize> {
     let Some(Statement::Query(q)) = parsed else { return Vec::new() };
-    let in_views = views.values().any(|view| calls_flagged_wrongly(&view.to_string()));
+    let in_views = keys.is_some_and(|keys| keys.views.values().any(|view| calls_flagged_wrongly(&view.to_string())) || keys.unparsed.iter().any(|text| calls_flagged_wrongly(text)));
     if !in_views && !calls_flagged_wrongly(&q.to_string()) {
         return Vec::new();
     }
@@ -2780,12 +3299,13 @@ pub(crate) fn one_before_limit(q: &Query) -> Result<(), String> {
 /// Whether a key column of this class compared with a value of this one compares the column as
 /// it is: a placeholder the caller binds with the column's own type, or a value of the column's
 /// class. A date or time column converts a constant to its own type. A FLOAT or DOUBLE key compared
-/// with an exact number converts the number, and its own values stay apart.
+/// with an exact number converts the number, and its own values stay apart, and so do a narrow
+/// number's beside a number computed from a placeholder, which may be a double.
 pub(crate) fn compares_as_is(key: Option<Class>, value: Option<Class>) -> bool {
     match (key, value) {
         (Some(Class::Instant), _) => false,
         (_, None) | (None | Some(Class::Other), _) => true,
-        (Some(Class::Real), Some(Class::Number)) => true,
+        (Some(Class::Real), Some(Class::Number | Class::Computed)) | (Some(Class::Number), Some(Class::Computed)) | (Some(Class::Wide), Some(Class::Number)) => true,
         (Some(k), Some(v)) => k == v,
     }
 }
@@ -2798,6 +3318,12 @@ pub(crate) fn value_class(e: &Expr) -> Option<Class> {
     if approximate(e) && has_placeholder(e) {
         return Some(Class::Real);
     }
+    // A cast to a character type takes the connection's collation, as IMPLICIT as a column's, and
+    // between the two the server compares under the wider character set's: a utf8mb3 or latin1 key
+    // beside one compares under the connection's collation, not its own.
+    if casts_to_text(e) {
+        return Some(Class::Other);
+    }
     // `md5` and `sha1` are not here: MySQL 9.7 and 26.7 have neither, and there a stored function
     // of the name answers the call. The same holds in `deterministic`.
     const TEXT: &[&str] = &[
@@ -2805,6 +3331,9 @@ pub(crate) fn value_class(e: &Expr) -> Option<Class> {
         "sha2", "hex", "to_base64", "from_base64", "date_format", "bin_to_uuid",
     ];
     const NUMBER: &[&str] = &["abs", "round", "floor", "ceil", "ceiling", "length", "char_length", "character_length"];
+    // Of those, the ones that answer a double for a double.
+    const FOLLOWS: &[&str] = &["abs", "round", "floor", "ceil", "ceiling"];
+    use ast::BinaryOperator::{Divide, Minus, Modulo, Multiply, MyIntegerDivide, Plus, StringConcat};
     Some(match e {
         Expr::Value(v) => match &v.value {
             ast::Value::Placeholder(_) => return None,
@@ -2813,15 +3342,21 @@ pub(crate) fn value_class(e: &Expr) -> Option<Class> {
             _ => Class::Other,
         },
         Expr::Nested(inner) => return value_class(inner),
-        // `-x`, `+x`, `NOT x` and `~x` are numbers.
+        // `-x`, `+x`, `NOT x` and `~x` are numbers, and the first two of a placeholder's value the
+        // value itself, a double where it is bound as one.
+        Expr::UnaryOp { op: ast::UnaryOperator::Minus | ast::UnaryOperator::Plus, expr } if bound_number(expr) => Class::Computed,
         Expr::UnaryOp { .. } => Class::Number,
-        Expr::BinaryOp { op: ast::BinaryOperator::Plus | ast::BinaryOperator::Minus | ast::BinaryOperator::Multiply | ast::BinaryOperator::Divide | ast::BinaryOperator::Modulo | ast::BinaryOperator::MyIntegerDivide, .. } => Class::Number,
-        // `a || b` where it joins strings (PIPES_AS_CONCAT; elsewhere the tree is not read).
-        Expr::BinaryOp { op: ast::BinaryOperator::StringConcat, .. } => Class::Text,
+        // DIV answers a BIGINT whatever its operands.
+        Expr::BinaryOp { op: Plus | Minus | Multiply | Divide | Modulo, .. } if bound_number(e) => Class::Computed,
+        Expr::BinaryOp { op: Plus | Minus | Multiply | Divide | Modulo | MyIntegerDivide, .. } => Class::Number,
+        // `a || b` where it joins strings (PIPES_AS_CONCAT; elsewhere it is OR).
+        Expr::BinaryOp { op: StringConcat, .. } => Class::Text,
         Expr::Function(f) => {
             let name = builtin(f);
             if TEXT.contains(&name.as_str()) {
                 Class::Text
+            } else if FOLLOWS.contains(&name.as_str()) && bound_number(e) {
+                Class::Computed
             } else if NUMBER.contains(&name.as_str()) {
                 Class::Number
             } else {
@@ -2843,6 +3378,26 @@ pub(crate) fn value_class(e: &Expr) -> Option<Class> {
     })
 }
 
+/// Whether an expression is, or reads through the functions and operators that keep its
+/// collation, a cast or a CONVERT to a character type, a string in a collation of its own.
+fn casts_to_text(e: &Expr) -> bool {
+    let character = |data_type: &ast::DataType| {
+        let target = data_type.to_string().to_ascii_lowercase();
+        ["char", "nchar", "varchar", "nvarchar", "text", "national"].iter().any(|p| target.starts_with(p))
+    };
+    match e {
+        Expr::Cast { data_type, .. } => character(data_type),
+        Expr::Convert { data_type, charset, .. } => charset.is_some() || data_type.as_ref().is_some_and(character),
+        Expr::Nested(inner) | Expr::UnaryOp { expr: inner, .. } => casts_to_text(inner),
+        Expr::BinaryOp { left, right, .. } => casts_to_text(left) || casts_to_text(right),
+        Expr::Function(f) => match &f.args {
+            ast::FunctionArguments::List(list) => list.args.iter().any(|a| matches!(a, ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(x)) if casts_to_text(x))),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Whether an expression is a FLOAT or DOUBLE by its form: a cast to one, a literal in scientific
 /// notation, or arithmetic or a numeric built-in over one.
 fn approximate(e: &Expr) -> bool {
@@ -2857,6 +3412,22 @@ fn approximate(e: &Expr) -> bool {
         // A numeric built-in returns a double for a double argument.
         Expr::Function(f) if ["abs", "round", "floor", "ceil", "ceiling", "truncate", "sign", "mod", "greatest", "least"].contains(&builtin(f).as_str()) => match &f.args {
             ast::FunctionArguments::List(list) => list.args.iter().any(|a| matches!(a, ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(x)) if approximate(x))),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Whether an expression reads a placeholder other than through a cast to an exact number, which
+/// makes any value an exact number: a value a driver may bind as a DOUBLE.
+fn bound_number(e: &Expr) -> bool {
+    match e {
+        Expr::Value(v) => matches!(v.value, ast::Value::Placeholder(_)),
+        Expr::Cast { data_type, .. } if ["signed", "unsigned", "int", "bigint", "decimal", "numeric"].iter().any(|t| data_type.to_string().to_ascii_lowercase().starts_with(t)) => false,
+        Expr::Nested(inner) | Expr::UnaryOp { expr: inner, .. } | Expr::Cast { expr: inner, .. } => bound_number(inner),
+        Expr::BinaryOp { left, right, .. } => bound_number(left) || bound_number(right),
+        Expr::Function(f) => match &f.args {
+            ast::FunctionArguments::List(list) => list.args.iter().any(|a| matches!(a, ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(x)) if bound_number(x))),
             _ => false,
         },
         _ => false,
@@ -3001,6 +3572,15 @@ mod tests {
         assert_eq!(check_clause(r"json_schema_valid(_utf8mb4\'\\f\',`doc`)"), None);
     }
 
+    #[test]
+    fn a_schema_that_names_a_key_twice_narrows_nothing() {
+        assert!(repeats_key(r#"{"type":"string","type":"integer"}"#));
+        assert!(repeats_key(r#"{"properties":{"a":{"type":"string","typ\u0065":"integer"}}}"#));
+        assert!(repeats_key(r#"[{"a":1,"a":2}]"#));
+        assert!(!repeats_key(r#"{"type":"object","properties":{"type":{"type":"string"}},"required":["type"]}"#));
+        assert!(!repeats_key(r#"{"enum":[{"a":1},{"a":2}],"x":null,"y":[true,1.5,-2]}"#));
+    }
+
     use super::*;
 
     fn keys() -> Keys {
@@ -3082,6 +3662,15 @@ mod tests {
         assert_eq!(card("select count(*) as n from users limit 1, 5"), "at_most_one");
         assert_eq!(card("select id from users union all select user_id from posts"), "many");
         assert_eq!(card("select id from users where id = ? + 1"), "at_most_one");
+        // A number computed from a placeholder may be a double, which tells an INT's values apart
+        // and not a BIGINT's; an exact one pins either.
+        assert_eq!(card("select id from users where id = abs(-?)"), "at_most_one");
+        assert_eq!(card("select id from posts where id = ? + 0"), "many");
+        assert_eq!(card("select id from posts where id = -?"), "many");
+        assert_eq!(card("select id from posts where id = round(?)"), "many");
+        assert_eq!(card("select id from posts where id = ? div 1"), "at_most_one");
+        assert_eq!(card("select id from posts where id = cast(? as signed) + 1"), "at_most_one");
+        assert_eq!(card("select id from posts where id = ?"), "at_most_one");
         assert_eq!(card("select id from users u join posts p on p.user_id = u.id where u.id = p.user_id"), "many");
         // `RAND()` and `UUID()` are evaluated for each row, and a stored function may be too.
         assert_eq!(card("select id from users where id = floor(rand() * 3)"), "many");
@@ -3092,6 +3681,12 @@ mod tests {
         assert_eq!(card("select id from events where at = '2026-10-04 00:00:00'"), "at_most_one");
         assert_eq!(card("select id from events where at = sysdate()"), "many");
         assert_eq!(card("select id from users where email = lower(?)"), "at_most_one");
+        // A cast to a character type takes the connection's collation, which a key of a narrower
+        // character set is then compared under; bytes compare as they are.
+        assert_eq!(card("select id from users where email = cast(? as char)"), "many");
+        assert_eq!(card("select id from users where email = lower(cast(? as char(10)))"), "many");
+        assert_eq!(card("select id from users where email = concat(convert(? using utf8mb4), '')"), "many");
+        assert_eq!(card("select id from users where email = cast(? as binary)"), "at_most_one");
     }
 
     #[test]
@@ -3203,6 +3798,79 @@ mod tests {
         // The server runs what a version comment holds.
         let (analysis, _) = analyzed("select id from users /*!80000 where id = 1 */", one.clone(), default);
         assert_eq!(analysis.diagnostics.iter().map(|d| (d.code, d.start, d.length)).collect::<Vec<_>>(), vec![(10, 21, 24)]);
+    }
+
+    #[test]
+    fn an_aggregate_in_a_subquery_over_columns_of_the_query_around_alone_is_that_querys() {
+        let columns: crate::mysql_shape::Columns = [("users", &["id", "name"][..]), ("posts", &["id", "user_id", "title"][..]), ("comments", &["id", "post_id", "body", "created_at"][..])]
+            .into_iter()
+            .map(|(table, names)| (table.to_string(), names.iter().map(|n| n.to_string()).collect()))
+            .collect();
+        let hides = |sql: &str| {
+            let mut v = Parser::parse_sql(&MySqlDialect {}, sql).unwrap();
+            let Statement::Query(q) = v.pop().unwrap() else { panic!("not a query") };
+            let mut wanted = Vec::new();
+            (hides_aggregate(&q, &columns, &mut wanted), wanted)
+        };
+        for sql in [
+            "select u.id, (select count(u.name) from posts p limit 1) as n from users u",
+            "select u.id, (select json_object('n', count(*), 'a', json_arrayagg((select json_object('c', count(*), 'k', u.name) from posts p))) from users x where false) as o from users u",
+            "select u.id from users u having (select count(u.id) from posts limit 1) >= 0",
+            "select u.id, exists (select max(u.id) from posts limit 1) as e from users u",
+            "select u.id, (select count(u.id) + count(p.id) from posts p limit 1) as n from users u",
+            // A derived table nested in a subquery reads the statement's columns as outer ones.
+            "select u.id, (select d.c from (select count(u.id) as c from posts p) d limit 1) as x from users u",
+            // `name` is no column of `posts`, and the columns of `d` are not known.
+            "select u.id, (select count(name) from posts limit 1) as n from users u",
+            "select p.id, (select count(body) from (select * from comments) d) as n from posts p",
+            // A plain derived table sees no table beside it: `title` of `posts p` binds none of it.
+            "select u.id, (select d.c from posts p, (select count(title) as c from comments) d limit 1) as x from users u",
+            "select u.id, (select d.c from posts p join (select count(title) as c from comments) d on true limit 1) as x from users u",
+        ] {
+            assert!(hides(sql).0, "{sql}");
+        }
+        for sql in [
+            "select p.id, (select count(*) from comments c where c.post_id = p.id) as n from posts p",
+            "select p.id, (select max(created_at) from comments where post_id = p.id) as last from posts p",
+            "select p.id, (select count(c.id) from comments c where c.post_id = p.id) as n from posts p",
+            "select u.id, (select count(x.id) from (select id from posts) x) as n from users u",
+            // The middle query's, which binds `p`.
+            "select u.id, (select (select count(p.title) from comments c limit 1) from posts p where p.user_id = u.id limit 1) as n from users u",
+            "select u.id, count(*) as n from users u group by u.id",
+            "select id, (select title from posts limit 1) as t from users",
+            // A WITH query's columns are its select list's or its column list's.
+            "with p as (select id, title from posts) select u.id, (select count(title) from p where false) as n from users u",
+            "select u.id, (with r (k) as (select id from posts) select count(k) from r) as n from users u",
+            // A LATERAL one does, and aggregates over it.
+            "select u.id, (select d.c from posts p, lateral (select count(p.title) as c from comments) d limit 1) as x from users u",
+        ] {
+            assert!(!hides(sql).0, "{sql}");
+        }
+        // The tables whose columns say where a bare name binds.
+        let mut v = Parser::parse_sql(&MySqlDialect {}, "select p.id, (select max(created_at) from comments where post_id = p.id) as last from posts p").unwrap();
+        let Statement::Query(q) = v.pop().unwrap() else { panic!("not a query") };
+        let mut wanted = Vec::new();
+        assert!(hides_aggregate(&q, &Default::default(), &mut wanted));
+        assert_eq!(wanted, ["comments"]);
+    }
+
+    #[test]
+    fn a_query_the_engine_does_not_read_claims_no_column_non_null() {
+        let default = "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION";
+        let one = json!({ "columns": [{ "name": "id", "type": 3, "flags": 1 }], "params": [] });
+        let nullable = |sql: &str| analyzed(sql, one.clone(), default).0.columns[0].nullable;
+        assert!(!nullable("select id from users where id = 1"));
+        // `||` is read as the session reads it.
+        assert!(!nullable("select id from users where id = 1 || 1"));
+        // Set aside, by the mode or by a hint that sets a variable, or not parsed at all.
+        assert!(nullable("select count (id) as id from users"));
+        assert!(nullable("select /*+ SET_VAR(sort_buffer_size = 1048576) */ id from users"));
+        assert!(nullable("select id from users where name sounds like 'a'"));
+        // A computed number or BIT beside an IF or a CASE may be one over a BIT; a table's own column is its own.
+        let computed = json!({ "columns": [{ "name": "v", "type": 246, "flags": 1 }, { "name": "b", "type": 16, "flags": 1, "length": 8, "schema": "app", "org_table": "users", "org_name": "b" }], "params": [] });
+        let types = |sql: &str| analyzed(sql, computed.clone(), default).0.columns.iter().map(|c| c.ty.short()).collect::<Vec<_>>();
+        assert_eq!(types("select /*+ SET_VAR(sort_buffer_size = 1048576) */ if(id > 1, b, 0) as v, b from users"), ["unknown", "bit(boolean[8])"]);
+        assert_eq!(types("select /*+ SET_VAR(sort_buffer_size = 1048576) */ id + 0 as v, b from users"), ["decimal", "bit(boolean[8])"]);
     }
 
     #[test]
@@ -3345,17 +4013,30 @@ mod tests {
             "select json_object('k', json_arrayagg(id)) from t # c",
         ] {
             let mysql = Parser::parse_sql(&MySqlDialect {}, sql).map(|v| format!("{v:?}"));
-            assert_eq!(Parser::parse_sql(&SessionDialect(MysqlText::default()), sql).map(|v| format!("{v:?}")), mysql, "{sql}");
+            assert_eq!(Parser::parse_sql(&SessionDialect(MysqlText::default(), true), sql).map(|v| format!("{v:?}")), mysql, "{sql}");
         }
         let one = |sql: &str, text: MysqlText| {
             sqlparser::ast::set_backslash_escapes(text.backslash_escapes);
-            Parser::parse_sql(&SessionDialect(text), sql).unwrap().pop().unwrap().to_string()
+            Parser::parse_sql(&SessionDialect(text, true), sql).unwrap().pop().unwrap().to_string()
         };
         let plain = MysqlText { backslash_escapes: false, ansi_quotes: false };
         let ansi = MysqlText { backslash_escapes: true, ansi_quotes: true };
         assert_eq!(one(r"select 'C:\' as p, id from t where id = ?", plain), r"SELECT 'C:\' AS p, id FROM t WHERE id = ?");
-        assert!(Parser::parse_sql(&SessionDialect(MysqlText::default()), r"select 'C:\' as p, id from t where id = ?").is_err());
+        assert!(Parser::parse_sql(&SessionDialect(MysqlText::default(), true), r"select 'C:\' as p, id from t where id = ?").is_err());
         assert_eq!(one(r#"select "id" from "t" where "id" = 1"#, ansi), r#"SELECT "id" FROM "t" WHERE "id" = 1"#);
+        // `||` is OR, bound as OR binds, unless the session joins strings with it.
+        let pipes = |sql: &str, or: bool| Parser::parse_sql(&SessionDialect(MysqlText::default(), or), sql).unwrap().pop().unwrap().to_string();
+        assert_eq!(pipes("select id from t where id = 1 || name = 'a' && n = 2", true), "SELECT id FROM t WHERE id = 1 OR name = 'a' AND n = 2");
+        assert_eq!(pipes("select a = b || c as x from t", true), "SELECT a = b OR c AS x FROM t");
+        assert_eq!(pipes("select a = b || c as x from t", false), "SELECT a = b || c AS x FROM t");
+        let top = |or: bool| {
+            let Some(Statement::Query(q)) = Parser::parse_sql(&SessionDialect(MysqlText::default(), or), "select a = b || c as x from t").unwrap().pop() else { panic!("not a query") };
+            let SetExpr::Select(s) = *q.body else { panic!("not a select") };
+            let Some(SelectItem::ExprWithAlias { expr: Expr::BinaryOp { left, op, .. }, .. }) = s.projection.into_iter().next() else { panic!("no operator") };
+            (op, matches!(*left, Expr::BinaryOp { .. }))
+        };
+        assert_eq!(top(true), (ast::BinaryOperator::Or, true));
+        assert_eq!(top(false), (ast::BinaryOperator::Eq, false));
     }
 
     #[test]

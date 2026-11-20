@@ -28,7 +28,7 @@ export const first_example: Example = {
   setup: "create table users (id int8 primary key, email varchar(255) not null, bio text); comment on column users.bio is 'Shown on the profile page'",
   statement: "-- One user, by id.\nselect id, email, bio from users where id = :id",
   descriptor: {
-    $schema: "https://reylo.dev/typedefs/0.1.1.json",
+    $schema: "https://reylo.dev/typedefs/preview.json",
     dialect: { name: "postgres", version: "18.1" },
     sql: "-- One user, by id.\nselect id, email, bio from users where id = $1",
     kind: "select",
@@ -216,7 +216,7 @@ export const mysql_columns: Example = {
         { name: "flag", type: { kind: "integer", bits: 8, label: "tinyint(1)" } },
         { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000", min: "1970-01-01T00:00:01Z", max: "2038-01-19T03:14:07.999Z", label: "timestamp" } },
         { name: "status", type: { kind: "enum", type: { kind: "text" }, values: ["b", "a"], label: "enum" } },
-        { name: "born", nullable: true, type: { kind: "date", label: "date" } },
+        { name: "born", nullable: true, type: { kind: "date", min: "0000-01-01", label: "date" } },
         { name: "name", nullable: true, type: { kind: "text", size: { max: 100 }, label: "varchar" } },
         { name: "body", nullable: true, type: { kind: "text", encoding: "UTF-8", size: { unit: "byte", max: 65535 }, label: "text" } },
         { name: "tags", nullable: true, type: { kind: "array", label: "set", distinct: true, element: { type: { kind: "enum", type: { kind: "text" }, values: ["a", "b"] } } } },

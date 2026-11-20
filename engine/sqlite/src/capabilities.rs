@@ -13,12 +13,10 @@ use reylo_engine_core::types::{Access, Capabilities, CapabilityTables, Statement
 use serde_json::Value;
 
 /// One row `('trigger', table)` for each trigger, `('autoincrement', table)` for each table with an
-/// AUTOINCREMENT key, `('replaces', table)` for each table with a constraint declared ON CONFLICT
-/// REPLACE, `('virtual', table, sql)` for each virtual table, and `('key', child, parent, on update,
-/// on delete)` for each foreign key.
+/// AUTOINCREMENT key, `('virtual', table, sql)` for each virtual table, and `('key', child, parent,
+/// on update, on delete)` for each foreign key.
 pub const SCHEMA_QUERY: &str = "select 'trigger', tbl_name, null, null, null from sqlite_schema where type = 'trigger' \
     union all select 'autoincrement', name, null, null, null from sqlite_schema where type = 'table' and sql like '%autoincrement%' \
-    union all select 'replaces', name, null, null, null from sqlite_schema where type = 'table' and sql like '%on conflict replace%' \
     union all select 'virtual', name, lower(sql), null, null from sqlite_schema where type = 'table' and sql like 'create virtual table%' \
     union all select 'key', m.name, f.\"table\", f.on_update, f.on_delete from sqlite_schema m join pragma_foreign_key_list(m.name) f where m.type = 'table'";
 
@@ -198,11 +196,11 @@ pub fn refine(analysis: &Analysis, host: &Host) -> Lazy<Option<Capabilities>> {
         return Some(Some(capabilities));
     }
     // An INSERT changes no key a foreign key refers to but as a REPLACE, which deletes the row it
-    // conflicts with (`INSERT OR REPLACE`, `REPLACE`, or a constraint declared ON CONFLICT REPLACE),
-    // or an upsert's UPDATE; a delete and an update may, and a key's action may set off another's.
+    // conflicts with (`INSERT OR REPLACE`, `REPLACE`, or a key the table declares ON CONFLICT
+    // REPLACE, as SQLite parsed it), or an upsert's UPDATE; a delete and an update may, and a key's
+    // action may set off another's.
     let insert = analysis.kind == Some(StatementKind::Insert);
-    let replaces = written.iter().any(|w| tagged("replaces").any(|row| text(row, 1).is_some_and(|t| is(&t, w))));
-    let cascades = !insert || replaces || has_word(&analysis.rewritten.sql, Dialect::Sqlite, &["replace", "update"]);
+    let cascades = !insert || has_word(&analysis.rewritten.sql, Dialect::Sqlite, &["replace", "update"]) || crate::sqlite::declares_replace(analysis, host)?;
     let acts = |action: Option<String>| action.is_some_and(|a| matches!(a.as_str(), "cascade" | "set null" | "set default"));
     // Only an insert takes a new AUTOINCREMENT key, and only into the table it names.
     if insert && written.iter().any(|w| tagged("autoincrement").any(|row| text(row, 1).is_some_and(|t| is(&t, w)))) {

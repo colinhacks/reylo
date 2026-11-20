@@ -25,6 +25,7 @@ on:
       - src/engine.ts
       - .cargo/**
       - Cargo.lock
+      - rust-toolchain.toml
       - .github/scripts/build-binary.sh
       - .github/scripts/install-check.ts
       - .github/workflows/binaries.yml

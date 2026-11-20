@@ -8,8 +8,6 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
-  "contentMappers": [
-    { "package": "reylo", "extensions": [".sql", ".reylo.yaml", ".reylo.yml"] }
-  ],
+  "contentMappers": [{ "package": "reylo" }],
   "include": ["src", "build.ts", "setup.ts"]
 }

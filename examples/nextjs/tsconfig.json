@@ -22,9 +22,7 @@
       "@/*": ["./*"]
     }
   },
-  "contentMappers": [
-    { "package": "reylo", "extensions": [".sql", ".reylo.yaml", ".reylo.yml"] }
-  ],
+  "contentMappers": [{ "package": "reylo" }],
   "include": [
     "next-env.d.ts",
     "**/*.ts",

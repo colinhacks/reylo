@@ -6,7 +6,7 @@ The manifest leaves out the crate's development dependencies, its optional depen
 
 ## What this copy changes
 
-It publishes to crates.io as `reylo-sqlparser`, whose library is still `sqlparser`, so that the MySQL engine builds from crates.io, and its `build.rs` hands the hash of its sources to the engine's fingerprint as `SOURCE_HASH`.
+It publishes to crates.io as `reylo-sqlparser`, whose library is still `sqlparser`, so that the MySQL engine builds from crates.io, its `build.rs` hands the hash of its sources to the engine's fingerprint as `SOURCE_HASH`, and its manifest names the oldest Rust it builds with and no crate of the workspace, each written in it rather than taken from the workspace, so that it changes only with the copy: a published version of it is then the same crate from one release of Reylo to the next.
 
 The engine reads a query, INSERT (or REPLACE), UPDATE or DELETE, and parses nothing else, and its only dialect is MySQL's. The copy is cut to that, which takes the MySQL engine's artifact from 2.67 to 1.69 MB with every analysis unchanged. Each file it changes says so under its license header.
 
@@ -24,6 +24,7 @@ Measured against MySQL 8.4 itself: every statement of the kinds the engine reads
 - A comma between table references binds looser than any JOIN, and is read as a CROSS JOIN of each later reference, in parentheses where it has joins of its own (`a, b RIGHT JOIN c ON x` never null-extends `a`): in a multiple-table `UPDATE t1, t2 SET …`, and in parentheses, `FROM (t1, t2)`. A lone table may stand in parentheses, `LEFT JOIN (t2) ON …`, and a join in parentheses takes no alias.
 - `col->'path'` and `col->>'path'` bind tighter than any operator (`c->'$.a' + 1` adds 1 to the extracted value), and `!x` is NOT, bound tighter than every binary operator but those two (`!0 = 1` is `(!0) = 1`, `!j->'$.a'` is `!(j->'$.a')`); `a MOD b` is `a % b`; `<@x` is `<` and the variable `@x`.
 - `&&` is `AND`, and binds as `AND` does: `x = a && c` is `(x = a) AND c`, where upstream 0.63 bound it tighter than a comparison and read `x = (a AND c)`.
+- `||` is `OR`, and binds as `OR` does, where the dialect says so (`Dialect::supports_double_pipe_or_operator`, false by default and for `MySqlDialect`; the engine's dialect says so where the session's `sql_mode` has no `PIPES_AS_CONCAT`): `x = a || c` is `(x = a) OR c`. Upstream read it always as a concatenation bound tighter than a comparison, `x = (a || c)`, which is what a session with `PIPES_AS_CONCAT` reads.
 - `XOR` ranks between `AND` and `OR`, as MySQL ranks it: `a = 1 AND b = 2 XOR c = 3` is `(a = 1 AND b = 2) XOR (c = 3)`. Upstream ranked it above a comparison, which read the same text as `a = 1 AND (b = (2 XOR c) = 3)`.
 - MySQL's reserved words (`information_schema.KEYWORDS`) are never an alias without `AS`, so `INSERT … SELECT 5 ON DUPLICATE KEY UPDATE …` reads its ON.
 - `MATCH a AGAINST (…)` takes its columns with or without parentheses; `INTERVAL(N, N1, …)` is the function; `DELETE t1.*, t2.* FROM …` and `DELETE FROM t1.* USING …` read their targets; `CAST(x AS CHAR CHARACTER SET cs)` and `CONVERT(x, CHAR UNICODE)` keep their character set (`charset` on `Expr::Cast`; `ASCII`, `UNICODE` and `BINARY` stand for `latin1`, `ucs2` and `binary`); `CHAR(n USING cs)` keeps it as a `FunctionArgumentClause::Using`.

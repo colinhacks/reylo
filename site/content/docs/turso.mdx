@@ -1,11 +1,11 @@
 ---
 title: Turso
-description: How to use Reylo with Turso. Queries on Turso Cloud through the libSQL client, migrations on Turso Cloud, the local file the type check reads, libSQL's older SQLite, and Turso's own engine.
+description: How to use Reylo with Turso. Queries on Turso Cloud through the libSQL client, migrations on Turso Cloud, the local file the type check reads, libSQL's older SQLite, libSQL's vectors, and Turso's own engine.
 ---
 
 <p className="dk-subheader">Reylo on Turso Cloud and Turso's own engine</p>
 
-Reylo runs queries on Turso. Turso Cloud runs libSQL, a fork of SQLite, so everything on the [SQLite](/sqlite) page holds for it. This page covers what's specific to Turso.
+Turso Cloud runs libSQL, a fork of SQLite, so everything on the [SQLite](/sqlite) page holds for it.
 
 | | |
 | --- | --- |
@@ -15,6 +15,7 @@ Reylo runs queries on Turso. Turso Cloud runs libSQL, a fork of SQLite, so every
 | Turso's own engine | `@tursodatabase/database`, with `.run()`, and `.runSync()` on its compat `Database` |
 | Migrations | [`reylo migrate`](/migrate/docs), on Turso Cloud through its `libsql://` URL |
 | SQLite versions | Reylo's 3.53, and the SQLite of each driver your `package.json` lists: 3.45.1 for `@libsql/client` |
+| libSQL's own SQL | Vector columns and indexes, the vector functions, `vector_top_k` and `alter table … alter column` ([Vectors](#vectors)) |
 <Rust>
 | Rust | Types against the same local file; sqlx has no libSQL client, so its queries can't run on Turso Cloud |
 </Rust>
@@ -28,6 +29,13 @@ create table users (
   email text,
   settings text not null default '{}'
 ) strict;
+
+create table docs (
+  id integer primary key,
+  title text not null,
+  emb F32_BLOB(3)
+);
+create index docs_emb on docs (libsql_vector_idx(emb));
 ```
 
 </Details>
@@ -69,7 +77,7 @@ insert into users (name) values (:name)
 
 ## Local database
 
-The type check reads a local SQLite file, never a `libsql://` URL. Make one from a dump of your Turso database:
+Make a local SQLite file from a dump of your Turso database:
 
 ```sh
 turso db shell app .dump > dump.sql
@@ -92,7 +100,6 @@ direct_url: file:./dev.db
 - A `DATABASE_URL` that holds your `libsql://` URL fails the type check, which reads only `file:` and `sqlite:` URLs for SQLite. A `direct_url` wins over it.
 - In development, your app can open the same file: `createClient({ url: "file:dev.db" })` needs no auth token.
 - In CI, run your migrations into the file before the type check ([Deployment](/deployment#sqlite)). The job needs no Turso token.
-- Before a query runs, `.run()` reads the schema again through your client and warns if a column the query names has changed on Turso Cloud since the build ([When the schema changes](/typescript#when-the-schema-changes)).
 
 ## Migrations
 
@@ -115,7 +122,8 @@ steps:
 
 - Every `reylo migrate` and `reylo db` command runs on Turso Cloud, and on any libSQL server: a `libsql://`, `https://` or `http://` URL, as `@libsql/client` takes it. Add `?tls=0` to a `libsql://` URL for a server without TLS.
 - From code, pass the same URL: `migrate({ url })` ([API](/migrate/docs#api)).
-- Shadow databases are in memory on Reylo's SQLite 3.53. A migration that calls a function newer than your database server's SQLite (3.47.0 on Turso Cloud) passes `--dry-run`, then fails on the server and is rolled back.
+- Shadow databases are in memory, on libSQL's own engine as Turso Cloud runs it: SQLite 3.47.0, libSQL's SQL, and the functions Turso Cloud adds, such as `floor`, `percentile`, `uuid4` and `regexp_like`.
+- Migrations can use libSQL's own SQL, such as a vector index (`libsql_vector_idx`) or `alter table … alter column`. When your migrations or `schema.sql` do, `reylo migrate dev` and every other command open your local file on libSQL's engine too.
 - Each migration runs in one transaction with its history row. Two deploys on one machine take turns; two on different machines at once don't, and one of them fails, changing nothing.
 
 ## SQLite version
@@ -137,6 +145,39 @@ queries/user_settings.sql(1,12): error reylo6: @libsql/client runs SQLite 3.45.1
 ```
 
 It refuses `json_pretty`, which came in SQLite 3.46, and `iif` with two arguments, which came in 3.48. [Functions](/sqlite#functions) has the rest.
+
+## Vectors
+
+Reylo types libSQL's vector SQL. Declare a column as a vector, such as `F32_BLOB(3)`, index it with `libsql_vector_idx`, and search it with `vector_top_k`:
+
+```ts twoslash tab="main.ts"
+import { createClient } from "@libsql/client";
+import addDoc from "./add_doc.sql";
+import nearestDocs from "./nearest_docs.sql";
+
+const db = createClient({ url: "file:dev.db" });
+
+await addDoc.run(db, { title: "Ada", embedding: "[0.1,0.2,0.3]" });
+const docs = await nearestDocs.run(db, { q: "[0.1,0.2,0.3]" });
+```
+
+```sql tab="nearest_docs.sql" dialect="sqlite"
+select docs.id, docs.title
+from vector_top_k('docs_emb', vector32(:q), 5) as top
+join docs on docs.id = top.id
+```
+
+```sql tab="add_doc.sql" dialect="sqlite"
+insert into docs (title, emb) values (:title, vector32(:embedding))
+```
+
+- A vector parameter takes the vector's text, as `'[0.1,0.2,0.3]'`. The count of `vector_top_k` takes an integer.
+- Each row of `vector_top_k` is the `id` of a row of the indexed table: its rowid, or the primary key of a `WITHOUT ROWID` table.
+- A distance, from `vector_distance_cos` or `vector_distance_l2`, is `number | null`, since it's `NULL` where it can't be computed, as for a vector of zeros.
+- A vector function fails on a `NULL` vector, where most SQLite functions return `NULL`. Leave rows without one out with `where emb is not null`.
+- A vector column is typed as a `BLOB` column outside a `STRICT` table, since libSQL refuses vector types in a `STRICT` table. `.run()` returns a vector as a `Uint8Array`, and `vector_extract(emb)` returns its text.
+- A driver whose SQLite has no vectors, such as `better-sqlite3`, refuses these queries in the type check. Turso's own engine can't open a schema with a vector index, so the type check doesn't run queries on it then.
+- `alter table … alter column` type-checks as a statement that returns nothing.
 
 ## Turso's own engine [#turso-engine]
 
@@ -164,6 +205,6 @@ const sameUser = findUser.runSync(compat, { id: 1 });
 
 - The `Database` of `@tursodatabase/database/compat` is synchronous, so `.runSync()` works on it, inside its `db.transaction(fn)` as well.
 - The type check reads the same file, through `direct_url` as above.
-- With `@tursodatabase/database` in your `package.json`, the type check also runs each query on Turso's engine, unless your schema has an FTS5 table, which the engine can't open.
+- With `@tursodatabase/database` in your `package.json`, the type check also runs each query on Turso's engine, unless your schema has an FTS5 table or a vector index, which the engine can't open.
 - From 0.8 on, its errors carry no code. With [`.try()`](/typescript#try), `code` is `undefined` and only `message` names the failure.
 - An integer past 2^53 comes back exact.

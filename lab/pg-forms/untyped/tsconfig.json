@@ -9,6 +9,6 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
-  "contentMappers": [{ "package": "reylo", "extensions": [".sql"] }],
+  "contentMappers": [{ "package": "reylo" }],
   "include": ["."]
 }

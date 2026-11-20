@@ -5,14 +5,14 @@ description: How to use Reylo with Supabase. The connection the type check reads
 
 <p className="dk-subheader">Reylo on Supabase's Postgres</p>
 
-Reylo works with Supabase. A Supabase project is a Postgres database, so everything on the [Postgres](/postgres) page holds for it. This page covers what's specific to Supabase: the connection the type check reads, and the client your app passes to `.run()`.
+A Supabase project is a Postgres database, so everything on the [Postgres](/postgres) page holds for it.
 
 | | |
 | --- | --- |
 | Dialect | Postgres |
 | The type check reads | The direct connection or the session pooler, and in development the database `supabase start` runs |
 | Drivers | postgres.js or `pg`, through any of Supabase's connections |
-| Migrations | The Supabase CLI's, in `supabase/migrations`, applied to the local database |
+| Migrations | The Supabase CLI's, in `supabase/migrations`, applied to the local database, or [`reylo migrate`](/migrate/docs) through the session pooler or the direct connection, never port 6543 |
 | JavaScript client | Calls Supabase's REST API, so `.run()` doesn't take it ([Drivers](#drivers)) |
 
 <Details summary="View the schema behind the examples" id="schema">

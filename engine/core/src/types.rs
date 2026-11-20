@@ -7,7 +7,7 @@
 //! The spec is the reference for every kind, field and rule; the comments here only say how the
 //! Rust spells it. A flag is a `bool` written only when true, a value inside the format (a bound, a
 //! tick, a duration's maximum, an enum's values) is a `String` in its kind's canonical text, and a
-//! count (`bits`, a size, a precision, a scale) is a number. [`Type::check`] runs rule 7's
+//! count (`bits`, a size, a precision, a scale) is an integer. [`Type::check`] runs rule 7's
 //! validity checks.
 
 use serde::{Deserialize, Serialize};
@@ -227,7 +227,8 @@ pub struct TextType {
     pub pattern: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_type: Option<String>,
-    /// What the text is, by JSON Schema's format name (`email`, `uri`) or a source's own.
+    /// What the text is meant to be, by JSON Schema's format name (`email`, `uri`) or a source's
+    /// own: a name alone, which says nothing of the values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
 }
@@ -560,9 +561,10 @@ pub struct Param {
 // The statement
 // ---------------------------------------------------------------------------------------------
 
-/// The URL of the JSON Schema of the format version this crate writes, which every
-/// [`StatementDescriptor`] names in `$schema`: the `$id` of `spec/typedefs.schema.json`.
-pub const SCHEMA: &str = "https://reylo.dev/typedefs/0.1.1.json";
+/// The URL of the JSON Schema of the format this crate writes, which every [`StatementDescriptor`]
+/// names in `$schema`: the `$id` of `spec/typedefs.schema.json`. Until 1.0.0 the format is a
+/// preview with no version number, which changes in place.
+pub const SCHEMA: &str = "https://reylo.dev/typedefs/preview.json";
 
 /// A column a table's rows are sorted on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -632,7 +634,7 @@ impl From<ResultRows> for Type {
 /// What introspecting one statement returns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatementDescriptor {
-    /// The format version the descriptor is written in, as the URL of its JSON Schema ([`SCHEMA`]).
+    /// The format the descriptor is written in, as the URL of its JSON Schema ([`SCHEMA`]).
     #[serde(rename = "$schema")]
     pub schema: String,
     pub dialect: DialectVersion,
@@ -1959,13 +1961,45 @@ mod tests {
         assert_eq!(spec["$defs"]["StatementDescriptor"]["properties"]["$schema"]["const"], SCHEMA);
     }
 
-    /// The character sets the format accepts are the ones its JSON Schema lists, and its kinds the ones `Type` lists.
+    /// The character sets the format accepts are the ones its JSON Schema lists, and its kinds the
+    /// ones `Type` lists, by name and in the same order, which [`Kind::rank`] keeps.
     #[test]
     fn the_names_are_the_ones_the_schema_lists() {
         let spec: serde_json::Value = serde_json::from_str(include_str!("../../../spec/typedefs.schema.json")).unwrap();
         let listed: Vec<&str> = spec["$defs"]["Charset"]["enum"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
         assert_eq!(listed, CHARSETS);
-        let kinds: Vec<String> = spec["$defs"]["Type"]["anyOf"].as_array().unwrap().iter().map(|r| r["$ref"].as_str().unwrap().rsplit('/').next().unwrap().to_string()).collect();
-        assert_eq!(kinds.len(), 30);
+        // A definition by its `$ref`; one that is a union of definitions (XML's) by its first.
+        let def = |r: &Value| -> Value {
+            let d = &spec["$defs"][r["$ref"].as_str().unwrap().rsplit('/').next().unwrap()];
+            d.get("anyOf").map_or_else(|| d.clone(), |members| spec["$defs"][members[0]["$ref"].as_str().unwrap().rsplit('/').next().unwrap()].clone())
+        };
+        let text = json!({"type": {"kind": "text"}});
+        let mut names = Vec::new();
+        for (rank, r) in spec["$defs"]["Type"]["anyOf"].as_array().unwrap().iter().enumerate() {
+            let d = def(r);
+            let name = d["properties"]["kind"]["const"].as_str().unwrap().to_string();
+            // The kind with a value in each field it requires.
+            let mut value = json!({"kind": name});
+            for field in d["required"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).filter(|f| *f != "kind") {
+                value[field] = match field {
+                    "bits" | "exponent_bits" | "mantissa_bits" => json!(32),
+                    "tick" => json!("1"),
+                    "max" => json!("P1D"),
+                    "values" => json!(["a"]),
+                    "type" | "subtype" => text["type"].clone(),
+                    "element" | "key" | "value" => text.clone(),
+                    "elements" | "fields" | "columns" | "members" | "alternatives" => json!([]),
+                    "cardinality" => json!("many"),
+                    "label" => json!("x"),
+                    other => panic!("{name}: no value for its field {other}"),
+                };
+            }
+            let ty: Type = serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{value}: {e}"));
+            assert_eq!((ty.kind.name(), ty.kind.rank()), (name.as_str(), rank), "{value}");
+            names.push(format!("`{name}`"));
+        }
+        // And `Kind` has no kind beyond them: an unknown one's error lists every kind it has.
+        let unknown = serde_json::from_value::<Kind>(json!({"kind": "?"})).unwrap_err().to_string();
+        assert!(unknown.contains(&format!("expected one of {}", names.join(", "))), "{unknown}");
     }
 }

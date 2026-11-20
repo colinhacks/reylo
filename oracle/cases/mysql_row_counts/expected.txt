@@ -70,7 +70,7 @@ no_from_now.sql: one (x: int32) -> { at: datetime, next: bigint | double | decim
 no_from_union.sql: many () -> { one: bigint | int }
 no_from_where.sql: many (flag: int32) -> { one: bigint | int }
 sum_no_rows.sql: one () -> { total: decimal? }
-table_limit.sql: many () -> { post_id: int, tag: varchar(≤20) }
-table_statement.sql: many () -> { post_id: int, tag: varchar(≤20) }
+table_limit.sql: many () -> { post_id: int?, tag: varchar(≤20)? }
+table_statement.sql: many () -> { post_id: int?, tag: varchar(≤20)? }
 values_one.sql: one () -> { column_0: bigint | int, column_1: varchar('a') }
 values_two.sql: many () -> { column_0: bigint | int, column_1: varchar('a' | 'b') }

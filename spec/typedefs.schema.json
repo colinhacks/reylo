@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://reylo.dev/typedefs/0.1.1.json",
-  "title": "Reylo Type Defs 0.1.1",
+  "$id": "https://reylo.dev/typedefs/preview.json",
+  "title": "Reylo Type Defs, in preview",
   "description": "What introspecting one SQL statement returns, and the type of each parameter and column in it: which values each slot can hold. The format's reference is at https://reylo.dev/typedefs.",
   "$ref": "#/$defs/StatementDescriptor",
   "$defs": {
@@ -152,13 +152,16 @@
       "type": "object",
       "properties": {
         "exact": {
-          "type": "number"
+          "type": "integer",
+          "minimum": 0
         },
         "min": {
-          "type": "number"
+          "type": "integer",
+          "minimum": 0
         },
         "max": {
-          "type": "number"
+          "type": "integer",
+          "minimum": 0
         }
       }
     },
@@ -206,7 +209,8 @@
           "const": "integer"
         },
         "bits": {
-          "type": "number"
+          "type": "integer",
+          "minimum": 0
         },
         "unsigned": {
           "description": "From 0 to 2^bits − 1.",
@@ -238,11 +242,13 @@
           "const": "float"
         },
         "exponent_bits": {
-          "type": "number"
+          "type": "integer",
+          "minimum": 0
         },
         "mantissa_bits": {
           "description": "Not counting the implicit leading bit.",
-          "type": "number"
+          "type": "integer",
+          "minimum": 0
         },
         "infinity": {
           "description": "Also holds infinity and -infinity.",
@@ -277,14 +283,15 @@
         },
         "precision": {
           "description": "The most digits in the coefficient.",
-          "type": "number"
+          "type": "integer",
+          "minimum": 0
         },
         "min_scale": {
           "description": "A value is in the type when it can be written as a coefficient of at most `precision` digits times 10^-scale, with a scale from `min_scale` to `max_scale`: precision 5 and scale 2 to 2 hold 1.5, written 150 × 10^-2. Equal bounds make a fixed scale; a negative scale rounds to tens, hundreds and so on.",
-          "type": "number"
+          "type": "integer"
         },
         "max_scale": {
-          "type": "number"
+          "type": "integer"
         },
         "infinity": {
           "description": "Also holds infinity and -infinity.",
@@ -330,10 +337,12 @@
             "type": "array",
             "prefixItems": [
               {
-                "type": "number"
+                "type": "integer",
+                "minimum": 0
               },
               {
-                "type": "number"
+                "type": "integer",
+                "minimum": 0
               }
             ],
             "items": false,
@@ -353,7 +362,7 @@
           "type": "string"
         },
         "format": {
-          "description": "What the text is, by JSON Schema's format name (`email`, `uri`, `hostname`, `ipv4`) or a source's own. It narrows the values, and a consumer that does not know a format ignores it. A format the format has a kind for is written as that kind: `date-time` is an `instant`, `uuid` a `uuid` and `binary` `bytes`.",
+          "description": "What the text is meant to be, by JSON Schema's format name (`email`, `uri`, `hostname`, `ipv4`) or a source's own. It is a name alone, which says nothing of the values: a rule every value keeps is written as a `pattern`. A consumer that does not know a format ignores it. A format the format has a kind for is written as that kind: `date-time` is an `instant`, `uuid` a `uuid` and `binary` `bytes`.",
           "type": "string"
         }
       },
@@ -1112,7 +1121,7 @@
           ]
         },
         "srid": {
-          "type": "number"
+          "type": "integer"
         },
         "subtype": {
           "enum": [
@@ -1250,8 +1259,8 @@
       "type": "object",
       "properties": {
         "$schema": {
-          "description": "The version of the format the descriptor is written in, as the URL of that version's JSON Schema, which a validator or an editor reads. Versions are semantic, and until 1.0.0 a new minor version may change anything.",
-          "const": "https://reylo.dev/typedefs/0.1.1.json"
+          "description": "The format the descriptor is written in, as the URL of its JSON Schema, which a validator or an editor reads. Until 1.0.0 the format is a preview, which changes in place and has no version number; from 1.0.0 the URL names the version.",
+          "const": "https://reylo.dev/typedefs/preview.json"
         },
         "dialect": {
           "$ref": "#/$defs/Dialect"
@@ -1314,10 +1323,12 @@
           "type": "string"
         },
         "start": {
-          "type": "number"
+          "type": "integer",
+          "minimum": 0
         },
         "end": {
-          "type": "number"
+          "type": "integer",
+          "minimum": 0
         },
         "code": {
           "type": "string"

@@ -8,6 +8,7 @@ use crate::cache::{count, snapshot, Cache, Hash};
 use crate::catalog::catalog;
 use crate::commands::{run, Migration};
 use crate::db::{Db, Server, Shadow};
+use crate::terminal::Spinner;
 use crate::{Dialect, Error};
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,9 @@ impl Step {
         Step::migration(&m.name, &m.sql)
     }
 }
+
+/// What the spinner says while a shadow database is made or read, before a step runs on it.
+const SPINNING: &str = "Checking on a shadow database";
 
 /// A step that failed: its label and why.
 pub(crate) type Failed = (String, String);
@@ -108,7 +112,8 @@ impl<'s> Shadows<'s> {
                 return Ok(Ok(lines));
             }
         }
-        if let Err(failed) = self.advance(l, n).await? {
+        let spinning = crate::terminal::spinner(SPINNING);
+        if let Err(failed) = self.advance(l, n, &spinning).await? {
             return Ok(Err(failed));
         }
         let mut keep = false;
@@ -137,7 +142,8 @@ impl<'s> Shadows<'s> {
     /// Makes the lane a database that has run all its steps, for a command to read.
     pub(crate) async fn open(&mut self, l: usize) -> Result<Result<(), Failed>, Error> {
         let n = self.lanes[l].steps.len();
-        self.advance(l, n).await
+        let spinning = crate::terminal::spinner(SPINNING);
+        self.advance(l, n, &spinning).await
     }
 
     /// The lane's database, once `open`.
@@ -151,8 +157,9 @@ impl<'s> Shadows<'s> {
         self.lanes[l].memo = None;
     }
 
-    /// Brings the lane's database to `n` steps: from the longest cached prefix, else a new shadow.
-    async fn advance(&mut self, l: usize, n: usize) -> Result<Result<(), Failed>, Error> {
+    /// Brings the lane's database to `n` steps: from the longest cached prefix, else a new shadow;
+    /// `spinning` says which step runs.
+    async fn advance(&mut self, l: usize, n: usize, spinning: &Spinner) -> Result<Result<(), Failed>, Error> {
         let d = self.server.dialect();
         if self.lanes[l].shadow.is_none() {
             let mut started = None;
@@ -186,6 +193,7 @@ impl<'s> Shadows<'s> {
             let lane = &mut self.lanes[l];
             let i = lane.at;
             let step = lane.steps[i].clone();
+            spinning.say(format!("Replaying {} on a shadow database", step.label));
             let db = &mut lane.shadow.as_mut().expect("a shadow").db;
             let result = if step.schema { db.script(&step.sql).await } else { run(db, &Migration { name: step.label.clone(), time: String::new(), path: PathBuf::new(), sql: step.sql.clone() }, false).await };
             count(|s| s.replayed += 1);

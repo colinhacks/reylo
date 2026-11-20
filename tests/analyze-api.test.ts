@@ -45,7 +45,7 @@ test("analyze returns a SQLite statement's descriptor in Reylo Type Defs, as rey
   const [user, count, broken, untyped] = await same(url, ["-- One user, by id\nselect id, name, email from users where id = :id", "select count(*) as n from users", "select 'é🙂' as x, nope from users", "select 'é🙂' as x, :v as v, :w as w"]);
   const { result, ...rest } = user!;
   assert.deepEqual(rest, {
-    $schema: "https://reylo.dev/typedefs/0.1.1.json",
+    $schema: "https://reylo.dev/typedefs/preview.json",
     dialect: { name: "sqlite", version: user!.dialect.version },
     sql: "-- One user, by id\nselect id, name, email from users where id = ?",
     kind: "select",

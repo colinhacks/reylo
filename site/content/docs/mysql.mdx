@@ -5,11 +5,11 @@ description: How Reylo types SQL queries on MySQL. Each column's type in TypeScr
 
 <p className="dk-subheader">How Reylo types queries on MySQL</p>
 
-[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript<Rust> and Rust</Rust>. This page covers how it types and runs queries on MySQL: column types, null values, row counts, parameters and drivers.
+[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript<Rust> and Rust</Rust>.
 
 | | |
 | --- | --- |
-| MySQL versions | 8.0.22 or later; tested on 8.0, 8.4, 9.7 and 26.7 |
+| MySQL versions | 8.0.38 or later; tested on 8.0.38 and 8.4 |
 | Connection | A `mysql://` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url) |
 | Drivers | <Rust>In TypeScript, </Rust>`mysql2`, `mariadb`, PlanetScale and `Bun.sql`, Drizzle over `mysql2` or PlanetScale, and Knex over `mysql2` or `mariadb` ([Drivers](#drivers))<Rust>; in Rust, sqlx</Rust> |
 | Type checking | Reylo's engine connects to MySQL itself, so your project needs no driver for it |
@@ -97,7 +97,7 @@ In TypeScript, `.run()` returns the same value for a type on every driver, apart
 </LanguagePanel>
 <LanguagePanel value="Rust">
 
-In Rust, `#[reylo::query]` writes these types ([Rust](/rust#types)):
+In Rust, `#[reylo::query]` writes these types:
 
 | SQL type | Rust |
 | --- | --- |
@@ -199,6 +199,7 @@ A value has as many fraction digits as its type: a `DATETIME(3)` always has thre
 </Pairs>
 
 - **A `TIMESTAMP`'s zone.** MySQL returns a `TIMESTAMP` in the session's `time_zone`, which Reylo can't know, so the text has no zone. To read UTC, run `set time_zone = '+00:00'` on the connection, or store UTC in a `DATETIME` with `utc_timestamp()`, as the schema above does.
+- **Year 0000.** MySQL's default `sql_mode` refuses `0000-00-00`, but stores a date in year 0000, and date arithmetic reaches one: `last_day('0000-02-01')` is `"0000-02-28"`. So a `DATE`'s and a `DATETIME`'s [type descriptors](#type-descriptors) start at 0000-01-01.
 
 </Rules>
 
@@ -221,7 +222,7 @@ select id, active, role = 'admin' as is_admin from users
 
 **What counts**
 
-These are typed `boolean`: comparisons, `IS`, `IN`, `BETWEEN`, `LIKE`, `REGEXP`, `EXISTS`, `NOT`, `AND`, `OR`, `XOR`, `TRUE` and `FALSE`, and a `CASE`, `IF`, `COALESCE`, `IFNULL`, `NULLIF` or subquery whose every value is one of them.
+These are typed `boolean`: comparisons, `IS`, `IN`, `BETWEEN`, `LIKE`, `REGEXP`, `EXISTS`, `NOT`, `AND`, `OR` and `||` (which joins strings instead where your `sql_mode` has `PIPES_AS_CONCAT`), `XOR`, `TRUE` and `FALSE`, and a `CASE`, `IF`, `COALESCE`, `IFNULL`, `NULLIF` or subquery whose every value is one of them.
 
 <Pairs>
 
@@ -254,8 +255,6 @@ A `JSON` column is typed `Json`, any JSON value, unless a `JSON_SCHEMA_VALID` `C
 type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 ```
 
-Here `payload` is typed by its schema:
-
 ```ts twoslash tab="main.ts"
 import events from "./my_events.sql";
 
@@ -284,6 +283,8 @@ join users u on u.id = o.user_id
 ```
 
 Inside `json_object`, an aggregate can sit beside the query's columns wherever its `group by` allows, in a scalar subquery too: `json_object('name', u.name, 'posts', count(*))` with `group by u.id` is `{ name: string; posts: number }`. With `group by 1`, or a `group by` by an alias from the select list, an object that mixes the two has `Json` values.
+
+A `JSON` column inside the JSON you build may be `null`, even `NOT NULL`, since it can hold JSON's `null`, unless a `JSON_SCHEMA_VALID` `CHECK` refuses null.
 
 A schema's type carries through `json_arrayagg`:
 
@@ -345,7 +346,7 @@ where user_id = :user_id
 
 </Rules>
 
-MySQL validates every schema as draft 4, whatever its `$schema` says, so `const`, `if`, `prefixItems` and `contains` don't narrow the type.
+MySQL validates every schema as draft 4, whatever its `$schema` says, so `const`, `if`, `prefixItems` and `contains` don't narrow the type. Neither does a schema that names a key twice in one object, which MySQL reads by the first.
 
 ### Enums and sets
 
@@ -380,6 +381,7 @@ Each column can be null unless Reylo can tell it never is, from `NOT NULL`, join
 - **Tests through `coalesce`, `ifnull` and `<=>`** don't make their column non-null, and neither does a test under an `or` that tests another column.
 - **`bit_and`, `bit_or` and `bit_xor`** are never null, even over no rows, and `json_arrayagg` and `json_objectagg` never are in a group or over a window.
 - **`WITH ROLLUP`** adds summary rows whose grouped columns are `NULL`, so their types include `null`.
+- **An aggregate in a subquery that reads only the outer query's columns**, as `count(u.name)` in `(select count(u.name) from posts)`, aggregates the outer query, which then returns one row even where it reads none, its other columns `NULL`.
 
 To say a value is never null, write `coalesce(x, …)`, `ifnull(x, …)` or `where x is not null`.
 
@@ -389,7 +391,7 @@ Reylo infers how many rows a query returns from its keys, aggregates and `limit 
 
 - **A write returns nothing.** MySQL has no `returning`, so an `insert`, `update`, `delete` or `replace` is `void`, and so are a multi-table write and `select … into @variable`.
 - **`values row(…)`** of one row returns that row.
-- **A key matches exactly or not at all.** It doesn't count when MySQL compares it under a collation it picks, as doubles (beside a `float` or `double`, or a string beside a number), on a `TIMESTAMP`, which two instants can share when clocks go back, or under `WITH ROLLUP`.
+- **A key matches exactly or not at all.** It doesn't count when MySQL compares it under a collation it picks (the connection's, beside a `cast(… as char)`), as doubles (beside a `float` or `double`, a string beside a number, or arithmetic on a parameter beside a `BIGINT` or `DECIMAL`, since a driver may send the parameter as a double), on a `TIMESTAMP`, which two instants can share when clocks go back, or under `WITH ROLLUP`.
 - **An unnamed expression** among several columns is a type error where its text isn't an identifier, as with `count(*)`: MySQL names the column by that text, which a driver that writes values into the statement fills in. Name it with `as`.
 
 To read a new row's id, select `last_insert_id()` on the connection that ran the insert:
@@ -439,7 +441,7 @@ A parameter accepts the same values `.run()` returns for its type, so you can pa
 
 **Integers**
 
-MySQL reports every integer parameter as a `BIGINT`, so Reylo types it from the column it's compared with or written to. Elsewhere it uses MySQL's type, as for `limit`:
+MySQL reports every integer parameter as a `BIGINT`, so Reylo types it from the column it's compared with or written to (in a `having`, a name is the select list's alias before it's a column, as MySQL reads it). Elsewhere it uses MySQL's type, as for `limit`:
 
 <InferenceCard>
 
@@ -496,7 +498,7 @@ where role = coalesce(:role::nullable(text), role)
 
 **Written to a nullable column**
 
-Written directly into a column that accepts `NULL`, with no cast, in an `insert`, `update`, `replace` or `on duplicate key update`. A column accepts it unless it's `NOT NULL` or a `check (… is not null)` covers it.
+Written directly into a column that accepts `NULL`, with no cast, in an `insert`, `update`, `replace` or `on duplicate key update`. A column accepts it unless it's `NOT NULL`, a `check (… is not null)` covers it, or a `NOT NULL` generated column computes `NULL` from its `NULL`, as `nu + 1` and `doc->>'$.sku'` do and `coalesce(nu, 0)` doesn't.
 
 <InferenceCard>
 
@@ -712,12 +714,13 @@ What Reylo can't type on MySQL, and what to do instead:
 | The labels of an `ENUM` or a `SET` a query reads through a `WITH` query, a `UNION` or an expression: it is typed `string`, or `Set<string>` | Select the column itself where you need the union |
 | Where in a query an error is, which MySQL doesn't say | None: the type check marks the whole query |
 | An `if` or a `case` that returns a `BIT` column, which MySQL sends as the column's bytes under a `DECIMAL` type, or as a number under a `BIT` one: it is typed `unknown` | Make the column a number first: `if(n > 0, enabled + 0, 0)` |
+| A `coalesce`, `ifnull`, `greatest`, `least` or `any_value` of `BIT` columns alone, which MySQL sends as the number's decimal digits under a `BIT` type, in a column or inside JSON: it is typed `unknown` | Make the column a number first: `coalesce(mask + 0, 0)` |
 | A loadable function (`create function … soname`), which `information_schema` doesn't list, so `.readOnly` can't see one | Don't retry a query that calls one |
-| A query Reylo's parser can't read | None: it keeps MySQL's types and nullability, returns `Row[]`, and its JSON is `Json` |
-| A `sql_mode` that changes how MySQL reads a query (`NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES`, `PIPES_AS_CONCAT`) | None: Reylo keeps MySQL's types, with no row counts or JSON shapes |
+| A query Reylo's parser can't read | None: it keeps MySQL's types, every column can be null, it returns `Row[]`, and its JSON is `Json` |
+| A query MySQL reads otherwise than Reylo's parser, by its `sql_mode` (`count (x)` without `IGNORE_SPACE`, `not` under `HIGH_NOT_PRECEDENCE`) or by a `SET_VAR` hint | None: Reylo keeps MySQL's types, every column can be null, and it has no row counts or JSON shapes |
 | A `/*! … */` comment, which MySQL runs as SQL, so it's an error | Write it as plain SQL |
 | `with … insert`, which MySQL 8.4 rejects | Put the `with` after `insert into … (…)`, as in [Bulk inserts](/inference#bulk-inserts) |
-| A query past 500 operators or 200 levels of nesting | None: Reylo falls back to MySQL's own types and any number of rows |
+| A query past 500 operators or 200 levels of nesting | None: Reylo falls back to MySQL's own types, every column can be null, and any number of rows |
 | A statement other than a query, such as `create index` or `show tables` | None: it returns nothing, or rows whose columns are all nullable, as MySQL reports |
 | `explain` and `call`, whose rows MySQL describes only once they run | None: each is an error |
 | A file of several statements, such as a migration | Put each statement in a file of its own |

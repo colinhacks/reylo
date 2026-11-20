@@ -51,7 +51,7 @@ test("SQLite: a value nothing types inside JSON the statement builds is Json, wh
   symlinkSync(join(ROOT, "packages", "sqlite"), join(root, "node_modules", "@reylosql", "sqlite"));
   // noUnusedLocals: a module that names no Json imports none.
   const compilerOptions = { target: "esnext", module: "nodenext", lib: ["esnext"], types: [], strict: true, noUnusedLocals: true, noEmit: true, skipLibCheck: true, allowImportingTsExtensions: true };
-  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions, contentMappers: [{ package: "reylo", extensions: [".sql"] }], include: ["main.ts"] }));
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions, contentMappers: [{ package: "reylo" }], include: ["main.ts"] }));
   const files = {
     "built.sql": "select json_object('k', json_extract(doc, '$.a'), 'n', id) as f from docs\n",
     "plain.sql": "select json_object('Json', id) as Json from docs\n",

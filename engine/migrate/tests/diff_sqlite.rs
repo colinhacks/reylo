@@ -2,8 +2,9 @@
 //! `v1.sql` with `seed.sql`'s rows in one database, `v2.sql` in another, the plan from the first to
 //! the second run on the first as `reylo migrate` runs a file (foreign keys off, one transaction,
 //! `pragma foreign_key_check` before the commit), the first's catalog then required to equal the
-//! second's and every table to keep its rows, and the plan compared with `plan.sql`, which
-//! `REYLO_BLESS=1` writes. Every SQLite schema the oracle's cases set up is planned from an empty
+//! second's and every table to keep its rows and their values, a second plan to be empty, the way
+//! back from v2 (without rows) to v1 to work too unless `one-way.txt` says why it can't, and the
+//! plan compared with `plan.sql`, which `REYLO_BLESS=1` writes. Every SQLite schema the oracle's cases set up is planned from an empty
 //! database and back to one. SQLite needs no server: every database is in memory.
 
 use reylo_migrate::catalog::{catalog, difference};
@@ -25,6 +26,11 @@ fn only(mut cases: Vec<PathBuf>) -> Vec<PathBuf> {
 
 async fn memory() -> Db {
     Db::connect(":memory:", &std::env::temp_dir()).await.unwrap()
+}
+
+/// An empty database in memory on libSQL's engine, for a schema of libSQL's own SQL.
+fn libsql_memory() -> Db {
+    Db::LibsqlLocal(reylo_migrate::libsql_local::Local::memory().unwrap())
 }
 
 async fn plan(from: &mut Db, to: &mut Db) -> Plan {
@@ -64,6 +70,50 @@ async fn counts(db: &mut Db) -> Vec<(String, String)> {
     out
 }
 
+/// Each table's rows, as text, column by column, sorted: `(table, column names, rows)`.
+async fn values(db: &mut Db) -> Vec<(String, Vec<String>, Vec<Vec<String>>)> {
+    let tables = db.rows("select name from pragma_table_list where schema = 'main' and type = 'table' and name not like 'sqlite_%' order by name").await.unwrap();
+    let mut out = Vec::new();
+    for t in tables {
+        let name = t.text("name").to_string();
+        let q = format!("\"{}\"", name.replace('"', "\"\""));
+        let columns: Vec<String> = db.rows(&format!("select name from pragma_table_xinfo('{}') where hidden = 0 order by cid", name.replace('\'', "''"))).await.unwrap().iter().map(|r| r.text("name").to_string()).collect();
+        if columns.is_empty() {
+            continue;
+        }
+        // A number reads as itself whatever its storage class (1, 1.0, '1'), as a column's change of
+        // affinity converts it; text that isn't one, and a blob, read as written.
+        let cell = |c: &str| {
+            let q = format!("\"{}\"", c.replace('"', "\"\""));
+            format!("case typeof({q}) when 'null' then 'NULL' when 'blob' then 'x' || hex({q}) when 'text' then {q} else cast(case when {q} = cast({q} as integer) then cast({q} as integer) else {q} end as text) end")
+        };
+        let list = columns.iter().enumerate().map(|(k, c)| format!("{} as v{k}", cell(c))).collect::<Vec<_>>().join(", ");
+        let mut rows: Vec<Vec<String>> = db.rows(&format!("select {list} from {q}")).await.unwrap().iter().map(|r| (0..columns.len()).map(|k| r.text(&format!("v{k}")).to_string()).collect()).collect();
+        rows.sort();
+        out.push((name.to_lowercase(), columns.iter().map(|c| c.to_lowercase()).collect(), rows));
+    }
+    out
+}
+
+/// The values of the columns a table keeps that a plan changed: before and after, each read in the
+/// columns both have.
+fn changed(before: &[(String, Vec<String>, Vec<Vec<String>>)], after: &[(String, Vec<String>, Vec<Vec<String>>)]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (table, columns, rows) in before {
+        let Some((_, now_columns, now_rows)) = after.iter().find(|(t, ..)| t == table) else { continue };
+        let both: Vec<(usize, usize)> = columns.iter().enumerate().filter_map(|(k, c)| now_columns.iter().position(|n| n == c).map(|j| (k, j))).collect();
+        let pick = |rows: &[Vec<String>], side: usize| -> Vec<Vec<String>> {
+            let mut out: Vec<Vec<String>> = rows.iter().map(|r| both.iter().map(|(k, j)| r[if side == 0 { *k } else { *j }].clone()).collect()).collect();
+            out.sort();
+            out
+        };
+        if pick(rows, 0) != pick(now_rows, 1) {
+            out.push(table.clone());
+        }
+    }
+    out
+}
+
 /// Each AUTOINCREMENT table's counter, which can be past every key its table holds.
 async fn counters(db: &mut Db) -> Vec<(String, i64)> {
     let exists = db.rows("select count(*) as n from sqlite_schema where name = 'sqlite_sequence'").await.unwrap();
@@ -90,10 +140,12 @@ async fn sqlite() {
         from.exec(&read(&case.join("seed.sql"))).await.unwrap_or_else(|e| panic!("{name}: seed.sql: {e}"));
         to.exec(&read(&case.join("v2.sql"))).await.unwrap_or_else(|e| panic!("{name}: v2.sql: {e}"));
         let before = counts(&mut from).await;
+        let rows_before = values(&mut from).await;
         let sequences = counters(&mut from).await;
         let plan = plan(&mut from, &mut to).await;
         let text = plan.sql();
         let failed = run(&mut from, &plan).await;
+        let rows_after = values(&mut from).await;
         let (only_a, only_b) = difference(&catalog(&mut from).await.unwrap(), &catalog(&mut to).await.unwrap());
         let after = counts(&mut from).await;
         let mut lost: Vec<String> = before.iter().filter(|(t, n)| after.iter().any(|(u, m)| u == t && m != n)).map(|(t, n)| format!("{t}: {n} rows before")).collect();
@@ -111,7 +163,7 @@ async fn sqlite() {
             std::fs::write(&expected, &text).unwrap();
         }
         let mut problems = Vec::new();
-        if let Some(f) = failed {
+        if let Some(f) = &failed {
             problems.push(format!("the plan failed at {f}"));
         }
         if let Some(d) = differs(&only_a, &only_b) {
@@ -123,6 +175,39 @@ async fn sqlite() {
         if !bless && read(&expected) != text {
             problems.push(format!("the plan is not plan.sql's (REYLO_BLESS=1 writes it):\n{text}"));
         }
+        // Every column a table keeps keeps its values, where the case doesn't say the change rewrites them.
+        let skip: Vec<String> = read(&case.join("changes.txt")).lines().filter_map(|l| l.split_whitespace().next()).map(|t| t.to_lowercase()).collect();
+        let changed: Vec<String> = changed(&rows_before, &rows_after).into_iter().filter(|t| !skip.contains(t)).collect();
+        if failed.is_none() && !changed.is_empty() {
+            problems.push(format!("values changed in: {}", changed.join(", ")));
+        }
+        // Planned again, a database the plan took to the target needs nothing more.
+        if failed.is_none() && differs(&only_a, &only_b).is_none() {
+            let more = crate::plan(&mut from, &mut to).await;
+            if more.runnable().next().is_some() {
+                problems.push(format!("after the plan, the plan again is not empty:\n{}", more.sql()));
+            }
+        }
+        // And back: v2 (without rows) to v1, unless the case says why it goes one way only.
+        if read(&case.join("one-way.txt")).trim().is_empty() {
+            let (mut back, mut first) = (memory().await, memory().await);
+            back.exec(&read(&case.join("v2.sql"))).await.unwrap_or_else(|e| panic!("{name}: v2.sql: {e}"));
+            first.exec(&read(&case.join("v1.sql"))).await.unwrap_or_else(|e| panic!("{name}: v1.sql: {e}"));
+            let reverse = crate::plan(&mut back, &mut first).await;
+            let failed = run(&mut back, &reverse).await;
+            let (only_c, only_d) = difference(&catalog(&mut back).await.unwrap(), &catalog(&mut first).await.unwrap());
+            let mut lines: Vec<String> = failed.iter().map(|f| format!("  the plan failed at {f}")).collect();
+            lines.extend(differs(&only_c, &only_d));
+            if lines.is_empty() {
+                let more = crate::plan(&mut back, &mut first).await;
+                if more.runnable().next().is_some() {
+                    lines.push(format!("  again:\n{}", more.sql()));
+                }
+            }
+            if !lines.is_empty() {
+                problems.push(format!("back from v2 to v1:\n{}\nplan:\n{}", lines.join("\n"), reverse.sql()));
+            }
+        }
         if !problems.is_empty() {
             failures.push(format!("{name}:\n{}\nplan:\n{text}", problems.join("\n")));
         }
@@ -132,7 +217,8 @@ async fn sqlite() {
 
 /// Every SQLite schema the oracle's cases set up (`oracle/cases/<case>/setup.sql` where `dialect`
 /// says `sqlite`), built from an empty database by its plan, and dropped back to an empty one by the
-/// plan the other way: each direction must end with the other side's catalog.
+/// plan the other way: each direction must end with the other side's catalog. A case with a `libsql`
+/// file is libSQL's own (a vector index), which only libSQL's engine makes, so it is built there.
 #[tokio::test(flavor = "current_thread")]
 async fn sqlite_oracle_schemas() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../oracle/cases");
@@ -140,7 +226,7 @@ async fn sqlite_oracle_schemas() {
     let (mut failures, mut skipped, mut passed) = (Vec::new(), Vec::new(), 0);
     for case in &cases {
         let name = case.file_name().unwrap().to_string_lossy().into_owned();
-        let (mut empty, mut full, mut blank) = (memory().await, memory().await, memory().await);
+        let (mut empty, mut full, mut blank) = if case.join("libsql").exists() { (libsql_memory(), libsql_memory(), libsql_memory()) } else { (memory().await, memory().await, memory().await) };
         if let Err(err) = full.exec(&read(&case.join("setup.sql"))).await {
             skipped.push(format!("{name}: {err}"));
             continue;

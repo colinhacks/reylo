@@ -1,0 +1,15 @@
+alter type mood rename to mood__old;
+create type mood as enum ('a', 'c');
+alter domain d rename to d__old;
+create domain d as mood;
+alter table t alter column n drop default;
+alter table t alter column n type d using n::text::d;
+alter table t alter column n set default 'c'::mood;
+alter table t alter column c drop default;
+alter table t alter column c type text using c::text;
+alter type p alter attribute a type mood;
+alter table t alter column c type p using c::text::p;
+alter table t alter column c set default row('a'::mood)::p;
+drop domain d__old;
+drop type mood__old;
+alter table t alter column n set default 'c';

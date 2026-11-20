@@ -198,8 +198,8 @@ pub fn lines(case: &Path, files: &[String], analyses: &Map<String, Value>) -> Ve
 
 /// Compare a case's lines with its `errors.txt`, or write them there under `--bless`; a case
 /// without the file is not compared.
-pub fn check(case: &Path, lines: &[String], bless: bool) -> bool {
-    let path = case.join("errors.txt");
+pub fn check(case: &Path, lines: &[String], bless: bool, on: &crate::On) -> bool {
+    let path = on.path(case, "errors");
     if !path.is_file() {
         return true;
     }
@@ -208,7 +208,7 @@ pub fn check(case: &Path, lines: &[String], bless: bool) -> bool {
         fs::write(&path, &actual).expect("errors.txt is writable");
         return true;
     }
-    let expected = fs::read_to_string(&path).unwrap_or_default();
+    let expected = on.read(case, "errors").unwrap_or_default();
     if expected == actual {
         return true;
     }

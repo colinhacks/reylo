@@ -47,69 +47,15 @@ const STALE_MS: u128 = 7 * 24 * 3600 * 1000;
 // SHA-256, for the keys: a cache that answered for the wrong history would change an outcome, so a
 // key is a cryptographic digest of what it stands for.
 
-pub(crate) struct Sha256 {
-    h: [u32; 8],
-    block: [u8; 64],
-    used: usize,
-    length: u64,
-}
-
-const K: [u32; 64] = [
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-];
+pub(crate) struct Sha256(sha2::Sha256);
 
 impl Sha256 {
     pub(crate) fn new() -> Sha256 {
-        Sha256 { h: [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19], block: [0; 64], used: 0, length: 0 }
+        Sha256(<sha2::Sha256 as sha2::Digest>::new())
     }
 
-    fn compress(h: &mut [u32; 8], block: &[u8; 64]) {
-        let mut w = [0u32; 64];
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([block[4 * i], block[4 * i + 1], block[4 * i + 2], block[4 * i + 3]]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
-        }
-        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = *h;
-        for i in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ (!e & g);
-            let t1 = hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(K[i]).wrapping_add(w[i]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let t2 = s0.wrapping_add(maj);
-            hh = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(t1);
-            d = c;
-            c = b;
-            b = a;
-            a = t1.wrapping_add(t2);
-        }
-        for (x, y) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
-            *x = x.wrapping_add(y);
-        }
-    }
-
-    pub(crate) fn update(&mut self, mut data: &[u8]) -> &mut Sha256 {
-        self.length += data.len() as u64;
-        while !data.is_empty() {
-            let take = (64 - self.used).min(data.len());
-            self.block[self.used..self.used + take].copy_from_slice(&data[..take]);
-            self.used += take;
-            data = &data[take..];
-            if self.used == 64 {
-                Sha256::compress(&mut self.h, &self.block);
-                self.used = 0;
-            }
-        }
+    pub(crate) fn update(&mut self, data: &[u8]) -> &mut Sha256 {
+        sha2::Digest::update(&mut self.0, data);
         self
     }
 
@@ -119,17 +65,7 @@ impl Sha256 {
     }
 
     pub(crate) fn finish(&mut self) -> Hash {
-        let bits = self.length.wrapping_mul(8);
-        self.update(&[0x80]);
-        while self.used != 56 {
-            self.update(&[0]);
-        }
-        self.update(&bits.to_be_bytes());
-        let mut out = [0u8; 32];
-        for (i, word) in self.h.iter().enumerate() {
-            out[4 * i..4 * i + 4].copy_from_slice(&word.to_be_bytes());
-        }
-        out
+        sha2::Digest::finalize_reset(&mut self.0).into()
     }
 }
 
@@ -137,16 +73,23 @@ pub(crate) fn hex(h: &[u8]) -> String {
     h.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// This build's catalog reader, which decides what a schema's fingerprint is a digest of: a build
-/// whose reader differs reads another fingerprint for the same schema, which is then not drift.
-pub(crate) fn code_id() -> String {
-    static ID: LazyLock<String> = LazyLock::new(|| code_digest(include_str!("catalog.rs")));
-    ID.clone()
+/// The version of the catalog reader (`catalog.rs`), which decides what a schema's fingerprint is a
+/// digest of: a fingerprint stored by a reader of another version can't be compared, so a deploy
+/// stores a new one, and a change by hand made before it goes unseen. It moves only when what the
+/// reader reads, or how it writes a line, changes, so that a release that leaves the reading alone
+/// leaves every stored fingerprint comparable. A test holds each edit to the reader's code to that
+/// choice.
+const READER: u32 = 4;
+
+/// The catalog reader's part of a fingerprint.
+pub(crate) fn reader_id() -> String {
+    format!("reader{READER}")
 }
 
 /// A digest of a source's code up to its tests, leaving out what reads no schema differently: a
 /// line's indentation, a blank line and a line that is all comment. Spacing inside a line stays in,
 /// since a string the catalog writes may hold it.
+#[cfg(test)]
 fn code_digest(source: &str) -> String {
     let lines: Vec<&str> = source.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("//")).collect();
     let end = match lines.iter().position(|l| *l == "mod tests {") {
@@ -243,6 +186,8 @@ static SESSION_STATE: LazyLock<[Regex; 3]> = LazyLock::new(|| {
 #[cfg(feature = "cli")]
 pub(crate) struct Cache {
     d: Dialect,
+    /// Whether the shadows are on libSQL's engine (a libSQL database's), whose copies are its own.
+    libsql: bool,
     base: Hash,
     /// The target, as eviction counts it: a digest of its URL without the user and password, or of
     /// its file.
@@ -268,6 +213,7 @@ impl Cache {
             return None;
         }
         let d = server.dialect();
+        let libsql = matches!(server, Server::Sqlite { libsql: true });
         let mut h = Sha256::new();
         h.part(b"reylo replay cache 1").part(&*CODE).part(d.name().as_bytes());
         let state = server_state(server).await.ok()?;
@@ -279,7 +225,7 @@ impl Cache {
         };
         // MySQL has no copy of a database to start from.
         let copies = matches!(d, Dialect::Postgres | Dialect::Sqlite) && !texts.iter().any(|t| SESSION_STATE.iter().any(|r| r.is_match(t)));
-        Some(Cache { d, base: h.finish(), target: hex(&Sha256::new().part(target.as_bytes()).finish()[..8]), dir: cache.join("migrate"), copies, used: vec![] })
+        Some(Cache { d, libsql, base: h.finish(), target: hex(&Sha256::new().part(target.as_bytes()).finish()[..8]), dir: cache.join("migrate"), copies, used: vec![] })
     }
 
     pub(crate) fn base(&self) -> Hash {
@@ -317,7 +263,16 @@ impl Cache {
     }
 
     fn sqlite_file(&self, key: &Hash) -> PathBuf {
-        self.dir.join("sqlite").join(format!("{}.db", hex(&key[..20])))
+        self.dir.join(self.sqlite_dir()).join(format!("{}.db", hex(&key[..20])))
+    }
+
+    /// Where a SQLite shadow's copies are kept: those of libSQL's engine apart from Reylo's SQLite's.
+    fn sqlite_dir(&self) -> &'static str {
+        if self.libsql {
+            "libsql"
+        } else {
+            "sqlite"
+        }
     }
 
     /// Which of `keys` have a cached database: the longest first.
@@ -358,6 +313,15 @@ impl Cache {
                 self.used.push(name);
                 Some(shadow)
             }
+            Dialect::Sqlite if self.libsql => {
+                let file = self.sqlite_file(key);
+                let from = crate::libsql_local::Local::open(&file.to_string_lossy()).ok()?;
+                let mut to = crate::libsql_local::Local::memory().ok()?;
+                from.backup_to(&mut to).ok()?;
+                drop(from);
+                touch(&file);
+                Some(Shadow { db: Db::LibsqlLocal(to), name: ":memory:".into() })
+            }
             Dialect::Sqlite => {
                 let file = self.sqlite_file(key);
                 let from = rusqlite::Connection::open_with_flags(&file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
@@ -378,7 +342,7 @@ impl Cache {
             Dialect::Postgres => {
                 let name = Cache::pg_name(key);
                 let Shadow { db, name: shadow_name } = shadow;
-                let Server::Postgres { admin, url, .. } = server else { return Err(Error("not a Postgres server".into())) };
+                let Server::Postgres { admin, url, settings, .. } = server else { return Err(Error("not a Postgres server".into())) };
                 if pg_rows(admin, &format!("select pg_try_advisory_lock(hashtextextended('{name}', 0)) as ok")).await?.first().is_some_and(|r| r.flag("ok")) {
                     pg_close(admin, db, &shadow_name).await;
                     let made = admin.batch_execute(&format!("create database \"{name}\" template \"{shadow_name}\"")).await;
@@ -388,7 +352,8 @@ impl Cache {
                         count(|s| s.saved += 1);
                     }
                     admin.batch_execute(&format!("select pg_advisory_unlock(hashtextextended('{name}', 0))")).await.map_err(pg_error)?;
-                    let db = Db::Postgres(crate::db::open_postgres(&with_database(url, &shadow_name)).await?);
+                    let mut db = Db::Postgres(crate::db::open_postgres(&with_database(url, &shadow_name)).await?);
+                    crate::db::mark_platform_names(&mut db, settings).await;
                     return Ok(Shadow { db, name: shadow_name });
                 }
                 Ok(Shadow { db, name: shadow_name })
@@ -439,7 +404,9 @@ impl Cache {
     }
 
     fn save_sqlite(&mut self, shadow: &Shadow, key: &Hash) {
-        let Db::Sqlite(conn) = &shadow.db else { return };
+        if !matches!(shadow.db, Db::Sqlite(_) | Db::LibsqlLocal(_)) {
+            return;
+        }
         let file = self.sqlite_file(key);
         if file.exists() {
             return;
@@ -447,7 +414,11 @@ impl Cache {
         let Some(dir) = file.parent() else { return };
         ensure_dir(&self.dir, dir);
         let tmp = dir.join(format!("{}.{}.tmp", random_name(), std::process::id()));
-        let written = rusqlite::Connection::open(&tmp).ok().and_then(|to| sqlite_backup(conn, &to).ok());
+        let written = match &shadow.db {
+            Db::LibsqlLocal(from) => crate::libsql_local::Local::open(&tmp.to_string_lossy()).ok().and_then(|mut to| from.backup_to(&mut to).ok()),
+            Db::Sqlite(conn) => rusqlite::Connection::open(&tmp).ok().and_then(|to| sqlite_backup(conn, &to).ok()),
+            _ => None,
+        };
         if written.is_some() && std::fs::rename(&tmp, &file).is_ok() {
             count(|s| s.saved += 1);
         } else {
@@ -460,7 +431,7 @@ impl Cache {
     pub(crate) async fn finish(self, server: &mut Server) {
         prune(&self.dir.join("lines"), KEEP_LINES);
         if self.d == Dialect::Sqlite {
-            prune(&self.dir.join("sqlite"), KEEP_SQLITE);
+            prune(&self.dir.join(self.sqlite_dir()), KEEP_SQLITE);
         }
         let Server::Postgres { admin, .. } = server else { return };
         let _ = evict(admin, &self.target, &self.used).await;
@@ -471,7 +442,7 @@ impl Cache {
 #[cfg(feature = "cli")]
 async fn server_state(server: &mut Server) -> Result<String, Error> {
     match server {
-        Server::Postgres { admin, create, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, schema_grants, .. } => {
+        Server::Postgres { admin, create, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, owned, schema_grants, .. } => {
             // The server and its settings as a session sees them, the roles a grant may name, the
             // extensions a migration may create, and template1, which a new shadow is a copy of: a
             // change to it moves its counters of rows written.
@@ -490,6 +461,7 @@ async fn server_state(server: &mut Server) -> Result<String, Error> {
             out.push_str(&format!("\n\x1fcreate {create}\n\x1fsettings {}\n\x1fprivileges {copy_privileges} {}", settings.join("\n"), privileges.join("\n")));
             let copied: Vec<String> = extensions.iter().filter(|(e, _)| !leave.contains(&e.to_lowercase())).map(|(e, s)| format!("{e} {s}")).collect();
             out.push_str(&format!("\n\x1fextensions {}\n\x1fschema grants {}\n\x1fenvironment {} {}", copied.join("\n"), schema_grants.join("\n"), environment_role.as_deref().unwrap_or_default(), environment.join("\n")));
+            out.push_str(&format!("\n\x1fowned {}\n{}", owned.key(), owned.statements.join("\n")));
             Ok(out)
         }
         Server::Mysql { admin, defaults, .. } => {
@@ -503,7 +475,12 @@ async fn server_state(server: &mut Server) -> Result<String, Error> {
             let users: Vec<String> = users.into_iter().map(|(u, h)| format!("{u}@{h}")).collect();
             Ok(format!("{v}\n\x1f{u}\n\x1f{who}\n\x1f{}\n\x1f{}\n\x1f{defaults:?}", globals.join("\n"), users.join("\n")))
         }
-        Server::Sqlite => {
+        Server::Sqlite { libsql: true } => {
+            let mut db = crate::libsql_local::Local::memory()?;
+            let options: Vec<String> = db.rows("pragma compile_options")?.iter().map(|r| r.first().unwrap_or_default().to_string()).collect();
+            Ok(format!("libsql {}\n\x1f{}", crate::libsql_local::version(), options.join("\n")))
+        }
+        Server::Sqlite { libsql: false } => {
             let conn = rusqlite::Connection::open_in_memory().map_err(|e| Error(e.to_string()))?;
             let mut statement = conn.prepare("pragma compile_options").map_err(|e| Error(e.to_string()))?;
             let options: Vec<String> = statement.query_map([], |r| r.get(0)).map_err(|e| Error(e.to_string()))?.filter_map(|r| r.ok()).collect();
@@ -538,15 +515,22 @@ pub(crate) async fn snapshot(db: &mut Db) -> Result<String, Error> {
         }
         Dialect::Mysql => {
             // What changes with every statement or row is left out; a text that reads it is never
-            // replayed from a copy.
-            const MOVING: &[&str] = &["timestamp", "statement_id", "identity", "last_insert_id", "insert_id", "rand_seed1", "rand_seed2"];
+            // replayed from a copy. So is the server's `gtid_executed`, which every write moves
+            // where GTIDs are on (MySQL 9.7's default) and which no session keeps.
+            const MOVING: &[&str] = &["timestamp", "statement_id", "identity", "last_insert_id", "insert_id", "rand_seed1", "rand_seed2", "gtid_executed"];
             let vars = db.rows("select variable_name as k, variable_value as v from performance_schema.session_variables").await?;
             let mut out: Vec<String> = vars.iter().filter(|r| !MOVING.contains(&r.text("k"))).map(|r| format!("{}={}", r.text("k"), r.text("v"))).collect();
             out.sort();
-            let rest = db.rows("select (select count(*) from performance_schema.user_variables_by_thread where thread_id = ps_current_thread_id()) as u, current_user() as who, database() as db").await?;
-            if let Some(r) = rest.first() {
-                out.push(format!("{} {} {}", r.text("u"), r.text("who"), r.text("db")));
-            }
+            let rest = db.rows("select @@performance_schema as ps, current_user() as who, database() as db").await?;
+            let Some(r) = rest.first() else { return Ok(out.join("\n")) };
+            // With performance_schema off, skipping user variables is safe: MySQL never copies a shadow, and they end with the session.
+            let users = if r.text("ps") == "0" {
+                "-".to_string()
+            } else {
+                let u = db.rows("select count(*) as u from performance_schema.user_variables_by_thread where thread_id = ps_current_thread_id()").await?;
+                u.first().map(|u| u.text("u").to_string()).unwrap_or_default()
+            };
+            out.push(format!("{users} {} {}", r.text("who"), r.text("db")));
             Ok(out.join("\n"))
         }
         Dialect::Sqlite => {
@@ -805,8 +789,20 @@ mod tests {
         assert_eq!(hex(&Sha256::new().update(&million).finish()), "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
     }
 
+    /// The digest of the catalog reader's code when `READER` was last set.
+    const READER_CODE: &str = "ba4afe4d08b1";
+
     #[test]
-    fn the_code_id_reads_code_alone() {
+    fn the_catalog_reader_keeps_its_version() {
+        assert_eq!(
+            code_digest(include_str!("catalog.rs")),
+            READER_CODE,
+            "catalog.rs's code changed. Where what it reads or how it writes a line changed, raise READER too, so that no fingerprint the old code stored is compared with one the new code reads; where it didn't, set READER_CODE alone, and stored fingerprints stay comparable"
+        );
+    }
+
+    #[test]
+    fn the_code_digest_reads_code_alone() {
         let code = "fn read() -> &'static str {\n    // what the catalog holds\n    \"a b\"\n}\n";
         let reworded = "/// Reads it.\nfn read() -> &'static str {\n\n  \"a b\"\n}\n#[cfg(test)]\nmod tests {\n    fn more() {}\n}\n";
         assert_eq!(code_digest(code), code_digest(reworded));

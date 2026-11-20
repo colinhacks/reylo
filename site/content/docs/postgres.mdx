@@ -5,11 +5,11 @@ description: How Reylo types SQL queries on Postgres. Each column's type in Type
 
 <p className="dk-subheader">How Reylo types queries on Postgres</p>
 
-[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript<Rust> and Rust</Rust>. This page covers how it types and runs queries on Postgres: column types, null values, row counts, parameters and drivers.
+[Reylo](/) is an engine that infers the types of SQL queries from your live database, for TypeScript<Rust> and Rust</Rust>.
 
 | | |
 | --- | --- |
-| Postgres versions | 14 to 18 |
+| Postgres versions | 14 to 19 |
 | Connection | A `postgres://` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url). Connect directly or through a pooler in session mode, not one in transaction mode such as PgBouncer's. |
 | Drivers | <Rust>In TypeScript, </Rust>postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon, `@vercel/postgres` and Slonik, Drizzle over `pg`, postgres.js, Neon, PGlite or `Bun.sql`, and Knex over `pg` ([Drivers](#drivers))<Rust>; in Rust, sqlx</Rust> |
 | Type checking | Reylo's engine connects to Postgres itself, so your project needs no driver for it |
@@ -67,7 +67,7 @@ create table events (
 
 Reylo types each query from Postgres's own analysis of it.
 
-Reylo sends the query to the live database [prepared](https://www.postgresql.org/docs/current/sql-prepare.html) and reads back the database's own type information on its parameters and return type. This information is cross-referenced against the schema catalog, enabling high-fidelity type inference for any query.
+Reylo sends the query to the live database [prepared](https://www.postgresql.org/docs/current/sql-prepare.html) and reads back the database's own type information on its parameters and return type, then reads the rest from the catalog.
 
 ## Data types
 
@@ -112,7 +112,7 @@ In TypeScript, `.run()` returns the same value for a type on every driver, apart
 </LanguagePanel>
 <LanguagePanel value="Rust">
 
-In Rust, `#[reylo::query]` writes these types ([Rust](/rust#types)):
+In Rust, `#[reylo::query]` writes these types:
 
 | SQL type | Rust |
 | --- | --- |
@@ -277,7 +277,7 @@ A `json` or `jsonb` column is typed `Json`, any JSON value, unless a `CHECK` con
 type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 ```
 
-A `CHECK` of the value's kind is all it takes for an object or an array: `jsonb_typeof(doc) = 'object'` types `doc` as `{ [key: string]: Json }`, and `= 'array'` as `Json[]`. A JSON Schema `CHECK` says more. Here `payload` is typed by its schema, and `kind` by its `CHECK`:
+A `CHECK` of the value's kind is all it takes for an object or an array: `jsonb_typeof(doc) = 'object'` types `doc` as `{ [key: string]: Json }`, and `= 'array'` as `Json[]`. A JSON Schema `CHECK` says more:
 
 ```ts twoslash tab="main.ts"
 import events from "./pg_events.sql";
@@ -311,6 +311,8 @@ join users u on u.id = o.user_id
 ```
 
 A key given twice holds its last value, as `jsonb` keeps it and as a parser reads the two a `json` value holds.
+
+A `json` or `jsonb` value inside the JSON you build may be `null`, even from a `not null` column, since it can hold JSON's `null`, unless a JSON Schema `CHECK` refuses null. That holds at any depth: a column you put in, a field of a row, and an element of an array alike.
 
 A schema's type carries through an aggregate, and `to_jsonb` of a row is typed column by column, enums included:
 
@@ -502,7 +504,7 @@ group by u.id
 
 **`NULL` elements**
 
-Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[]` column is typed `(string | null)[]`. An array your query builds from non-null values, like `array[id]`, is typed `number[]`, and so are `array(select …)` of a non-null column and `array_remove(tags, null)`. A `CHECK` that keeps `NULL` out, like `array_position(tags, null) is null` on `users.tags`, types the elements non-null wherever the column is selected as it is, except through a view or a `union`. Postgres refuses to search an array of more than one dimension, so the same `CHECK` keeps such values out of the column too.
+Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[]` column is typed `(string | null)[]`. An array your query builds from non-null values, like `array[id]`, is typed `number[]`, and so are `array(select …)` of a non-null column and `array_remove(tags, null)`. A value that `||` or `array_append` adds to an array is one element of it, so `tags || nickname` holds a `null` wherever `nickname` may be one. A `CHECK` that keeps `NULL` out, like `array_position(tags, null) is null` on `users.tags`, types the elements non-null wherever the column is selected as it is, except through a view or a `union`. Postgres refuses to search an array of more than one dimension, so the same `CHECK` keeps such values out of the column too.
 
 <Pairs>
 
@@ -512,7 +514,7 @@ Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[
 
 **Several dimensions**
 
-An array column is typed with one dimension, as nearly every column holds. Postgres doesn't track an array's dimensions, so an `int[]` column can hold `'{{1,2},{3,4}}'` too, and `.run()` throws on such a value, naming the column: select `to_jsonb(cells)` to read it as JSON instead, or set [`allow_nested_arrays: true`](/configuration#allow_nested_arrays) to type every array column at any depth. Inside JSON your query builds, as with `jsonb_build_object('cells', cells)`, `.run()` returns such a value as it is, and without that setting its type has one dimension. An array your query builds of arrays, like `array_agg(tags)` or `array[tags, tags]`, is typed with each level it adds.
+An array column is typed with one dimension, as nearly every column holds. Postgres doesn't track an array's dimensions, so an `int[]` column can hold `'{{1,2},{3,4}}'` too, and `.run()` throws on such a value, naming the column: select `to_jsonb(cells)` to read it as JSON instead, or set [`allow_nested_arrays: true`](/configuration#allow_nested_arrays) to type every array column at any depth. Inside JSON your query builds, as with `jsonb_build_object('cells', cells)`, `.run()` returns such a value as it is, and without that setting its type has one dimension. An array your query builds of arrays, like `array_agg(tags)` or `array[tags, tags]`, is typed with each level it adds. An array of a domain over an array type, as `array[x]` builds of such a column, is an array of the domain's values instead, each of which may be `null`.
 
 <Pairs>
 
@@ -536,7 +538,7 @@ A `vector` or `halfvec` comes back as a `number[]`, and a parameter of either ta
 
 ### Enums and domains
 
-An enum is typed as the union of its labels. So is a `text` column whose `CHECK` limits it to a list (`kind in ('click', 'key')`), and a parameter written into it with no cast, as in `values (:kind)`. A `text[]` column whose `CHECK` holds it within a list (`tags <@ array['a', 'b']`) is an array of that union, with no `null` element, since `<@` finds `NULL` in no list. A domain is typed as its base type: `orders.total` is an `amount`, a `numeric`, so a `string`.
+An enum is typed as the union of its labels. So is a `text` column whose `CHECK` limits it to a list (`kind in ('click', 'key')`), and a parameter written into it with no cast, as in `values (:kind)`. A `text[]` column whose `CHECK` holds it within a list (`tags <@ array['a', 'b']`) is an array of that union, with no `null` element, since `<@` finds `NULL` in no list. A `CHECK` that compares the column through a cast with a length, as `code::varchar(2) in ('ab', 'cd')`, limits nothing, since the cast cuts the value it compares. A domain is typed as its base type: `orders.total` is an `amount`, a `numeric`, so a `string`.
 
 <Pairs>
 
@@ -659,10 +661,13 @@ Each column can be null unless Reylo can tell it never is, from `NOT NULL`, join
 Reylo infers how many rows a query returns from its keys, aggregates, `limit 1` and `returning` ([Inference](/inference#unique-keys)). On Postgres:
 
 - **Unique indexes on an expression** count when the query compares the same expression, written as Postgres stores it in the index, cast included.
-- **Partial unique indexes** count only when the `where` includes the index's condition.
+- **Partial unique indexes** count only when the `where` includes the index's condition, each literal as the index writes it: a cast that changes one, as `'a  '::bpchar` does beside a `text` column, compares another value.
 - **Writes that join**, with `from`, `using` or a `with` query of one row, still return a row or `null` when their key is matched.
 - **`BEFORE` row triggers** can skip a row by returning `NULL`, so a write they fire on returns a row or `null`. A PL/pgSQL trigger whose every `return` returns `new`, or `old` on an update or a delete, skips nothing.
 - **Nondeterministic collations** bound nothing: compared under one, where `'a'` can equal `'A'`, a unique key matches more than one row.
+- **A `varchar` key** compared with a value Reylo can't type, as `coalesce(:code::char(3), 'x')`, bounds nothing: beside a `char` value Postgres compares the column as `char`, where trailing blanks don't count.
+- **SQL functions** bound a key only where their body calls nothing volatile, whatever their label: a `stable` function that calls `random()` runs again for each row a scan reads. So does one whose body reaches something volatile through another SQL function, a view (or a function a view calls, through views inside views), an operator or an argument's default, or samples a table without `repeatable`. A materialized view holds its rows, so what its definition calls doesn't count. A function in another language, such as PL/pgSQL, is taken at its label.
+- **A comparison with a bare `null`** by `=` bounds no key and keeps no column from being null: with `transform_null_equals` on, Postgres reads `x = null` as `x is null`.
 
 ## Parameters
 
@@ -1007,8 +1012,6 @@ await db.transaction(async (trx) => {
 
 ### Standard Query
 
-What a driver that reads a result value by value can use, from the query's Standard Query object.
-
 <Rules>
 
 **Decoding each value once**
@@ -1052,6 +1055,27 @@ order by o.placed_at desc, o.id
 
 </Rules>
 
+<Rust>
+### sqlx
+
+In Rust, queries run on sqlx, on your own pool.
+
+Through PgBouncer in transaction mode, turn on its prepared statements. Each query is prepared once per connection, under a name such as `sqlx_s_1`, and run by that name after. A pooler in transaction mode gives each transaction whichever server connection is free, so the name may be missing there, or belong to another client's statement. PgBouncer 1.21 and later keeps each client's statements across its server connections:
+
+```ini title="pgbouncer.ini"
+pool_mode = transaction
+# keep each client's prepared statements
+max_prepared_statements = 200
+# sqlx sets extra_float_digits when it connects
+ignore_startup_parameters = extra_float_digits
+```
+
+- Without `max_prepared_statements`, queries fail with errors such as `prepared statement "sqlx_s_1" does not exist`, and some return another statement's rows with no error at all.
+- Turning off sqlx's statement cache with `statement_cache_capacity(0)` doesn't help, since sqlx still prepares each query under a name.
+- Where you can't change the pooler's settings, `.extra_float_digits(None)` on sqlx's `PgConnectOptions` does what `ignore_startup_parameters` does.
+- The attribute reads `DATABASE_URL` as the crate compiles, so point it at a direct connection, not the pooler.
+</Rust>
+
 ## Limits
 
 What Reylo can't type on Postgres, and what to do instead:
@@ -1065,6 +1089,7 @@ What Reylo can't type on Postgres, and what to do instead:
 | A materialized view, which holds the rows of its last `refresh`: every column is nullable, and only its own unique indexes are keys | Create a unique index on it, and wrap a column that is never null in `coalesce` |
 | The row an `insert`, `update` or `merge` writes through a view, or to a table with an `instead` rule, which need not pass the view's `where`: its `returning` columns are nullable | Write to the table itself |
 | A query nested past 1,000 levels, about 164 subqueries deep | None: Reylo falls back to Postgres's own types, any number of rows and every column nullable |
+| Syntax new in Postgres 19, `on conflict … do select` and a window function's `ignore nulls` or `respect nulls`, which Reylo's parser doesn't read yet | None: Reylo falls back to Postgres's own types, any number of rows and every column nullable |
 | A statement other than a query, such as `create index` or `explain` | None: it returns nothing, or rows whose columns are all nullable, as Postgres reports |
 | `copy … from stdin` and `copy … to stdout`, whose rows go through the connection | Run them through your driver |
 | A file of several statements, such as a migration | Put each statement in a file of its own |
