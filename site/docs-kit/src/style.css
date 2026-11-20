@@ -1921,6 +1921,15 @@ html #nd-page .prose table {
   color: var(--color-fd-headings);
 }
 
+/* A page named for a file (`code` in its entry) keeps the inline code chip of the text, at the size
+   a heading's code takes: the pager sits outside the prose, whose rule paints it. */
+#nd-page .dk-pager-title code {
+  font-size: 0.86em;
+  padding: 0.15em 0.35em;
+  border-radius: 0.3125rem;
+  background-color: color-mix(in oklab, var(--dk-code-tint) var(--dk-wash-code), transparent);
+}
+
 @media (max-width: 639px) {
   #nd-page .dk-pager {
     grid-template-columns: minmax(0, 1fr);
