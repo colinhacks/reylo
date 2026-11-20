@@ -3,7 +3,7 @@
  * panel of the other pages, and the Rust types on the inference cards. While it is off, the Rust
  * content stays in the pages, and lib/rust-content.ts leaves it out of the build.
  */
-export const SHOW_RUST = false;
+export const SHOW_RUST = true;
 
 /** Every language the docs are written for. */
 export type LanguageName = 'TypeScript' | 'Rust';
