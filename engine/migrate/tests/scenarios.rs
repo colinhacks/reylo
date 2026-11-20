@@ -4768,7 +4768,11 @@ create trigger kids_note after insert on kids begin update parents set name = na
         let code = p.run(async |o, log| reylo_migrate::run_sql(o, &[("make".into(), "create table drafts (id integer primary key autoincrement); begin; create table scraps (id integer primary key autoincrement); select * from missing;".into())], log).await).await;
         assert_eq!(code, 1, "{}", p.peek());
         assert_eq!(turso_tables(&p).await, ["drafts 1 0", "events 1 0", "posts 1 0", "tags 1 0"]);
-        p.exec("drop table drafts").await;
+        // And so does one that ends with its transaction open, which closing rolls back.
+        let code = p.run(async |o, log| reylo_migrate::run_sql(o, &[("make".into(), "create table sketches (id integer primary key autoincrement); begin; create table scraps (id integer primary key autoincrement);".into())], log).await).await;
+        assert_eq!(code, 0, "{}", p.peek());
+        assert_eq!(turso_tables(&p).await, ["drafts 1 0", "events 1 0", "posts 1 0", "sketches 1 0", "tags 1 0"]);
+        p.exec("drop table drafts; drop table sketches").await;
         p.exec("insert into posts (body) values ('c')").await;
         assert_eq!(p.rows("select max(id) as n from posts").await[0].text("n"), "3");
         // Renamed, `posts` takes its counter, which is `sqlite_sequence`'s, and its sequence is renamed.
