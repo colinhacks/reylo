@@ -342,7 +342,7 @@ impl Cache {
             Dialect::Postgres => {
                 let name = Cache::pg_name(key);
                 let Shadow { db, name: shadow_name } = shadow;
-                let Server::Postgres { admin, url, .. } = server else { return Err(Error("not a Postgres server".into())) };
+                let Server::Postgres { admin, url, settings, .. } = server else { return Err(Error("not a Postgres server".into())) };
                 if pg_rows(admin, &format!("select pg_try_advisory_lock(hashtextextended('{name}', 0)) as ok")).await?.first().is_some_and(|r| r.flag("ok")) {
                     pg_close(admin, db, &shadow_name).await;
                     let made = admin.batch_execute(&format!("create database \"{name}\" template \"{shadow_name}\"")).await;
@@ -352,7 +352,8 @@ impl Cache {
                         count(|s| s.saved += 1);
                     }
                     admin.batch_execute(&format!("select pg_advisory_unlock(hashtextextended('{name}', 0))")).await.map_err(pg_error)?;
-                    let db = Db::Postgres(crate::db::open_postgres(&with_database(url, &shadow_name)).await?);
+                    let mut db = Db::Postgres(crate::db::open_postgres(&with_database(url, &shadow_name)).await?);
+                    crate::db::mark_platform_names(&mut db, settings).await;
                     return Ok(Shadow { db, name: shadow_name });
                 }
                 Ok(Shadow { db, name: shadow_name })
@@ -789,7 +790,7 @@ mod tests {
     }
 
     /// The digest of the catalog reader's code when `READER` was last set.
-    const READER_CODE: &str = "ba131f4d0a94";
+    const READER_CODE: &str = "0cc3b83c7f6f";
 
     #[test]
     fn the_catalog_reader_keeps_its_version() {
