@@ -121,6 +121,9 @@ pub struct Schema {
     /// Read from the database a command changes, not from a replay: its partitions that no
     /// migration made (made at run time) are its data, which no plan from it drops.
     pub live: bool,
+    /// Whether its grants went unread, as a MySQL account that may not read the privilege tables
+    /// sees only its own: a plan from or to it then compares neither side's.
+    pub grants_unread: bool,
 }
 
 impl Schema {
@@ -665,6 +668,10 @@ pub fn plan(from: &Schema, to: &Schema, alterer: &dyn Alterer) -> Plan {
 /// migration states, which may change the column's type as well; and the columns `dropped` names
 /// dropped, never guessed renamed.
 pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stated: &[(String, String)], dropped: &BTreeSet<String>) -> Plan {
+    if from.grants_unread || to.grants_unread {
+        let without = |s: &Schema| Schema { objects: s.objects.iter().filter(|(_, o)| o.kind != Some(Kind::Grant)).map(|(k, o)| (k.clone(), o.clone())).collect(), grants_unread: false, ..s.clone() };
+        return plan_with(&without(from), &without(to), alterer, renames_stated, dropped);
+    }
     // The renames are decided first, once, for this planner and for the alterer, whose table
     // statements (MySQL's alter table, SQLite's rebuild) write them. A column that goes while one of
     // the same definition comes, alone in its table with that definition, is renamed, keeping its

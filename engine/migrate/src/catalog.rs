@@ -161,18 +161,33 @@ pub fn without_missing_children(reference: &[String], live: &[String]) -> Vec<St
 /// Whether the live database has what `reference` lists: comments, and children made or dropped at
 /// run time, aside.
 pub fn same_schema(live: &[String], reference: &[String]) -> bool {
-    let reference = without_missing_children(reference, live);
+    let (live, reference) = grants_comparable(live, reference);
+    let live = &live[..];
+    let reference = without_missing_children(&reference, live);
     without_comments(&without_extra_children(live, &reference)) == without_comments(&reference)
+}
+
+/// The line of a MySQL catalog read by an account that may not read the privilege tables.
+pub(crate) const GRANTS_UNREAD: &str = "grants unread";
+
+/// `a` and `b` without their grants where either's went unread: neither is compared then.
+fn grants_comparable(a: &[String], b: &[String]) -> (Vec<String>, Vec<String>) {
+    let unread = a.iter().chain(b).any(|l| l == GRANTS_UNREAD);
+    let keep = |lines: &[String]| lines.iter().filter(|l| !unread || !(l.starts_with("grant ") || *l == GRANTS_UNREAD)).cloned().collect::<Vec<_>>();
+    (keep(a), keep(b))
 }
 
 /// The lines only in `a`, and those only in `b`.
 pub fn difference(a: &[String], b: &[String]) -> (Vec<String>, Vec<String>) {
+    let (a, b) = grants_comparable(a, b);
+    let (a, b) = (&a[..], &b[..]);
     let sa: BTreeSet<&String> = a.iter().collect();
     let sb: BTreeSet<&String> = b.iter().collect();
     (a.iter().filter(|l| !sb.contains(l)).cloned().collect(), b.iter().filter(|l| !sa.contains(l)).cloned().collect())
 }
 
 pub fn same(a: &[String], b: &[String]) -> bool {
+    let (a, b) = grants_comparable(a, b);
     a == b
 }
 
@@ -1406,7 +1421,90 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
         let text = db.rows(&format!("show create table `{}`", t.replace('`', "``"))).await?.first().map(|r| r.text("Create Table").to_string()).unwrap_or_default();
         lines.extend(statement_options(&t, &text));
     }
+    // Each privilege on a table, a view, a column or a routine, as `grant <its name> …` lines read;
+    // where the account may not read them, a line that says so.
+    let grants = mysql_grants(db).await?;
+    if grants.is_none() {
+        lines.push(GRANTS_UNREAD.to_string());
+    }
+    for g in grants.unwrap_or_default() {
+        let on = match (g.kind, &g.column) {
+            ("table", Some(c)) => format!("{}.{c}", g.name),
+            ("table", None) => g.name.clone(),
+            (kind, _) => format!("{kind} {}", g.name),
+        };
+        lines.push(format!("grant {on} {} to {}", g.privilege, g.account()));
+    }
     Ok(lines)
+}
+
+/// A privilege on one of a MySQL database's tables, views, columns or routines, granted to an
+/// account: `grant update (email) on users to 'reader'@'%'`.
+#[derive(Clone, Debug)]
+pub(crate) struct MysqlGrant {
+    pub user: String,
+    pub host: String,
+    /// `table` (a table's or a view's), `procedure` or `function`.
+    pub kind: &'static str,
+    pub name: String,
+    pub column: Option<String>,
+    /// As a statement writes it: `select`, `show view`, `alter routine`, `grant option`.
+    pub privilege: String,
+}
+
+impl MysqlGrant {
+    /// The account, as a statement names it.
+    pub fn account(&self) -> String {
+        format!("`{}`@`{}`", self.user.replace('`', "``"), self.host.replace('`', "``"))
+    }
+
+    /// The `grant` that gives it, or the `revoke` that takes it, its names written by `ident`.
+    pub fn statement(&self, ident: &dyn Fn(&str) -> String, grant: bool) -> String {
+        let column = self.column.as_deref().map(|c| format!(" ({})", ident(c))).unwrap_or_default();
+        let on = if self.kind == "table" { ident(&self.name) } else { format!("{} {}", self.kind, ident(&self.name)) };
+        let (verb, to) = if grant { ("grant", "to") } else { ("revoke", "from") };
+        format!("{verb} {}{column} on {on} {to} {}", self.privilege, self.account())
+    }
+}
+
+/// The privileges on the database's tables, views, columns and routines, from the server's
+/// privilege tables, or None where the account reading may not read them, as an account with the
+/// database's privileges alone may not: information_schema shows such an account its own privileges
+/// only. Its own are left out, as an owner's are on Postgres, and so are those on Reylo's history
+/// table. A table's grant option is a privilege of its own, which a grant on one of its columns
+/// may give.
+pub(crate) async fn mysql_grants(db: &mut Db) -> Result<Option<Vec<MysqlGrant>>, Error> {
+    let queries = [
+        "select user as u, host as h, 'table' as k, table_name as n, null as c, table_priv as p from mysql.tables_priv where db = database()",
+        "select user as u, host as h, 'table' as k, table_name as n, column_name as c, column_priv as p from mysql.columns_priv where db = database()",
+        "select user as u, host as h, lower(routine_type) as k, routine_name as n, null as c, proc_priv as p from mysql.procs_priv where db = database()",
+    ];
+    let mut rows = Vec::new();
+    for q in queries {
+        match db.rows(q).await {
+            Ok(r) => rows.extend(r),
+            Err(_) => return Ok(None),
+        }
+    }
+    let me = db.rows("select current_user() as u").await?.first().map(|r| r.text("u").to_string()).unwrap_or_default();
+    let (my_user, my_host) = me.rsplit_once('@').unwrap_or((me.as_str(), ""));
+    let mut out = Vec::new();
+    for r in &rows {
+        let (user, host, name) = (r.text("u"), r.text("h"), r.text("n"));
+        if (user == my_user && host == my_host) || name == HISTORY_TABLE {
+            continue;
+        }
+        let kind = match r.text("k") {
+            "table" => "table",
+            "procedure" => "procedure",
+            _ => "function",
+        };
+        for p in r.text("p").split(',').filter(|p| !p.is_empty()) {
+            let privilege = if p.eq_ignore_ascii_case("grant") { "grant option".to_string() } else { p.to_ascii_lowercase() };
+            out.push(MysqlGrant { user: user.into(), host: host.into(), kind, name: name.into(), column: r.get("c").map(String::from), privilege });
+        }
+    }
+    Ok(Some(out))
 }
 
 /// The options of a MySQL table's `show create table` text that information_schema leaves out,

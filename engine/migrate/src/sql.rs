@@ -497,7 +497,7 @@ re!(PG_LABEL, r"^(COMMENT|SECURITY LABEL)\b");
 re!(PG_LABEL_SERVER, r"\bON (ROLE|DATABASE|TABLESPACE)\b");
 re!(GRANT, r"^(GRANT|REVOKE)\b");
 re!(PG_GRANT_SERVER, r"\bON (DATABASE|TABLESPACE|PARAMETER)\b");
-re!(MYSQL_ACCOUNT, r"^(CREATE|ALTER|DROP|RENAME) (USER|ROLE)\b|^(GRANT|REVOKE)\b");
+re!(MYSQL_ACCOUNT, r"^(CREATE|ALTER|DROP|RENAME) (USER|ROLE)\b|^SET (DEFAULT ROLE|PASSWORD)\b");
 re!(MYSQL_SERVER, r"^(CREATE|ALTER|DROP) (DATABASE|SCHEMA|SERVER|TABLESPACE|LOGFILE|RESOURCE)\b");
 re!(MYSQL_SETTING, r"^SET (GLOBAL|PERSIST)\b|^SET @ @ (GLOBAL|PERSIST)\b");
 re!(MYSQL_ELSEWHERE, r"^(USE|INSTALL|UNINSTALL|FLUSH|KILL|PURGE|SHUTDOWN|RESTART|CHANGE)\b");
@@ -535,7 +535,10 @@ pub fn escapes_shadow(statement: &Statement, dialect: Dialect) -> Option<String>
         }
         Dialect::Mysql => {
             if MYSQL_ACCOUNT.is_match(&h) {
-                return Some("it changes an account or a privilege, which belong to the server".into());
+                return Some("it changes an account, which belongs to the server".into());
+            }
+            if GRANT.is_match(&h) {
+                return mysql_grant_reach(&words, statement);
             }
             if MYSQL_SERVER.is_match(&h) {
                 return Some("it changes the server itself".into());
@@ -583,6 +586,35 @@ pub fn escapes_shadow(statement: &Statement, dialect: Dialect) -> Option<String>
 /// The first statement of `sql` that would reach past a shadow, however a server reads it, with why.
 pub fn shadow_problem(sql: &str, dialect: Dialect) -> Option<String> {
     read_every_way(sql, dialect).iter().flatten().find_map(|s| escapes_shadow(s, dialect).map(|why| format!("{}: {why}", head(s, 3).to_lowercase())))
+}
+
+/// Whether the MySQL file grants or revokes a privilege on one of the database's objects.
+pub fn grants_on_objects(sql: &str) -> bool {
+    split_statements(sql, Dialect::Mysql).iter().any(|s| {
+        let words: Vec<String> = s.tokens.iter().map(|t| if t.kind == TokenKind::Word { t.text.to_ascii_uppercase() } else { t.text.clone() }).collect();
+        GRANT.is_match(&head(s, 1)) && mysql_grant_reach(&words, s).is_none()
+    })
+}
+
+/// Why a MySQL `grant` or `revoke` reaches past the database, or None for one on a table, a view,
+/// a column or a routine of its own, which the database keeps (`grant select on users to …`). A
+/// role's grant, a proxy's, and a privilege on every database or the server are the server's;
+/// `on app.users` names a database, and `on *` stands for the whole database, which is no object a
+/// schema holds.
+fn mysql_grant_reach(words: &[String], statement: &Statement) -> Option<String> {
+    let Some(on) = words.iter().position(|w| w == "ON") else { return Some("it grants or revokes a role, which belongs to the server".into()) };
+    if words[..on].iter().any(|w| w == "PROXY") {
+        return Some("it grants or revokes a proxy, which belongs to the server".into());
+    }
+    let at = on + 1 + usize::from(words.get(on + 1).is_some_and(|w| matches!(w.as_str(), "TABLE" | "FUNCTION" | "PROCEDURE")));
+    let t = &statement.tokens;
+    if words.get(at).is_some_and(|w| w == "*") || words.get(at + 2).is_some_and(|w| w == "*") {
+        return Some("it grants or revokes a privilege on a whole database or the server, which belong to the server: grant on a table, a column or a routine".into());
+    }
+    if t.get(at + 1).is_some_and(|d| d.text == ".") {
+        return Some(format!("it names the database {}: in a shadow it would reach that database itself, so leave names unqualified", t[at].text));
+    }
+    None
 }
 
 re!(DATA, r"^(INSERT|UPDATE|DELETE|MERGE|COPY|CALL|DO|SELECT|WITH|TRUNCATE|REPLACE|LOAD)\b");
@@ -731,6 +763,19 @@ mod tests {
         assert!(shadow_problem("create role app", Dialect::Postgres).is_some());
         assert!(shadow_problem("grant app to bob", Dialect::Postgres).is_some());
         assert_eq!(shadow_problem("grant select on a to app", Dialect::Postgres), None);
+        assert!(shadow_problem("create user 'reader'@'%'", Dialect::Mysql).is_some());
+        assert!(shadow_problem("set password for 'reader'@'%' = 'x'", Dialect::Mysql).is_some());
+        assert!(shadow_problem("set default role app_role to 'reader'@'%'", Dialect::Mysql).is_some());
+        assert!(shadow_problem("grant app_role to 'reader'@'%'", Dialect::Mysql).is_some());
+        assert!(shadow_problem("grant proxy on 'admin'@'%' to 'reader'@'%'", Dialect::Mysql).is_some());
+        assert!(shadow_problem("grant select on *.* to 'reader'@'%'", Dialect::Mysql).is_some());
+        assert!(shadow_problem("grant select on * to 'reader'@'%'", Dialect::Mysql).is_some());
+        assert!(shadow_problem("grant select on app.* to 'reader'@'%'", Dialect::Mysql).is_some());
+        assert!(shadow_problem("grant select on app.users to 'reader'@'%'", Dialect::Mysql).unwrap().contains("names the database app"));
+        assert!(shadow_problem("revoke execute on procedure app.p from 'reader'@'%'", Dialect::Mysql).is_some());
+        assert_eq!(shadow_problem("grant select, update (email) on users to 'reader'@'%' with grant option; grant execute on procedure p to reader; revoke select on table `users` from 'reader'@'%'", Dialect::Mysql), None);
+        assert!(grants_on_objects("create table t (id int); grant select on t to 'reader'@'%'"));
+        assert!(!grants_on_objects("create table grants (id int); insert into grants values (1)"));
         assert!(shadow_problem("create table app.users (id int)", Dialect::Mysql).unwrap().contains("names the database app"));
         assert_eq!(shadow_problem("create table users (id int)", Dialect::Mysql), None);
         assert_eq!(shadow_problem("create view v as select u.email from users u left join posts p on p.user_id = u.id where u.name like p.title", Dialect::Mysql), None);

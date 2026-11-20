@@ -759,6 +759,26 @@ async fn schema_grants(target: &mut Db, schemas: &[String]) -> Result<Vec<String
     Ok(out)
 }
 
+/// Revokes what was granted on the MySQL database `name`'s tables, columns and routines, which
+/// MySQL keeps after the database is dropped: a shadow's grants would pile up on the server, and a
+/// database made later under its name would have them. A column's privilege is kept with a row for
+/// its table, so the tables' and the routines' rows name everything. What the connection may not
+/// read or revoke is left.
+#[cfg(feature = "cli")]
+async fn mysql_revoke_on(admin: &mut mysql_async::Conn, name: &str) {
+    let tick = |n: &str| format!("`{}`", n.replace('`', "``"));
+    let rows: Vec<(String, String, String, String)> = admin
+        .query(format!("select user, host, 'table', table_name from mysql.tables_priv where db = {} union all select user, host, lower(routine_type), routine_name from mysql.procs_priv where db = {}", literal(name), literal(name)))
+        .await
+        .unwrap_or_default();
+    for (user, host, kind, object) in rows {
+        let on = if kind == "table" { String::new() } else { format!("{kind} ") };
+        for what in ["all privileges", "grant option"] {
+            let _ = admin.query_drop(format!("revoke if exists {what} on {on}{}.{} from {}@{} ignore unknown user", tick(name), tick(&object), tick(&user), tick(&host))).await;
+        }
+    }
+}
+
 pub(crate) fn literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
@@ -1125,6 +1145,7 @@ impl Server {
             Server::Mysql { admin, .. } => {
                 db.close().await;
                 let _ = admin.query_drop(format!("drop database if exists `{name}`")).await;
+                mysql_revoke_on(admin, &name).await;
                 let _ = admin.query_drop(format!("select release_lock('{name}')")).await;
             }
             Server::Sqlite { .. } => {}
@@ -1185,7 +1206,10 @@ impl Server {
                         continue;
                     }
                     match admin.query_drop(format!("drop database if exists `{name}`")).await {
-                        Ok(()) => dropped += 1,
+                        Ok(()) => {
+                            mysql_revoke_on(admin, &name).await;
+                            dropped += 1
+                        }
                         Err(mysql_async::Error::Server(s)) if s.code == 1044 => {}
                         Err(e) => return Err(mysql_error(e)),
                     }

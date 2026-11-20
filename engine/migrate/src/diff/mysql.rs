@@ -647,6 +647,31 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             ..Object::default()
         });
     }
+
+    // Privileges on the tables, views, columns and routines. MySQL keeps one after what it is on is
+    // dropped or renamed, so it is no part of that object and goes with nothing: it is revoked
+    // before a drop and granted after a create.
+    let grants = crate::catalog::mysql_grants(db).await?;
+    s.grants_unread = grants.is_none();
+    for g in grants.unwrap_or_default() {
+        let on = match g.kind {
+            "table" if views.contains(&g.name) => format!("view {}", g.name),
+            "table" => format!("table {}", g.name),
+            kind => format!("{kind} {}", g.name),
+        };
+        let at = g.column.as_ref().map(|c| format!("column {}.{c}", g.name)).unwrap_or_else(|| on.clone());
+        let column = g.column.as_ref().map(|c| format!(" ({c})")).unwrap_or_default();
+        let ident = |name: &str| ctx.ident(name);
+        s.add(Object {
+            // By what it is on and to whom first, so that a plan writes those of one statement together.
+            id: format!("grant on {on} to {}: {}{column}", g.account(), g.privilege),
+            kind: Some(Kind::Grant),
+            create: vec![g.statement(&ident, true)],
+            drop: vec![g.statement(&ident, false)],
+            deps: s.objects.contains_key(&at).then_some(at).into_iter().collect(),
+            ..Object::default()
+        });
+    }
     Ok(s)
 }
 
@@ -1422,7 +1447,64 @@ fn type_of(def: &str) -> String {
     words[..n.min(words.len())].join(" ")
 }
 
+/// A `grant` or `revoke` of the planner's split where MySQL reads it: whether it grants, its
+/// privilege, and what follows it (`on … to …`), each outside backticks.
+fn privilege_parts(statement: &str) -> Option<(bool, &str, &str)> {
+    let (grant, rest) = match (statement.strip_prefix("grant "), statement.strip_prefix("revoke ")) {
+        (Some(rest), _) => (true, rest),
+        (_, Some(rest)) => (false, rest),
+        _ => return None,
+    };
+    let mut quoted = false;
+    for (k, c) in rest.char_indices() {
+        match c {
+            '`' => quoted = !quoted,
+            ' ' if !quoted && rest[k..].starts_with(" on ") => return Some((grant, &rest[..k], &rest[k..])),
+            _ => {}
+        }
+    }
+    None
+}
+
 impl Alterer for MysqlAlterer {
+    /// The privileges granted (or revoked) on one object to one account, which MySQL takes in one
+    /// statement, written as one where the plan has them one after another: `grant select, update
+    /// (email) on users to … with grant option`. Only those side by side: one further on may wait
+    /// for what the plan makes between them (a column it grants on).
+    fn finish(&self, statements: &mut Vec<String>) {
+        // Each statement, or a run of grants (or of revokes) on one object to one account.
+        let mut runs: Vec<(String, Option<(bool, Vec<String>, String)>)> = Vec::new();
+        for s in statements.drain(..) {
+            let Some((grant, privilege, rest)) = privilege_parts(&s) else {
+                runs.push((s, None));
+                continue;
+            };
+            if let Some((_, Some((g, privileges, r)))) = runs.last_mut() {
+                if *g == grant && r.as_str() == rest {
+                    privileges.push(privilege.to_string());
+                    continue;
+                }
+            }
+            runs.push((String::new(), Some((grant, vec![privilege.to_string()], rest.to_string()))));
+        }
+        *statements = runs
+            .into_iter()
+            .map(|(s, run)| match run {
+                None => s,
+                Some((grant, privileges, rest)) => {
+                    let option = privileges.iter().any(|p| p == "grant option");
+                    let others: Vec<&String> = privileges.iter().filter(|p| *p != "grant option").collect();
+                    let list = others.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(", ");
+                    match (grant, option, others.is_empty()) {
+                        (true, true, false) => format!("grant {list}{rest} with grant option"),
+                        (_, true, false) => format!("revoke {list}, grant option{rest}"),
+                        (verb, _, _) => format!("{} {}{rest}", if verb { "grant" } else { "revoke" }, privileges.join(", ")),
+                    }
+                }
+            })
+            .collect();
+    }
+
     fn narrows(&self, from: &Object, to: &Object) -> Option<String> {
         if from.kind != Some(Kind::Column) {
             return None;

@@ -259,6 +259,14 @@ grant select on room_totals to reporting;
 comment on column users.verified_at is 'When they confirmed their email';
 ```
 
+On MySQL, an account sees only its own grants unless it may read the privilege tables. An account that isn't an administrator needs them granted:
+
+```sql
+grant select on mysql.tables_priv to 'app'@'%';
+grant select on mysql.columns_priv to 'app'@'%';
+grant select on mysql.procs_priv to 'app'@'%';
+```
+
 A change to any of them is a migration:
 
 ```sql title="schema.sql"

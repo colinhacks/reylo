@@ -1,1 +1,0 @@
-MySQL grants are neither compared nor planned: the case holds that a grant in the schema changes nothing.
