@@ -998,7 +998,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     let (persistence, comment) = rest.split_once('\u{1f}').unwrap_or((rest, ""));
                     let owner = format!("column {name}.{}", c.text("name"));
                     let sequence = format!("pg_get_serial_sequence({}, {})", literal(&name), literal(&unquoted(c.text("name"))));
-                    let on_it = |statement: &str, arg: &str| format!("do $reylo$ begin execute format({}, {sequence}{arg}); end $reylo$", literal(statement));
+                    let on_it = |statement: &str, arg: &str| dollar_block(&format!("begin execute format({}, {sequence}{arg}); end", literal(statement)));
                     if !persistence.is_empty() {
                         let (now, back) = if persistence == "u" { ("unlogged", "logged") } else { ("logged", "unlogged") };
                         s.add(Object {
@@ -3104,6 +3104,12 @@ fn names_in(list: &str) -> Vec<String> {
     out.into_iter().filter(|n| !n.is_empty()).collect()
 }
 
+/// A `do` block of `body`, quoted by a dollar tag the body doesn't hold.
+fn dollar_block(body: &str) -> String {
+    let tag = (0..).map(|n| if n == 0 { "$reylo$".to_string() } else { format!("$reylo{n}$") }).find(|t| !body.contains(t.as_str())).unwrap_or_default();
+    format!("do {tag} {body} {tag}")
+}
+
 /// Whether `name` is one Postgres gives a not null it makes on `table`'s `column`: its name for it,
 /// or with a number after where another constraint of the schema held that name.
 fn generated_not_null(name: &str, table: &str, column: &str) -> bool {
@@ -4871,6 +4877,12 @@ impl Alterer for PostgresAlterer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_do_block_is_quoted_by_a_tag_its_body_lacks() {
+        assert_eq!(dollar_block("begin end"), "do $reylo$ begin end $reylo$");
+        assert_eq!(dollar_block("select 'uses $reylo$ and $reylo1$'"), "do $reylo2$ select 'uses $reylo$ and $reylo1$' $reylo2$");
+    }
 
     #[test]
     fn reads_a_column_definition_back() {
