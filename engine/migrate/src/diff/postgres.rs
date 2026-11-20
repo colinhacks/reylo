@@ -713,7 +713,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
               case a.attcompression when 'p' then 'pglz' when 'l' then 'lz4' end as compression,
               case when coalesce(a.attstattarget, -1) >= 0 then a.attstattarget end as stattarget,
               (select string_agg(o, ', ' order by o) from unnest(a.attoptions) o where left(o, 10) = 'n_distinct') as attoptions,
-              (select string_agg(quote_ident(split_part(o, '=', 1)) || ' ' || quote_literal(substr(o, strpos(o, '=') + 1)), ', ' order by o) from unnest(a.attfdwoptions) o) as fdwoptions
+              case when a.attfdwoptions is not null then {} end as fdwoptions
             from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace join pg_type t on t.oid = a.atttypid
             left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
             where a.attnum > 0 and not a.attisdropped and c.relkind in ('r', 'p', 'v', 'm', 'f', 'c') and {ns} and {} and {} and c.relname <> '{history}'
@@ -729,6 +729,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 "false as noinherit, null as nn_name, true"
             },
             acl("a.attacl", 'c', "c.relowner"),
+            option_pairs("a.attfdwoptions"),
             not_extension("pg_class", "c"),
             project_relation("c", "n")
         ))
@@ -818,14 +819,14 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 // A foreign table column's options for its wrapper (`column_name 'b'`), added as a list
                 // and dropped by their names.
                 if let Some(options) = c.get("fdwoptions").filter(|_| kind == "f") {
-                    let parts: Vec<&str> = options.split(", ").collect();
+                    let pairs: Vec<(String, String)> = serde_json::from_str(options).unwrap_or_default();
                     s.add(Object {
                         id: format!("wrapper options {col_id}"),
                         kind: Some(Kind::ColumnSetting),
                         owner: Some(col_id.clone()),
                         def: options.to_string(),
-                        create: vec![format!("{at} options ({})", parts.iter().map(|p| format!("add {p}")).collect::<Vec<_>>().join(", "))],
-                        drop: vec![format!("{at} options ({})", parts.iter().filter_map(|p| p.split(' ').next()).map(|k| format!("drop {k}")).collect::<Vec<_>>().join(", "))],
+                        create: options_change(&[], &pairs).map(|o| format!("{at} {o}")).into_iter().collect(),
+                        drop: options_change(&pairs, &[]).map(|o| format!("{at} {o}")).into_iter().collect(),
                         change: Change::Replace,
                         ..Object::default()
                     });
@@ -1524,7 +1525,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     // replicas): set on the partition once the parent's trigger is made, which makes it.
     for r in db
         .rows(&format!(
-            "select format('%I', tg.tgname) as name, format('%I.%I', n.nspname, c.relname) as rel, c.oid as reloid, tg.tgenabled as enabled, tg.tgparentid as parent
+            "select format('%I', tg.tgname) as name, format('%I.%I', n.nspname, c.relname) as rel, c.oid as reloid, tg.tgenabled as enabled, tg.tgparentid as parent,
+              (select p.tgenabled from pg_trigger p where p.oid = tg.tgparentid) as parent_enabled
             from pg_trigger tg join pg_class c on c.oid = tg.tgrelid join pg_namespace n on n.oid = c.relnamespace
             where tg.tgparentid <> 0 and tg.tgenabled <> (select p.tgenabled from pg_trigger p where p.oid = tg.tgparentid) and {ns} and {}",
             not_extension("pg_class", "c")
@@ -1533,19 +1535,21 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     {
         let (rel, name) = (r.text("rel"), r.text("name"));
         let Some(parent) = ids.triggers.get(&oid(&r, "parent")).cloned() else { continue };
-        let set = match r.text("enabled") {
+        let set = |mode: &str| match mode {
             "D" => "disable trigger",
             "R" => "enable replica trigger",
             "A" => "enable always trigger",
             _ => "enable trigger",
         };
+        // Taken off, it fires as its parent's does.
+        let (set, back) = (set(r.text("enabled")), set(r.text("parent_enabled")));
         s.add(Object {
             id: format!("fired trigger {rel}.{name}"),
             kind: Some(Kind::Trigger),
             owner: relations.get(&oid(&r, "reloid")).map(|(t, _)| t.clone()),
             def: r.text("enabled").to_string(),
             create: vec![format!("alter table {rel} {set} {name}")],
-            drop: vec![format!("alter table {rel} enable trigger {name}")],
+            drop: vec![format!("alter table {rel} {back} {name}")],
             deps: [parent].into_iter().collect(),
             change: Change::Alter { blocks: false },
             ..Object::default()
