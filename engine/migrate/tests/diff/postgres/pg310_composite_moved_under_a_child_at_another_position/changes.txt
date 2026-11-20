@@ -1,0 +1,2 @@
+public.z.c keeps each value's attributes by name, with the new one empty
+public.r.c keeps each value's attributes by name, with the new one empty

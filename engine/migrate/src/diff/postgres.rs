@@ -2880,6 +2880,14 @@ fn without_lists(objects: &str) -> String {
         .join(", ")
 }
 
+/// The parents a table keeps that it leaves and takes again to have them in the target's order:
+/// a parent taken is appended to those it has, so those the target lists after one it takes go.
+fn parents_again(had: &[String], has: &[String]) -> Vec<String> {
+    let kept: Vec<&String> = had.iter().filter(|p| has.contains(p)).collect();
+    let in_order = kept.iter().zip(has).take_while(|(a, b)| **a == *b).count();
+    kept[in_order..].iter().map(|p| (*p).clone()).collect()
+}
+
 /// The names in a list `format('%I.%I')` wrote, each joined by a comma and a space.
 fn names_in(list: &str) -> Vec<String> {
     let (mut out, mut item, mut quoted) = (Vec::new(), String::new(), false);
@@ -3552,7 +3560,7 @@ fn reorder_attributes(from: &Object, to: &Object) -> Option<(Vec<String>, Vec<St
     }
     for m in &moved_columns {
         let fields: Vec<String> = b.iter().map(|(n, d)| if an.contains(n) { format!("({}).{n}::{d}", m.column) } else { format!("null::{d}") }).collect();
-        out.push(format!("alter table {} alter column {} type {} using case when {} is null then null else row({})::{} end", m.table, m.column, m.ty, m.column, fields.join(", "), m.ty));
+        out.push(format!("alter table {} alter column {} type {} using case when {} then null else row({})::{} end", m.table, m.column, m.ty, null_test(&m.column), fields.join(", "), m.ty));
         out.extend(m.default_back());
     }
     if !moved_columns.is_empty() {
@@ -3592,6 +3600,14 @@ impl EnumChange {
     fn remakes(&self) -> bool {
         (self.used && !self.keyed) || self.reorders
     }
+}
+
+/// Whether a column's value is null, in a conversion. Not `is null`, which Postgres 18 leaves at the
+/// column's position in the table altered when it takes the conversion on to a child or partition
+/// holding the column at another (failing, or reading another column), and which a composite value
+/// of null attributes answers true.
+fn null_test(column: &str) -> String {
+    format!("num_nulls({column}) = 1")
 }
 
 /// The element of an array first in its storage order, whatever its bounds and its dimensions
@@ -3778,7 +3794,10 @@ impl Alterer for PostgresAlterer {
         // of its parents and leaves the column its own whichever of them held it. A parent it is
         // not to keep its own change leaves.
         let parents = |o: &Object| o.extra.iter().find_map(|l| l.strip_prefix(TABLE_PARENTS)).map(names_in).unwrap_or_default();
-        let kept: Vec<String> = parents(from).into_iter().filter(|p| parents(to).contains(p)).collect();
+        // Those the table's own change leaves and takes again, to put its parents in order, it
+        // leaves first itself.
+        let again = parents_again(&parents(from), &parents(to));
+        let kept: Vec<String> = parents(from).into_iter().filter(|p| parents(to).contains(p) && !again.contains(p)).collect();
         if kept.is_empty() {
             return None;
         }
@@ -3807,7 +3826,8 @@ impl Alterer for PostgresAlterer {
         // inheriting from a parent, whose columns of that parent's become its own.
         let part = |o: &Object, what: &str| o.extra.iter().find_map(|l| l.strip_prefix(what)).map(String::from);
         let parents = |o: &Object| part(o, "inherits ").map(|p| names_in(&p)).unwrap_or_default();
-        to.kind == Some(Kind::Table) && ((part(from, "partition of ").is_some() && part(from, "partition of ") != part(to, "partition of ")) || parents(from).iter().any(|p| !parents(to).contains(p)) || (part(from, "of ").is_some() && part(from, "of ") != part(to, "of ")))
+        // Or one it leaves and takes again, to put its parents in order.
+        to.kind == Some(Kind::Table) && ((part(from, "partition of ").is_some() && part(from, "partition of ") != part(to, "partition of ")) || parents(from).iter().any(|p| !parents(to).contains(p)) || !parents_again(&parents(from), &parents(to)).is_empty() || (part(from, "of ").is_some() && part(from, "of ") != part(to, "of ")))
     }
 
     fn takes_along(&self, from: &Object, to: &Object) -> Vec<String> {
@@ -4086,13 +4106,7 @@ impl Alterer for PostgresAlterer {
                         } else {
                             format!("{name}::text::{element}")
                         };
-                        // A table others inherit from writes no `case`, which Postgres 18 can't take
-                        // to a child that holds the column at another position.
-                        if to.extra.iter().any(|l| l == INHERITED_FROM) {
-                            out.push(format!("{at} type {}{collate} using nullif(array[{value}], array[null]::{})", b.ty, b.ty));
-                        } else {
-                            out.push(format!("{at} type {}{collate} using case when {name} is null then null else array[{value}] end", b.ty));
-                        }
+                        out.push(format!("{at} type {}{collate} using case when {} then null else array[{value}] end", b.ty, null_test(&name)));
                     } else if self.assigns(&a.ty, &b.ty) {
                         out.push(format!("{at} type {}{collate}", b.ty));
                     } else if self.casts(&a.ty, &b.ty) {
@@ -4238,6 +4252,11 @@ impl Alterer for PostgresAlterer {
                     for h in held_lines(from) {
                         let (Some(t), Some(c)) = (h.first(), h.get(1)) else { continue };
                         let own_after = to.extra.iter().filter(plain).find(|l| l.splitn(3, SEP).take(2).eq([t.as_str(), c.as_str()]));
+                        // One the target no longer has goes with its table or column.
+                        let held_after = held_lines(to).into_iter().any(|g| g.first() == Some(t) && g.get(1) == Some(c));
+                        if own_after.is_none() && !held_after {
+                            continue;
+                        }
                         if own_after.is_some() {
                             kept.push([t.clone(), c.clone(), h.get(2).cloned().unwrap_or_default(), h.get(3).cloned().unwrap_or_default()].join(SEP));
                         } else if let Some(default) = h.get(3).filter(|d| !d.is_empty()) {
@@ -4391,9 +4410,8 @@ impl Alterer for PostgresAlterer {
                 }
                 // A parent taken is appended to those it has: those the target lists after one it
                 // takes leave first, and come back in the target's order.
-                let kept: Vec<&String> = had.iter().filter(|p| has.contains(p)).collect();
-                let in_order = kept.iter().zip(&has).take_while(|(a, b)| **a == *b).count();
-                let again: Vec<&String> = kept[in_order..].to_vec();
+                let again = parents_again(&had, &has);
+                let again: Vec<&String> = again.iter().collect();
                 for parent in had.iter().filter(|p| !has.contains(p)).chain(again.iter().copied()) {
                     out.push(format!("alter table {name} no inherit {parent}"));
                 }

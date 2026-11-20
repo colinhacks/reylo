@@ -872,7 +872,8 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     let attached = |s: &Schema| -> BTreeMap<(String, String), String> { s.objects.values().filter(|o| o.kind == Some(Kind::Index)).filter_map(|o| Some(((o.goes_with.clone()?, o.owner.clone()?), o.id.clone()))).collect() };
     let (was_attached, is_attached) = (attached(from), attached(to));
     for (key, old_id) in &was_attached {
-        let Some(new_id) = is_attached.get(key).filter(|n| *n != old_id && to.objects.contains_key(&key.0) && from.objects.contains_key(&key.0)) else { continue };
+        // Not under an index made again, which drops it: the target's is made then under its name.
+        let Some(new_id) = is_attached.get(key).filter(|n| *n != old_id && to.objects.contains_key(&key.0) && from.objects.contains_key(&key.0) && !drops.contains(&key.0)) else { continue };
         if renames.contains_key(new_id) || !alterer.renames_as(&from.objects[old_id], &to.objects[new_id]) {
             continue;
         }
