@@ -32,7 +32,7 @@ Each job runs in its own process: Node 26.7.0 by default, Node 24.19.0 for the s
 | sqlite3 | 5.1.7, 6.0.1 | SQLite file | Database, BEGIN/COMMIT inside `db.serialize()` |
 | sqlite | 5.1.1 over sqlite3 5.1.7 and 6.0.1 | SQLite file | Database from `open()`, Database inside BEGIN/COMMIT |
 | @sqlite.org/sqlite-wasm | 3.54.1-build1 | SQLite file, copied into memory (in Node it opens no file) | `oo1.DB`, `oo1.DB` inside BEGIN/COMMIT (its own `db.transaction(fn)` calls the function at once, so the `db.transaction(fn)` scenarios do not apply) |
-| sql.js | 1.15.2 | SQLite file, copied into memory | Database, which Reylo refuses (S9) |
+| sql.js | 1.17.0, 1.15.2 | SQLite file, copied into memory | Database, Database inside BEGIN/COMMIT (exec); 1.15.2, which Reylo refuses (S9) |
 | Cloudflare D1 | miniflare 4.20260730.0 | local workerd | D1Database, `db.withSession()` |
 | drizzle-orm | 0.45.4, over pg, postgres.js, mysql2, better-sqlite3 and @libsql/client | Postgres 14 (local), MySQL 8.4, SQLite file | `drizzle(client)`, `db.transaction(tx)`, the savepoint `tx.transaction(sp)` inside it (not on better-sqlite3, whose transaction is synchronous) |
 
