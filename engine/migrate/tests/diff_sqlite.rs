@@ -28,6 +28,11 @@ async fn memory() -> Db {
     Db::connect(":memory:", &std::env::temp_dir()).await.unwrap()
 }
 
+/// An empty database in memory on libSQL's engine, for a schema of libSQL's own SQL.
+fn libsql_memory() -> Db {
+    Db::LibsqlLocal(reylo_migrate::libsql_local::Local::memory().unwrap())
+}
+
 async fn plan(from: &mut Db, to: &mut Db) -> Plan {
     diff::plan(&diff::sqlite::read(from).await.unwrap(), &diff::sqlite::read(to).await.unwrap(), &diff::sqlite::SqliteAlterer::default())
 }
@@ -213,15 +218,15 @@ async fn sqlite() {
 /// Every SQLite schema the oracle's cases set up (`oracle/cases/<case>/setup.sql` where `dialect`
 /// says `sqlite`), built from an empty database by its plan, and dropped back to an empty one by the
 /// plan the other way: each direction must end with the other side's catalog. A case with a `libsql`
-/// file is left out: its schema is libSQL's own (a vector index), which SQLite cannot make.
+/// file is libSQL's own (a vector index), which only libSQL's engine makes, so it is built there.
 #[tokio::test(flavor = "current_thread")]
 async fn sqlite_oracle_schemas() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../oracle/cases");
-    let cases = only(std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().path()).filter(|p| p.join("setup.sql").exists() && read(&p.join("dialect")).trim() == "sqlite" && !p.join("libsql").exists()).collect());
+    let cases = only(std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().path()).filter(|p| p.join("setup.sql").exists() && read(&p.join("dialect")).trim() == "sqlite").collect());
     let (mut failures, mut skipped, mut passed) = (Vec::new(), Vec::new(), 0);
     for case in &cases {
         let name = case.file_name().unwrap().to_string_lossy().into_owned();
-        let (mut empty, mut full, mut blank) = (memory().await, memory().await, memory().await);
+        let (mut empty, mut full, mut blank) = if case.join("libsql").exists() { (libsql_memory(), libsql_memory(), libsql_memory()) } else { (memory().await, memory().await, memory().await) };
         if let Err(err) = full.exec(&read(&case.join("setup.sql"))).await {
             skipped.push(format!("{name}: {err}"));
             continue;

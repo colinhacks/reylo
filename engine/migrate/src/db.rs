@@ -52,6 +52,10 @@ pub enum Db {
     /// A libSQL server's database, Turso Cloud's among them, over HTTP.
     #[cfg(feature = "cli")]
     Libsql(crate::libsql::Remote),
+    /// A database on libSQL's own engine in this process: the development file of a project whose
+    /// SQL is libSQL's own, and every shadow of a libSQL database.
+    #[cfg(feature = "cli")]
+    LibsqlLocal(crate::libsql_local::Local),
     /// A database the host holds the connection to, as a Rust app's own pool through
     /// `reylo::migrate!()`.
     Host(Box<dyn Session>),
@@ -171,6 +175,22 @@ fn mysql_text(value: &mysql_async::Value) -> Option<String> {
     }
 }
 
+/// Whether the SQLite file at `path` is libSQL's already, whatever the project's files say now (a
+/// branch without the migration that made it): it holds a vector index's table, or its history
+/// holds a migration of libSQL's own SQL, which only libSQL's engine replays.
+#[cfg(feature = "cli")]
+fn libsql_file(path: &str) -> bool {
+    if path == ":memory:" || !Path::new(path).exists() {
+        return false;
+    }
+    let Ok(db) = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI) else { return false };
+    let vector = db.query_row("select count(*) from sqlite_schema where name = 'libsql_vector_meta_shadow'", [], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0;
+    vector || {
+        let history = format!("select sql from {}", crate::catalog::HISTORY_TABLE);
+        db.prepare(&history).and_then(|mut s| s.query_map([], |r| r.get::<_, Option<String>>(0)).map(|rows| rows.flatten().flatten().any(|sql| crate::libsql::uses_own_sql(&sql)))).unwrap_or(false)
+    }
+}
+
 /// The path a SQLite URL names: `sqlite:` or `file:` before it, `:memory:` alone; a relative path
 /// is the project's.
 pub fn sqlite_path(url: &str, base: &Path) -> String {
@@ -236,6 +256,28 @@ impl Db {
         }
     }
 
+    /// The database `opts` names, a SQLite file on libSQL's engine where the project runs there
+    /// ([`crate::Options::libsql_engine`]).
+    #[cfg(feature = "cli")]
+    pub async fn open(opts: &crate::Options) -> Result<Db, Error> {
+        if Dialect::of_url(&opts.url)? == Dialect::Sqlite && !crate::libsql::is_url(&opts.url) {
+            let path = sqlite_path(&opts.url, &opts.root);
+            if opts.libsql_engine() || libsql_file(&path) {
+                return Ok(Db::LibsqlLocal(crate::libsql_local::Local::open(&path)?));
+            }
+        }
+        Db::connect(&opts.url, &opts.root).await
+    }
+
+    /// Whether the database runs libSQL: a libSQL server's, or one on libSQL's engine here.
+    pub fn is_libsql(&self) -> bool {
+        #[cfg(feature = "cli")]
+        if matches!(self, Db::Libsql(_) | Db::LibsqlLocal(_)) {
+            return true;
+        }
+        false
+    }
+
     pub fn dialect(&self) -> Dialect {
         match self {
             #[cfg(feature = "cli")]
@@ -243,7 +285,7 @@ impl Db {
             #[cfg(feature = "cli")]
             Db::Mysql(_) => Dialect::Mysql,
             #[cfg(feature = "cli")]
-            Db::Sqlite(_) | Db::Libsql(_) => Dialect::Sqlite,
+            Db::Sqlite(_) | Db::Libsql(_) | Db::LibsqlLocal(_) => Dialect::Sqlite,
             Db::Host(session) => session.dialect(),
         }
     }
@@ -293,6 +335,8 @@ impl Db {
             }
             #[cfg(feature = "cli")]
             Db::Libsql(remote) => remote.rows(sql),
+            #[cfg(feature = "cli")]
+            Db::LibsqlLocal(local) => local.rows(sql),
         }
     }
 
@@ -308,6 +352,8 @@ impl Db {
             Db::Sqlite(conn) => conn.execute_batch(sql).map_err(sqlite_error),
             #[cfg(feature = "cli")]
             Db::Libsql(remote) => remote.exec(sql),
+            #[cfg(feature = "cli")]
+            Db::LibsqlLocal(local) => local.exec(sql),
         }
     }
 
@@ -372,6 +418,8 @@ impl Db {
             Db::Sqlite(conn) => conn.execute(sql, rusqlite::params_from_iter(params.iter())).map(|_| ()).map_err(sqlite_error),
             #[cfg(feature = "cli")]
             Db::Libsql(remote) => remote.exec_with(sql, params),
+            #[cfg(feature = "cli")]
+            Db::LibsqlLocal(local) => local.exec_with(sql, params),
         }
     }
 
@@ -770,7 +818,8 @@ pub enum Server {
         /// The target database's default character set and collation, which every table created without its own inherits.
         defaults: Option<(String, String)>,
     },
-    Sqlite,
+    /// Shadows in memory: on libSQL's engine for a libSQL database (Turso's), else Reylo's SQLite.
+    Sqlite { libsql: bool },
 }
 
 #[cfg(feature = "cli")]
@@ -906,7 +955,7 @@ impl Server {
                     .and_then(|r| Some((r.get("cs")?.to_string(), r.get("co")?.to_string())));
                 Ok(Server::Mysql { admin, url: server_url.to_string(), defaults })
             }
-            Dialect::Sqlite => Ok(Server::Sqlite),
+            Dialect::Sqlite => Ok(Server::Sqlite { libsql: target.is_libsql() }),
         }
     }
 
@@ -914,7 +963,7 @@ impl Server {
         match self {
             Server::Postgres { .. } => Dialect::Postgres,
             Server::Mysql { .. } => Dialect::Mysql,
-            Server::Sqlite => Dialect::Sqlite,
+            Server::Sqlite { .. } => Dialect::Sqlite,
         }
     }
 
@@ -939,7 +988,10 @@ impl Server {
                 let db = Db::Mysql(crate::db::open_mysql(&with_database(url, &name)).await?);
                 Ok(Shadow { db, name })
             }
-            Server::Sqlite => Ok(Shadow { db: Db::Sqlite(rusqlite::Connection::open_in_memory().map_err(sqlite_error)?), name: ":memory:".into() }),
+            // A libSQL database's shadows are on libSQL's engine, as the database is: its SQL, and the
+            // version of SQLite Turso Cloud runs.
+            Server::Sqlite { libsql: true } => Ok(Shadow { db: Db::LibsqlLocal(crate::libsql_local::Local::memory()?), name: ":memory:".into() }),
+            Server::Sqlite { libsql: false } => Ok(Shadow { db: Db::Sqlite(rusqlite::Connection::open_in_memory().map_err(sqlite_error)?), name: ":memory:".into() }),
         }
     }
 
@@ -1075,7 +1127,7 @@ impl Server {
                 let _ = admin.query_drop(format!("drop database if exists `{name}`")).await;
                 let _ = admin.query_drop(format!("select release_lock('{name}')")).await;
             }
-            Server::Sqlite => {}
+            Server::Sqlite { .. } => {}
         }
     }
 
@@ -1139,7 +1191,7 @@ impl Server {
                     }
                 }
             }
-            Server::Sqlite => {}
+            Server::Sqlite { .. } => {}
         }
         // The replay caches no run will use, which are not counted: they are not a run's leftovers.
         crate::cache::sweep(self).await?;

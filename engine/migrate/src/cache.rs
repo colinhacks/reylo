@@ -186,6 +186,8 @@ static SESSION_STATE: LazyLock<[Regex; 3]> = LazyLock::new(|| {
 #[cfg(feature = "cli")]
 pub(crate) struct Cache {
     d: Dialect,
+    /// Whether the shadows are on libSQL's engine (a libSQL database's), whose copies are its own.
+    libsql: bool,
     base: Hash,
     /// The target, as eviction counts it: a digest of its URL without the user and password, or of
     /// its file.
@@ -211,6 +213,7 @@ impl Cache {
             return None;
         }
         let d = server.dialect();
+        let libsql = matches!(server, Server::Sqlite { libsql: true });
         let mut h = Sha256::new();
         h.part(b"reylo replay cache 1").part(&*CODE).part(d.name().as_bytes());
         let state = server_state(server).await.ok()?;
@@ -222,7 +225,7 @@ impl Cache {
         };
         // MySQL has no copy of a database to start from.
         let copies = matches!(d, Dialect::Postgres | Dialect::Sqlite) && !texts.iter().any(|t| SESSION_STATE.iter().any(|r| r.is_match(t)));
-        Some(Cache { d, base: h.finish(), target: hex(&Sha256::new().part(target.as_bytes()).finish()[..8]), dir: cache.join("migrate"), copies, used: vec![] })
+        Some(Cache { d, libsql, base: h.finish(), target: hex(&Sha256::new().part(target.as_bytes()).finish()[..8]), dir: cache.join("migrate"), copies, used: vec![] })
     }
 
     pub(crate) fn base(&self) -> Hash {
@@ -260,7 +263,16 @@ impl Cache {
     }
 
     fn sqlite_file(&self, key: &Hash) -> PathBuf {
-        self.dir.join("sqlite").join(format!("{}.db", hex(&key[..20])))
+        self.dir.join(self.sqlite_dir()).join(format!("{}.db", hex(&key[..20])))
+    }
+
+    /// Where a SQLite shadow's copies are kept: those of libSQL's engine apart from Reylo's SQLite's.
+    fn sqlite_dir(&self) -> &'static str {
+        if self.libsql {
+            "libsql"
+        } else {
+            "sqlite"
+        }
     }
 
     /// Which of `keys` have a cached database: the longest first.
@@ -300,6 +312,15 @@ impl Cache {
                 let shadow = shadow.ok()?;
                 self.used.push(name);
                 Some(shadow)
+            }
+            Dialect::Sqlite if self.libsql => {
+                let file = self.sqlite_file(key);
+                let from = crate::libsql_local::Local::open(&file.to_string_lossy()).ok()?;
+                let mut to = crate::libsql_local::Local::memory().ok()?;
+                from.backup_to(&mut to).ok()?;
+                drop(from);
+                touch(&file);
+                Some(Shadow { db: Db::LibsqlLocal(to), name: ":memory:".into() })
             }
             Dialect::Sqlite => {
                 let file = self.sqlite_file(key);
@@ -383,7 +404,9 @@ impl Cache {
     }
 
     fn save_sqlite(&mut self, shadow: &Shadow, key: &Hash) {
-        let Db::Sqlite(conn) = &shadow.db else { return };
+        if !matches!(shadow.db, Db::Sqlite(_) | Db::LibsqlLocal(_)) {
+            return;
+        }
         let file = self.sqlite_file(key);
         if file.exists() {
             return;
@@ -391,7 +414,11 @@ impl Cache {
         let Some(dir) = file.parent() else { return };
         ensure_dir(&self.dir, dir);
         let tmp = dir.join(format!("{}.{}.tmp", random_name(), std::process::id()));
-        let written = rusqlite::Connection::open(&tmp).ok().and_then(|to| sqlite_backup(conn, &to).ok());
+        let written = match &shadow.db {
+            Db::LibsqlLocal(from) => crate::libsql_local::Local::open(&tmp.to_string_lossy()).ok().and_then(|mut to| from.backup_to(&mut to).ok()),
+            Db::Sqlite(conn) => rusqlite::Connection::open(&tmp).ok().and_then(|to| sqlite_backup(conn, &to).ok()),
+            _ => None,
+        };
         if written.is_some() && std::fs::rename(&tmp, &file).is_ok() {
             count(|s| s.saved += 1);
         } else {
@@ -404,7 +431,7 @@ impl Cache {
     pub(crate) async fn finish(self, server: &mut Server) {
         prune(&self.dir.join("lines"), KEEP_LINES);
         if self.d == Dialect::Sqlite {
-            prune(&self.dir.join("sqlite"), KEEP_SQLITE);
+            prune(&self.dir.join(self.sqlite_dir()), KEEP_SQLITE);
         }
         let Server::Postgres { admin, .. } = server else { return };
         let _ = evict(admin, &self.target, &self.used).await;
@@ -448,7 +475,12 @@ async fn server_state(server: &mut Server) -> Result<String, Error> {
             let users: Vec<String> = users.into_iter().map(|(u, h)| format!("{u}@{h}")).collect();
             Ok(format!("{v}\n\x1f{u}\n\x1f{who}\n\x1f{}\n\x1f{}\n\x1f{defaults:?}", globals.join("\n"), users.join("\n")))
         }
-        Server::Sqlite => {
+        Server::Sqlite { libsql: true } => {
+            let mut db = crate::libsql_local::Local::memory()?;
+            let options: Vec<String> = db.rows("pragma compile_options")?.iter().map(|r| r.first().unwrap_or_default().to_string()).collect();
+            Ok(format!("libsql {}\n\x1f{}", crate::libsql_local::version(), options.join("\n")))
+        }
+        Server::Sqlite { libsql: false } => {
             let conn = rusqlite::Connection::open_in_memory().map_err(|e| Error(e.to_string()))?;
             let mut statement = conn.prepare("pragma compile_options").map_err(|e| Error(e.to_string()))?;
             let options: Vec<String> = statement.query_map([], |r| r.get(0)).map_err(|e| Error(e.to_string()))?.filter_map(|r| r.ok()).collect();
