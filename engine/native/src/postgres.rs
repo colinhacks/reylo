@@ -7,7 +7,7 @@
 
 use crate::tls::{self, Check};
 use crate::{Failure, Program};
-use crate::clients::tokio_postgres::{self as answers, Describe};
+use crate::clients::tokio_postgres::{self as answers, Describe, Prepared};
 use crate::{AnswerCache, AsyncAnswerer, ReplayError};
 use reylo_engine_core::api::Analysis;
 use serde_json::{json, Value};
@@ -42,6 +42,7 @@ struct Connection {
     bridge: Option<String>,
     /// The engine's answers, kept between statements as the loader's session keeps them.
     answers: AnswerCache<Describe>,
+    prepared: Prepared,
     /// The session's `DateStyle` as the server reported it when the connection started, from its
     /// role, its database or the server's own setting.
     date_style: String,
@@ -53,17 +54,17 @@ impl Connection {
     /// while a request does: that request is answered over the new one.
     async fn reopen(&mut self) -> Result<(), Value> {
         let Started { client, date_style, .. } = connect(&self.url, self.bridge.as_deref()).await?;
-        (self.client, self.date_style) = (client, date_style);
+        (self.client, self.date_style, self.prepared) = (client, date_style, Prepared::default());
         Ok(())
     }
 
     /// The analysis of one statement over the connection, opened again once where the server
     /// closed it; a failure is the answer the program gives for it.
     async fn analyze(&mut self, sql: &str) -> Result<Analysis, Value> {
-        let mut result = answers::analyze(&self.client, sql, &mut self.answers).await;
+        let mut result = answers::analyze_prepared(&self.client, &self.prepared, sql, &mut self.answers).await;
         if matches!(&result, Err(ReplayError::Host(e)) if self.client.is_closed() || e.0.starts_with(answers::ENDED)) {
             self.reopen().await?;
-            result = answers::analyze(&self.client, sql, &mut self.answers).await;
+            result = answers::analyze_prepared(&self.client, &self.prepared, sql, &mut self.answers).await;
         }
         match result {
             Ok(mut analysis) => {
@@ -142,7 +143,7 @@ pub struct Session {
 impl Session {
     pub async fn open(url: &str) -> Result<Session, Failure> {
         let Started { client, version, date_style } = connect(url, None).await.map_err(|answer| Failure::of(&answer))?;
-        Ok(Session { connection: Connection { client, url: url.to_string(), bridge: None, answers: AnswerCache::until_cleared(), date_style }, version: server_version(&version) })
+        Ok(Session { connection: Connection { client, url: url.to_string(), bridge: None, answers: AnswerCache::until_cleared(), prepared: Prepared::default(), date_style }, version: server_version(&version) })
     }
 
     pub async fn analyze(&mut self, sql: &str) -> Result<Analysis, Failure> {
@@ -166,7 +167,7 @@ impl Program for Postgres {
                 match connect(url, bridge.as_deref()).await {
                     Ok(Started { client, version, date_style }) => {
                         self.next += 1;
-                        self.connections.insert(self.next, Connection { client, url: url.to_string(), bridge, answers: AnswerCache::until_cleared(), date_style });
+                        self.connections.insert(self.next, Connection { client, url: url.to_string(), bridge, answers: AnswerCache::until_cleared(), prepared: Prepared::default(), date_style });
                         json!({ "status": "opened", "conn": self.next, "version": server_version(&version) })
                     }
                     Err(failure) => failure,
@@ -207,12 +208,12 @@ impl Program for Postgres {
                 None => closed(conn),
                 Some(c) => {
                     let params = request["params"].as_array().cloned().unwrap_or_default();
-                    let mut result = answers::Answers(&c.client).query(sql, &params).await;
+                    let mut result = answers::Answers(&c.client, &c.prepared).query(sql, &params).await;
                     if matches!(&result, Err(e) if c.client.is_closed() || e.0.starts_with(answers::ENDED)) {
                         if let Err(failure) = c.reopen().await {
                             return Some(failure);
                         }
-                        result = answers::Answers(&c.client).query(sql, &params).await;
+                        result = answers::Answers(&c.client, &c.prepared).query(sql, &params).await;
                     }
                     match result {
                         Ok(Ok(rows)) => json!({ "status": "rows", "rows": rows }),

@@ -12,7 +12,7 @@ description = "Reylo's analysis engine for a Rust host: each database's engine b
 # None by default: a host names the databases it reads.
 default = []
 # Each database: its engine, the answers to its needs over its client, and its program.
-postgres = ["dep:reylo-engine-postgres", "tls", "dep:tokio-postgres", "dep:tokio-postgres-rustls"]
+postgres = ["dep:reylo-engine-postgres", "tls", "dep:tokio-postgres", "dep:tokio-postgres-rustls", "dep:futures-util"]
 mysql = ["dep:reylo-engine-mysql", "tls", "dep:mysql_async"]
 sqlite = ["dep:reylo-engine-sqlite", "dep:rusqlite"]
 # TLS over rustls, for the databases a URL reaches over the network.
@@ -47,6 +47,7 @@ tokio = { version = "1", features = ["rt", "io-std", "io-util", "net", "time"] }
 # extension come back.
 tokio-postgres = { version = "0.7", optional = true, features = ["with-serde_json-1"] }
 tokio-postgres-rustls = { version = "0.14", optional = true }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["alloc"] }
 # TLS over rustls and ring, as the Postgres program's.
 mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "default-rustls-ring"], optional = true }
 rusqlite = { version = "0.39", features = ["bundled"], optional = true }
