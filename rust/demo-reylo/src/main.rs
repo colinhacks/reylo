@@ -84,13 +84,24 @@ async fn main() -> Result<(), sqlx::Error> {
     let ok = users_by_mood::Query { mood: as_param }.run(&pool).await?;
     println!("16. cast        {ok:?} {sad:?} ({})", Mood::Ok.label());
 
+    // A list the statement names, cast into a CHECK column's enum of three values, and into the
+    // Postgres enum type, the module's and the crate's.
+    let planned = planned_states::Query.run(&pool).await?;
+    let mut tx = pool.begin().await?;
+    let changed = set_task_state::Query { state: planned[0].state.cast(), id: 1 }.run(&mut *tx).await?;
+    tx.rollback().await?;
+    let sad = users_by_mood::Query { mood: planned[0].mood.cast() }.run(&pool).await?;
+    let reflected: Mood = planned[1].mood.cast();
+    assert_eq!((changed, reflected), (0, Mood::Ok));
+    println!("17. widen       {planned:?} {changed} changed, {sad:?}");
+
     let mut titles = titles_by_author::Query { author: 1 }.stream(&pool);
     let mut streamed = Vec::new();
     while let Some(row) = titles.try_next().await? {
         streamed.push(row.title);
     }
     assert_eq!(streamed.len(), 2);
-    println!("17. stream      {streamed:?}");
-    println!("18. SQL         {}", get_user::SQL.trim());
+    println!("18. stream      {streamed:?}");
+    println!("19. SQL         {}", get_user::SQL.trim());
     Ok(())
 }

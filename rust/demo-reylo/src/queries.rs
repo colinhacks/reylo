@@ -59,6 +59,15 @@ pub mod set_nickname {}
 #[reylo::query("select id, status from posts order by id")]
 pub mod post_statuses {}
 
+/// Values the statement names: an enum of each list, which casts into an enum with more values, or
+/// into a Postgres enum type that has them all.
+#[reylo::query("select id, case when id = 1 then 'done' else 'todo' end as state, case when id = 1 then 'sad' else 'ok' end as mood from users order by id")]
+pub mod planned_states {}
+
+/// A parameter of a column a CHECK limits to three values.
+#[reylo::query("update tasks set state = :state where id = :id")]
+pub mod set_task_state {}
+
 /// A plain enum of the crate's own, with nothing on it for Reylo: a query's module names it for a
 /// column or a parameter, and matches its variants by name.
 #[derive(Debug, Clone, Copy, PartialEq)]

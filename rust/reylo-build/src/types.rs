@@ -841,13 +841,24 @@ pub fn enum_tokens(ident: &Ident, type_name: &str, values: &[String], more: Toke
     )
 }
 
-/// `reylo::Enum` for the enum `ident` of `values`, whose variants are named by [`names::variants`].
+/// `reylo::Enum` for the enum `ident` of `values`, whose variants are named by [`names::variants`],
+/// and `reylo::HasLabel` for each value, so that a list's value casts into it. A Postgres enum
+/// type's `Id` is the type (`reylo::EnumId`), and a list's its values (`reylo::Labels`).
 pub fn enum_impl(ident: &Ident, type_name: &str, values: &[String]) -> TokenStream2 {
     let variants: Vec<Ident> = names::variants(values).iter().map(|v| format_ident!("{}", v)).collect();
-    let hash = proc_macro2::Literal::u64_suffixed(enum_hash(type_name, values));
+    let id = if type_name.is_empty() {
+        let labels = values.iter().rev().fold(quote!(()), |rest, v| quote!((::reylo::Label<{ ::reylo::__private::label_hash(#v) }>, #rest)));
+        quote!(::reylo::Labels<#labels>)
+    } else {
+        let hash = proc_macro2::Literal::u64_suffixed(enum_hash(type_name, values));
+        quote!(::reylo::EnumId<#hash>)
+    };
     quote!(
+        #(impl ::reylo::HasLabel<{ ::reylo::__private::label_hash(#values) }> for #ident {
+            const VARIANT: Self = #ident::#variants;
+        })*
         impl ::reylo::Enum for #ident {
-            type Id = ::reylo::EnumId<#hash>;
+            type Id = #id;
             const TYPE: &'static str = #type_name;
             const LABELS: &'static [&'static str] = &[#(#values),*];
             fn label(self) -> &'static str {
@@ -864,7 +875,7 @@ pub fn enum_impl(ident: &Ident, type_name: &str, values: &[String]) -> TokenStre
 }
 
 /// FNV-1a over the type's name and each value, each ended by a zero byte: the same for every Rust
-/// enum of one database enum, so it names the database enum as a type (`reylo::EnumId`).
+/// enum of one Postgres enum type, so it names the type as a type (`reylo::EnumId`).
 pub fn enum_hash(type_name: &str, values: &[String]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for part in std::iter::once(type_name).chain(values.iter().map(String::as_str)) {

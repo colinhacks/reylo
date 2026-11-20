@@ -280,6 +280,20 @@ let ada = get_role::Query { id: 1 }.run(&pool).await?.expect("ada");
 let admins = users_by_role::Query { role: ada.role.cast() }.run(&pool).await?;
 ```
 
+A list of values also casts into any enum that has each of its values:
+
+```rust
+#[reylo::query("select id, case when published_at is not null then 'published' else 'draft' end as status from posts")]
+pub mod derived_statuses {}
+
+#[reylo::query("update posts set status = :status where id = :id::int")]
+pub mod set_status {}
+
+for post in derived_statuses::Query.run(&pool).await? {
+    set_status::Query { status: post.status.cast(), id: post.id }.run(&pool).await?;
+}
+```
+
 ### Your own types
 
 A type of your own can stand in for one the module writes.
