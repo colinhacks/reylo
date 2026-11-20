@@ -841,13 +841,24 @@ pub fn enum_tokens(ident: &Ident, type_name: &str, values: &[String], more: Toke
     )
 }
 
-/// `reylo::Enum` for the enum `ident` of `values`, whose variants are named by [`names::variants`].
+/// `reylo::Enum` for the enum `ident` of `values`, whose variants are named by [`names::variants`],
+/// and `reylo::HasLabel` for each value, so that a list's value casts into it. A Postgres enum
+/// type's `Id` is the type (`reylo::EnumId`), and a list's its values (`reylo::Labels`).
 pub fn enum_impl(ident: &Ident, type_name: &str, values: &[String]) -> TokenStream2 {
     let variants: Vec<Ident> = names::variants(values).iter().map(|v| format_ident!("{}", v)).collect();
-    let hash = proc_macro2::Literal::u64_suffixed(enum_hash(type_name, values));
+    let id = if type_name.is_empty() {
+        let labels = label_tree(values);
+        quote!(::reylo::Labels<#labels>)
+    } else {
+        let hash = proc_macro2::Literal::u64_suffixed(enum_hash(type_name, values));
+        quote!(::reylo::EnumId<#hash>)
+    };
     quote!(
+        #(impl ::reylo::HasLabel<{ ::reylo::__private::label_hash(#values) }> for #ident {
+            const VARIANT: Self = #ident::#variants;
+        })*
         impl ::reylo::Enum for #ident {
-            type Id = ::reylo::EnumId<#hash>;
+            type Id = #id;
             const TYPE: &'static str = #type_name;
             const LABELS: &'static [&'static str] = &[#(#values),*];
             fn label(self) -> &'static str {
@@ -863,8 +874,23 @@ pub fn enum_impl(ident: &Ident, type_name: &str, values: &[String]) -> TokenStre
     )
 }
 
+/// A list's values as `reylo::Labels` holds them: each value's `reylo::Label`, in a balanced tree of
+/// pairs, so that proving a cast recurses about log2 of the count deep, within the compiler's
+/// default recursion limit for any list a database holds.
+fn label_tree(values: &[String]) -> TokenStream2 {
+    match values {
+        [] => quote!(()),
+        [value] => quote!(::reylo::Label<{ ::reylo::__private::label_hash(#value) }>),
+        _ => {
+            let (first, rest) = values.split_at(values.len() / 2);
+            let (first, rest) = (label_tree(first), label_tree(rest));
+            quote!((#first, #rest))
+        }
+    }
+}
+
 /// FNV-1a over the type's name and each value, each ended by a zero byte: the same for every Rust
-/// enum of one database enum, so it names the database enum as a type (`reylo::EnumId`).
+/// enum of one Postgres enum type, so it names the type as a type (`reylo::EnumId`).
 pub fn enum_hash(type_name: &str, values: &[String]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for part in std::iter::once(type_name).chain(values.iter().map(String::as_str)) {
@@ -1042,6 +1068,30 @@ mod tests {
         assert_eq!(checked(json!({ "type": "object", "additionalProperties": { "type": "number" } })).0, "::reylo::sqlx::types::Json<::std::collections::BTreeMap<::std::string::String,f64>>");
         assert_eq!(checked(json!({ "type": ["boolean", "null"] })).0, "::reylo::sqlx::types::Json<::core::option::Option<bool>>");
         assert_eq!(checked(json!({ "anyOf": [{ "type": "object", "properties": { "x": { "type": "integer" } }, "required": ["x"], "additionalProperties": false }, { "type": "null" }] })).0, "::reylo::sqlx::types::Json<::core::option::Option<Prefs>>");
+    }
+
+    #[test]
+    fn a_lists_labels_are_a_balanced_tree_in_order() {
+        let values: Vec<String> = (0..200).map(|i| format!("v{i}")).collect();
+        let tree = super::label_tree(&values).to_string();
+        // Each pair opens one parenthesis and each label's hash call one more.
+        let (mut depth, mut deepest) = (0usize, 0usize);
+        for c in tree.chars() {
+            match c {
+                '(' => {
+                    depth += 1;
+                    deepest = deepest.max(depth);
+                }
+                ')' => depth -= 1,
+                _ => {}
+            }
+        }
+        assert_eq!(deepest, 8 + 1, "{tree}");
+        let quoted: Vec<String> = values.iter().map(|v| format!("\"{v}\"")).collect();
+        let positions: Vec<usize> = quoted.iter().map(|q| tree.find(q.as_str()).unwrap_or_else(|| panic!("{q} is missing"))).collect();
+        assert!(positions.windows(2).all(|p| p[0] < p[1]), "{tree}");
+        assert_eq!(super::label_tree(&values[..1]).to_string(), quote!(::reylo::Label<{ ::reylo::__private::label_hash("v0") }>).to_string());
+        assert_eq!(super::label_tree(&[]).to_string(), "()");
     }
 
     #[test]
