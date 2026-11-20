@@ -53,7 +53,6 @@ export const pageGroups = [
       { title: SHOW_RUST ? 'Usage with TypeScript' : 'Usage', href: '/typescript' },
       ...(SHOW_RUST ? [{ title: 'Usage with Rust', href: '/rust' }] : []),
       { title: 'Inference', href: '/inference' },
-      { title: 'Reylo Migrate', href: '/migrate', external: true },
       { title: 'Comparison', href: '/compare' },
       { title: 'FAQ', href: '/faq' },
     ],
@@ -85,6 +84,7 @@ export const pageGroups = [
 ];
 
 export const pageLinks = [
+  { title: 'Reylo Migrate', href: '/migrate' },
   { title: 'Playground', href: '/play' },
   { title: 'npm', href: 'https://www.npmjs.com/package/reylo' },
 ];

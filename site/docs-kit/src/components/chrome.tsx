@@ -67,8 +67,10 @@ export function GitHubStar({ github }: { github: string }) {
   return (
     <div className="relative">
       <a href={github} rel="noreferrer noopener" target="_blank" className={`${linkClass} py-1.5`}>
-        <GitHubIcon className="size-3.5 shrink-0" />
         GitHub
+        <span aria-hidden className="dk-pages-out">
+          ↗
+        </span>
       </a>
       <div aria-hidden className="dk-star pointer-events-none absolute left-0 top-0 select-none">
         <svg viewBox="0 0 120 100" fill="none" className="absolute left-0 top-0 h-[100px] w-[120px]">

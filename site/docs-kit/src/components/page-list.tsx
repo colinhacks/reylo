@@ -2,7 +2,7 @@
 
 import Link from 'fumadocs-core/link';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { GitHubIcon, GitHubStar, ThemeRow } from './chrome';
+import { GitHubStar, ThemeRow } from './chrome';
 import { SearchField } from './search-trigger';
 
 /** A page of the list. `code` writes its title as code, as a page named for a file is (`.reylo.yaml`); `external` marks a page that leaves the docs, with the links' ↗. */
@@ -71,7 +71,7 @@ function Foot({ list, github, star }: { list: PageList; github: string; star: bo
           </span>
         </a>
       ))}
-      <ThemeRow>{star ? <GitHubStar github={github} /> : <a href={github} rel="noreferrer noopener" target="_blank" className="dk-pages-link"><GitHubIcon className="size-3.5 shrink-0" />GitHub</a>}</ThemeRow>
+      <ThemeRow>{star ? <GitHubStar github={github} /> : <a href={github} rel="noreferrer noopener" target="_blank" className="dk-pages-link">GitHub<span aria-hidden className="dk-pages-out">↗</span></a>}</ThemeRow>
     </div>
   );
 }
