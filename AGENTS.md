@@ -186,9 +186,9 @@ Everything `reylo` prints for a person follows one set of marks and one layout. 
 ```
 ✓ The migration files match reylo/reylo.lock
 » This database hasn't run 2 migrations
-  Run them in development:
+  To run them in development:
     reylo migrate dev
-  Run them in production:
+  To run them in production:
     reylo migrate deploy
 ```
 
@@ -197,15 +197,16 @@ Everything `reylo` prints for a person follows one set of marks and one layout. 
 | ✓ | green | done, or matches |
 | ✗ | red, with its title | refused or failed |
 | ! | yellow | a risk: data lost, a rename taken for granted, a run cut off, a statement that blocks writes |
-| » | dim | a note: something to know, and maybe act on |
+| » | dim, the whole line | a note: something to know, and maybe act on |
 | + and - | green and red | added and removed |
 | ↺ | yellow | rewound |
 | ↓ | green | pulled |
 | · | dim | a pending migration's row, and the separator before a timing |
 
-- A command never sits inside a sentence. It goes on its own line, cyan, two spaces in from a lead that names the act and ends in a colon. In `engine/migrate/src/commands.rs`, `then` and `steps` write this layout, as a refusal's `fix` does.
-- Leads that offer alternatives are parallel, as "Run them in development:" and "Run them in production:" are, and none starts with "Or".
-- Every line opens with a capitalized word, never a digit, a path, a command or a migration's name. A count or a name goes later in the line: "This database hasn't run 2 migrations". A row in a table of migrations opens with its name, which is the row.
+- A command never sits inside a sentence. It goes on its own line, cyan, two spaces in from a lead that names the act and ends in a colon, dim, so the command stands out. In `engine/migrate/src/commands.rs`, `then` and `steps` write this layout, as a refusal's `fix` does.
+- A note's leads offer the next step for when the reader is ready, in the form "To run them in development:", since nothing needs fixing. A refusal's or a risk's leads say what to do, in the imperative.
+- Leads that offer alternatives are parallel, as "To run them in development:" and "To run them in production:" are, and none starts with "Or".
+- Every line opens with a capitalized word, never a digit, a path, a command or a migration's name, and says what it means at a glance: as short as it can be without losing a fact, and never a phrase the reader has to work out ("The schema is ahead of the migrations", not "Changes in reylo/schema.sql that no migration makes yet"). A count or a name goes later in the line: "This database hasn't run 2 migrations". A row in a table of migrations opens with its name, which is the row.
 - Colour never carries a meaning alone, so the text reads the same where colour is off: a pipe, a file, `NO_COLOR`. Dim is for what a reader may skip.
 - A SQL comment a plan carries is shown as the migration file has it, under a `!`.
 - A usage error is one line on stderr, `reylo <group>: <message>`, as other command-line tools print theirs.
