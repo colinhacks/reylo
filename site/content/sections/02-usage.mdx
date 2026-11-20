@@ -848,7 +848,7 @@ if (result.error?.code === "SQLITE_CONSTRAINT_UNIQUE") {
 insert into users (name, email) values (:name, :email)
 ```
 
-The error is your database's own, typed with every code it defines, so TypeScript catches a misspelled one:
+The error codes and types are specific to your database dialect, so TypeScript catches a misspelled code:
 
 | Database | Its code | What else it names |
 | --- | --- | --- |
