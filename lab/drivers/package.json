@@ -31,6 +31,7 @@
     "pg-promise": "^12.7.1",
     "planetscale-2": "npm:@planetscale/database@^2.0.0",
     "postgres": "^4.1.1",
+    "sql.js": "^1.17.0",
     "sqlite": "^5.1.1",
     "sqlite3": "^6.0.1",
     "typescript": "^7.1.0-dev.20260918.1",
