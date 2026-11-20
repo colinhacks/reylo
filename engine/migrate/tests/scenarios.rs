@@ -328,13 +328,13 @@ impl P {
     }
 
     async fn exec(&self, sql: &str) {
-        let mut db = Db::connect(&self.url, &self.dir).await.unwrap();
+        let mut db = Db::open(&self.opts()).await.unwrap();
         db.script(sql).await.unwrap_or_else(|e| panic!("{sql}: {e}"));
         db.close().await;
     }
 
     async fn try_rows(&self, sql: &str) -> Result<Vec<Row>, reylo_migrate::Error> {
-        let mut db = Db::connect(&self.url, &self.dir).await.unwrap();
+        let mut db = Db::open(&self.opts()).await.unwrap();
         let rows = db.rows(sql).await;
         db.close().await;
         rows
@@ -2832,10 +2832,10 @@ mod on_mysql {
     use super::*;
     on!(Mysql, a_comment_made_by_hand_stops_nothing, a_comment_in_schema_sql_is_written, a_role_that_cannot_create_databases_is_told_of_shadow_url);
 }
-on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, a_table_renamed_keeps_its_rows_key_and_counter);
+on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, libsqls_own_sql_migrates, a_libsql_history_replays_on_a_branch_without_it, a_table_renamed_keeps_its_rows_key_and_counter);
 mod on_turso {
     use super::*;
-    on!(Turso, a_virtual_tables_own_tables_are_not_in_the_dump, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, a_vector_indexs_own_tables_are_libsqls);
+    on!(Turso, a_virtual_tables_own_tables_are_not_in_the_dump, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, a_vector_indexs_own_tables_are_libsqls, libsqls_own_sql_migrates, a_libsql_history_replays_on_a_branch_without_it);
 }
 on!(Mysql, a_failure_that_leaves_part_of_itself_is_seen_by_the_next_deploy);
 on!(Mysql, a_table_comment_is_no_clause_of_its_table);
@@ -3290,8 +3290,8 @@ mod adversarial {
         assert!(fix.starts_with("reylo run --url ") && words.len() == 3, "{fix}");
         assert_eq!(&words[1..], ["alter table public.customers owner to madv_app", "alter table public.orders owner to madv_app"], "{fix}");
         let items: Vec<(String, String)> = words[1..].iter().map(|w| (w.clone(), w.clone())).collect();
-        let (url, dir) = (words[0].clone(), p.dir.clone());
-        assert_eq!(p.run(async |_, log| reylo_migrate::run_sql(&url, &dir, &items, log).await).await, 0, "{}", p.peek());
+        let url = words[0].clone();
+        assert_eq!(p.run(async |o, log| reylo_migrate::run_sql(&reylo_migrate::Options { url: url.clone(), ..o.clone() }, &items, log).await).await, 0, "{}", p.peek());
         p.output();
         let mut out = Vec::new();
         let code = reylo_migrate::init(&opts, &[], &mut |l: &str| out.push(l.to_string())).await.unwrap_or_else(|e| panic!("init: {e}"));
@@ -3639,8 +3639,7 @@ mod adversarial {
 
     pub async fn reylo_run_runs_inline_sql_and_files(mut p: P) {
         let items = [("create".to_string(), "create table t (x int); insert into t values (1)".to_string()), ("seed.sql".to_string(), "insert into t values (2)".to_string())];
-        let (url, dir) = (p.url.clone(), p.dir.clone());
-        assert_eq!(p.run(async |_, log| reylo_migrate::run_sql(&url, &dir, &items, log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.run(async |o, log| reylo_migrate::run_sql(o, &items, log).await).await, 0, "{}", p.peek());
         assert_eq!(p.rows("select x from t order by x").await.iter().map(|r| r.text("x").to_string()).collect::<Vec<_>>(), ["1", "2"]);
         assert_eq!(p.rows("select to_regclass('__reylo_migrations') as t").await[0].get("t"), None, "records nothing");
     }
@@ -4680,6 +4679,49 @@ create trigger kids_note after insert on kids begin update parents set name = na
         p.exec("alter table docs add column extra int").await;
         assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "extra", &Default::default(), log).await).await, 0, "{}", p.peek());
     }
+
+    /// libSQL's own SQL, a vector index and `alter table … alter column`, which Reylo's SQLite
+    /// refuses: the project's development file and its shadows run on libSQL's engine, so each
+    /// command takes it, and the index's own tables are libSQL's, never drift.
+    pub async fn libsqls_own_sql_migrates(mut p: P) {
+        p.linear();
+        p.schema("create table docs (id integer primary key, emb F32_BLOB(3));\ncreate index docs_emb on docs (libsql_vector_idx(emb));");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "docs", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into docs (id, emb) values (1, vector('[1,2,3]'))").await;
+        assert_eq!(p.rows("select id from vector_top_k('docs_emb', vector('[1,2,3]'), 1)").await[0].text("id"), "1");
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        // A column made not null in place, as libSQL does it, written by hand.
+        p.file("20991231000000_emb_not_null.sql", "alter table docs alter column emb to emb F32_BLOB(3) not null;");
+        p.schema("create table docs (id integer primary key, emb F32_BLOB(3) not null);\ncreate index docs_emb on docs (libsql_vector_idx(emb));");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert!(p.try_rows("insert into docs (id, emb) values (2, null) returning id").await.is_err(), "the column is not null");
+        let sql = reylo_migrate::db_introspect(&p.opts(), &[]).await.unwrap();
+        assert!(sql.contains("libsql_vector_idx") && !sql.contains("_shadow"), "{sql}");
+    }
+
+    /// A database that ran a migration of libSQL's own SQL stays libSQL's on a branch whose files
+    /// have none: its history replays on libSQL's engine, so it is pulled back and rewound.
+    pub async fn a_libsql_history_replays_on_a_branch_without_it(mut p: P) {
+        p.schema("create table docs (id integer primary key, emb F32_BLOB(3));\ncreate index docs_emb on docs (libsql_vector_idx(emb));");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "docs", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        let files = p.files();
+        // Another branch: no migration of it, and a schema.sql of SQLite's alone.
+        for f in &files {
+            std::fs::remove_file(p.dir.join("migrations").join(f)).unwrap();
+        }
+        p.schema("");
+        assert_eq!(p.run(async |o, log| reylo_migrate::history_pull(o, log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.files(), files, "the migration is written back");
+        for f in &files {
+            std::fs::remove_file(p.dir.join("migrations").join(f)).unwrap();
+        }
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+    }
 }
 
 // reylo run on a SQLite file that isn't there refuses, as the migrations' commands do, rather than
@@ -4689,7 +4731,7 @@ async fn reylo_run_refuses_a_file_that_is_not_there() {
     let Some(mut p) = P::new(Dialect::Sqlite).await else { return };
     let url = format!("sqlite:{}", p.dir.join("prod.sqlitee").display());
     let items = [("create".to_string(), "create table audit (seen timestamp)".to_string())];
-    let code = p.run(async |o, log| reylo_migrate::run_sql(&url, &o.root, &items, log).await).await;
+    let code = p.run(async |o, log| reylo_migrate::run_sql(&reylo_migrate::Options { url: url.clone(), ..o.clone() }, &items, log).await).await;
     assert_eq!(code, 1, "{}", p.peek());
     assert_has!(p.output(), r"✗ No SQLite database at [^\n]*\n\nNothing was changed\.");
     assert!(!p.dir.join("prod.sqlitee").exists(), "a file was made");
