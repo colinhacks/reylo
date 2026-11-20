@@ -210,9 +210,39 @@ In TypeScript, a 64-bit integer is a `bigint`, a decimal its exact text, and an 
 </LanguagePanels>
 
 </Dialect>
+<Dialect value="SQL Server">
+
+<LanguagePanels>
+<LanguagePanel value="TypeScript">
+
+| SQL type | TypeScript |
+| --- | --- |
+| `tinyint`, `smallint`, `int`, `count(*)` | `number` |
+| `bigint`, `count_big(*)` | `bigint` |
+| `bit` | `boolean` |
+| `decimal`, `numeric`, `money`, `smallmoney` | `string` |
+| `float`, `real` | `number` |
+| `char`, `varchar`, `nchar`, `nvarchar`, `text`, `ntext`, `xml` | `string` |
+| `binary`, `varbinary`, `image` | `Uint8Array` |
+| `uniqueidentifier` | `string`, in capitals |
+| `date` | `string`, as `2026-10-20` |
+| `time` | `string` |
+| `datetime2`, `datetime`, `smalldatetime` | `string`, as `2026-10-20T10:00:00.123` |
+| `datetimeoffset` | `string`, with the offset it was written with, as `2026-10-20T10:00:00.123+05:30` |
+| A `for json` subquery, `json_object(…)`, `json_array(…)` | [the object or array it builds](#json) |
+
+</LanguagePanel>
+<LanguagePanel value="Rust">
+
+The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver.
+
+</LanguagePanel>
+</LanguagePanels>
+
+</Dialect>
 </DialectTabs>
 
-For every rule and edge case of each database, from 64-bit integers to time zones, nulls, row counts and parameters, see its own page: [Postgres](/postgres#data-types), [MySQL](/mysql#data-types) and [SQLite](/sqlite#data-types).
+For every rule and edge case of each database, from 64-bit integers to time zones, nulls, row counts and parameters, see its own page: [Postgres](/postgres#data-types), [MySQL](/mysql#data-types), [SQLite](/sqlite#data-types) and [SQL Server](/sqlserver#data-types).
 
 ## Named parameters [#naming]
 
@@ -270,6 +300,15 @@ select length(:text::text) as n
 A call to a function your application registers fails the type check, cast or not: Reylo prepares the statement in its own SQLite, which lacks it ("no such function"). Apply that function in TypeScript instead.
 
 </Dialect>
+<Dialect value="SQL Server">
+
+SQL Server types a parameter from its context, and a bare `select @x` is an error until a cast types it:
+
+```sql
+select len(@text::text) as n
+```
+
+</Dialect>
 </DialectTabs>
 
 </Details>
@@ -320,12 +359,20 @@ Reylo infers which computed columns can never be null:
 
 <InferenceCard>
 
-```sql file="inferred_user_flags.sql" dialect="all"
+```sql file="inferred_user_flags.sql" dialect="postgres,mysql,sqlite"
 select u.name,
   coalesce(u.email, '') as email,
   exists (select 1 from posts p where p.user_id = u.id) as has_posts
 from users u
 where u.role = :role
+```
+
+```sql file="inferred_user_flags.sql" dialect="sqlserver"
+select u.name,
+  coalesce(u.email, '') as email,
+  cast(iif(exists (select 1 from posts p where p.user_id = u.id), 1, 0) as bit) as has_posts
+from users u
+where u.role = @role
 ```
 
 </InferenceCard>
@@ -464,6 +511,35 @@ order by
   p.id desc
 ```
 
+```sql file="search_posts.sql" dialect="sqlserver"
+with input as (
+  select json_value(f, '$.q') as q, cast(json_value(f, '$.author_id') as int) as author_id, json_value(f, '$.status') as status, json_value(f, '$.sort') as sort
+  from (select @filters::json('{
+    "type": "object",
+    "properties": {
+      "q": { "type": "string", "maxLength": 100, "default": "" },
+      "author_id": { "type": "integer" },
+      "status": { "enum": ["published", "draft", "all"], "default": "all" },
+      "sort": { "enum": ["newest", "oldest", "title"], "default": "newest" }
+    },
+    "additionalProperties": false
+  }') as f) as f
+)
+select p.id, p.title, u.name as author
+from posts p
+join users u on u.id = p.user_id
+cross join input
+where p.title like concat('%', input.q, '%')
+  and (input.author_id is null or p.user_id = input.author_id)
+  and (input.status = 'all'
+    or (input.status = 'published' and p.published_at is not null)
+    or (input.status = 'draft' and p.published_at is null))
+order by
+  case when input.sort = 'title' then p.title end,
+  case when input.sort = 'oldest' then p.id end,
+  p.id desc
+```
+
 </InferenceCard>
 
 A filter left out takes its default, and one with none, like the author, is null, which turns it off:
@@ -484,6 +560,7 @@ Read with `->>`, each filter is a value the database can plan with, so on Postgr
 - **Postgres** plans each run with its values on pg and PGlite. On postgres.js and Bun.sql, which prepare each statement once per connection, it can switch to one plan for every value after five runs, which reads the whole table; create the client with `connection: { plan_cache_mode: "force_custom_plan" }` to keep planning each run with its values. The same filter read from `jsonb_to_record` reads the whole table under every plan.
 - **MySQL** plans each run with its values. The same filter read from `json_table` reads the whole table.
 - **SQLite** plans a statement before its values are bound, so a filter that may be left out reads every row.
+- **SQL Server** keeps one plan for the statement whatever its values, so a filter that may be left out reads every row; end the statement with `option (recompile)` to plan each run with its values.
 
 </Details>
 
@@ -515,6 +592,14 @@ create table users (
   name text not null,
   email text unique
 ) strict;
+```
+
+```sql schema dialect="sqlserver"
+create table users (
+  id int identity(1, 1) primary key,
+  name nvarchar(100) not null,
+  email nvarchar(255) unique
+);
 ```
 
 ```sql file="inferred_user_by_email.sql" dialect="all"
@@ -562,6 +647,16 @@ Also a key match:
 A unique index on an expression or with a `where` gives `many`.
 
 </Dialect>
+<Dialect value="SQL Server">
+
+Also a key match:
+
+- a `top 1`, or a `top (1)`
+- a subquery or a `with` query that keeps a key
+
+A key column SQL Server converts to compare it, such as a `varchar` key compared with a number, gives `many`, and so does a filtered unique index or one SQL Server has disabled.
+
+</Dialect>
 </DialectTabs>
 
 </Details>
@@ -592,6 +687,13 @@ from posts
 where user_id = :user_id::int
 ```
 
+
+```sql file="inferred_post_count.sql" dialect="sqlserver"
+select count(*) as posts
+from posts
+where user_id = @user_id::int
+```
+
 </InferenceCard>
 
 A rollup adds a row for the total, whose grouped column is null:
@@ -609,6 +711,14 @@ order by user_id
 select user_id, count(*) as posts
 from posts
 group by user_id with rollup
+order by user_id
+```
+
+
+```sql file="rollups.sql" dialect="sqlserver"
+select user_id, count(*) as posts
+from posts
+group by rollup (user_id)
 order by user_id
 ```
 
@@ -636,6 +746,13 @@ where user_id = :user_id::int
 select count(*)
 from posts
 where user_id = :user_id::int
+```
+
+
+```sql file="post_total.sql" dialect="sqlserver"
+select count(*)
+from posts
+where user_id = @user_id::int
 ```
 
 </InferenceCard>
@@ -714,6 +831,19 @@ select
   ) as recent_posts
 ```
 
+```sql file="dashboard.sql" dialect="sqlserver"
+-- the latest posts
+with recent as (select top (@limit::int) id, title from posts order by id desc)
+select
+  (select count(*) from users) as user_count,
+  (select count(*) from posts) as post_count,
+  isnull((
+    select r.id, r.title
+    from recent r
+    for json path
+  ), '[]') as recent_posts
+```
+
 </InferenceCard>
 
 A lateral join runs its subquery once per row:
@@ -744,6 +874,19 @@ left join lateral (
 ) p on true
 ```
 
+
+```sql file="lateral_joins.sql" dialect="sqlserver"
+-- SQL Server's lateral join is outer apply
+select u.name, p.title, p.published_at
+from users u
+outer apply (
+  select top 1 title, published_at
+  from posts
+  where user_id = u.id
+  order by published_at desc
+) p
+```
+
 </InferenceCard>
 
 ## Returning rows [#returning-inserts]
@@ -762,6 +905,13 @@ returning id
 insert into users (name)
 values (:name::text)
 returning id
+```
+
+
+```sql file="inferred_create_user.sql" dialect="sqlserver"
+insert into users (name)
+output inserted.id
+values (@name::text)
 ```
 
 </InferenceCard>
@@ -847,7 +997,7 @@ So is a column the query fills with constants, each arm of a `union all` adding 
 
 <InferenceCard>
 
-```sql file="inferred_feed.sql" dialect="all"
+```sql file="inferred_feed.sql" dialect="postgres,mysql,sqlite"
 select 'user' as kind, id, name as label from users
 union all
 select 'post', id, title from posts
@@ -888,11 +1038,23 @@ where p.published_at > :since
 group by u.id
 ```
 
+```sql file="inferred_user_posts.sql" dialect="sqlserver"
+declare @from datetimeoffset(3) = @since;
+select u.name,
+  isnull((
+    select p.id, p.title from posts p
+    where p.user_id = u.id and p.published_at > @from
+    for json path
+  ), '[]') as posts
+from users u
+where exists (select 1 from posts p where p.user_id = u.id and p.published_at > @from)
+```
+
 </InferenceCard>
 
 ## Nested fetching
 
-Fetch each row's related rows with a subquery. Postgres collects them into an array of rows, MySQL and SQLite into JSON, and Reylo types every field:
+Fetch each row's related rows with a subquery. Postgres collects them into an array of rows, MySQL and SQLite into JSON, SQL Server with `for json path`, and Reylo types every field:
 
 <InferenceCard>
 
@@ -961,6 +1123,28 @@ select u.id, u.name,
   ) as latest_post
 from users u
 where u.id = :id::int
+```
+
+```sql file="users_with_posts.sql" dialect="sqlserver"
+select u.id, u.name,
+  -- every post, as an array
+  isnull((
+    select p.id, p.title
+    from posts p
+    where p.user_id = u.id
+    order by p.id
+    for json path
+  ), '[]') as posts,
+  -- the latest post, or null
+  (
+    select top 1 p.id, p.title
+    from posts p
+    where p.user_id = u.id
+    order by p.published_at desc
+    for json path, without_array_wrapper
+  ) as latest_post
+from users u
+where u.id = @id
 ```
 
 </InferenceCard>
@@ -1158,6 +1342,21 @@ select id, name from users
 where id in (select j.value from input, json_each(input.ids) as j)
 ```
 
+
+```sql file="users_by_ids.sql" dialect="sqlserver"
+-- SQL Server has no array type, so the list is a JSON parameter
+with input as (
+  select @ids::json('{
+    "type": "array",
+    "items": { "type": "integer" }
+  }') as ids
+)
+select id, name from users
+where id in (
+  select j.id from input cross apply openjson(input.ids) with (id int '$') as j
+)
+```
+
 </InferenceCard>
 
 ## Bulk inserts
@@ -1229,6 +1428,31 @@ insert into users (name, email)
 select u.value ->> 'name', u.value ->> 'email'
 from input, json_each(input.users) as u
 returning id
+```
+
+
+```sql file="create_users.sql" dialect="sqlserver"
+with input as (
+  select @users::json('{
+    "type": "array",
+    "maxItems": 1000,
+    "items": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": ["string", "null"], "format": "email" }
+      },
+      "required": ["name"]
+    }
+  }') as users
+)
+insert into users (name, email)
+output inserted.id
+select u.name, u.email
+from input cross apply openjson(input.users) with (
+  name nvarchar(100) '$.name',
+  email nvarchar(255) '$.email'
+) as u
 ```
 
 </InferenceCard>
@@ -1444,6 +1668,91 @@ join json_each(u.value -> 'posts') as p
 ```
 
 </Dialect>
+<Dialect value="SQL Server">
+
+On SQL Server, a `with` only reads, so the users and the posts are two statements, run in one transaction:
+
+```ts twoslash tab="main.ts"
+import sql from "mssql";
+import insertUsers, { type Params } from "./insert_users.sql";
+//                         ^?
+import insertPosts from "./insert_posts.sql";
+
+const users = [
+  {
+    name: "Ada",
+    email: "ada@example.com",
+    posts: [{ title: "Notes" }],
+  },
+];
+
+const tx = new sql.Transaction(db);
+await tx.begin();
+try {
+  await insertUsers.run(tx, { users });
+  await insertPosts.run(tx, { users });
+  await tx.commit();
+} catch (error) {
+  await tx.rollback();
+  throw error;
+}
+```
+
+```sql tab="insert_users.sql"
+with input as (
+  select @users::json('{
+    "type": "array",
+    "items": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" }
+      },
+      "required": ["name", "email"]
+    }
+  }') as users
+)
+insert into users (name, email)
+select u.name, u.email
+from input cross apply openjson(input.users) with (
+  name nvarchar(100) '$.name',
+  email nvarchar(255) '$.email'
+) as u
+```
+
+```sql tab="insert_posts.sql"
+with input as (
+  select @users::json('{
+    "type": "array",
+    "items": {
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "posts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "title": { "type": "string" } },
+            "required": ["title"]
+          }
+        }
+      },
+      "required": ["email", "posts"]
+    }
+  }') as users
+)
+insert into posts (user_id, title)
+select owner.id, p.title
+from input
+cross apply openjson(input.users) with (
+  email nvarchar(255) '$.email',
+  posts nvarchar(max) '$.posts' as json
+) as u
+cross apply openjson(u.posts) with (title nvarchar(200) '$.title') as p
+join users as owner on owner.email = u.email
+```
+
+</Dialect>
 </DialectTabs>
 
 ## Discriminated unions [#oneof]
@@ -1620,6 +1929,42 @@ with input as (
 insert into events (kind, payload)
 select e.value ->> 'kind', e.value
 from input, json_each(input.events) as e
+```
+
+
+```sql file="record_events.sql" dialect="sqlserver"
+with input as (
+  select @events::json('{
+    "type": "array",
+    "items": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "const": "click" },
+            "x": { "type": "integer" },
+            "y": { "type": "integer" }
+          },
+          "required": ["kind", "x", "y"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "const": "key" },
+            "code": { "type": "string" }
+          },
+          "required": ["kind", "code"]
+        }
+      ]
+    }
+  }') as events
+)
+insert into events (kind, payload)
+select e.kind, e.payload
+from input cross apply openjson(input.events) with (
+  kind varchar(10) '$.kind',
+  payload nvarchar(max) '$' as json
+) as e
 ```
 
 </InferenceCard>

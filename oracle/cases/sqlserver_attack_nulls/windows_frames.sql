@@ -1,0 +1,1 @@
+select sum(n) over (order by id rows between 1 following and 2 following) as sw, max(n) over (partition by id) as mx, sum(n) over (order by id) as rs, count(n) over (order by id rows between 5 following and 6 following) as cn from f

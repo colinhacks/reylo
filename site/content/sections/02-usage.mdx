@@ -330,6 +330,27 @@ const db = knex({ client: "better-sqlite3", connection: { filename: "app.db" } }
 const user = await getUser.run(db, { id: 1 });
 ```
 
+#### SQL Server [#sqlserver-drivers]
+
+```ts twoslash tab="mssql" dialect="sqlserver" tab-group="sqlserver-driver"
+// tedious's decimalAsString, until a release of tedious declares it (tediousjs/tedious#1839)
+declare module "mssql" { interface IOptions { decimalAsString?: boolean } }
+// ---cut---
+import sql from "mssql";
+import getUser from "./get_user.sql";
+
+const db = await new sql.ConnectionPool({
+  server: "localhost",
+  database: "app",
+  user: "reylo",
+  password: process.env.DB_PASSWORD,
+  // decimals as their exact text (SQL Server page)
+  options: { decimalAsString: true },
+}).connect();
+
+const user = await getUser.run(db, { id: 1 });
+```
+
 #### Transactions
 
 Pass a transaction's client to `.run()`, as you pass the database:
@@ -776,6 +797,38 @@ await db.transaction(async (trx) => {
 });
 ```
 
+**SQL Server**
+
+```ts twoslash tab="mssql" dialect="sqlserver" tab-group="sqlserver-driver"
+// tedious's decimalAsString, until a release of tedious declares it (tediousjs/tedious#1839)
+declare module "mssql" { interface IOptions { decimalAsString?: boolean } }
+// ---cut---
+import sql from "mssql";
+import createUser from "./create_user.sql";
+
+const db = await new sql.ConnectionPool({
+  server: "localhost",
+  database: "app",
+  user: "reylo",
+  password: process.env.DB_PASSWORD,
+  // decimals as their exact text (SQL Server page)
+  options: { decimalAsString: true },
+}).connect();
+
+// two inserts in one transaction: both land, or neither
+const tx = new sql.Transaction(db);
+await tx.begin();
+try {
+  await createUser.run(tx, { name: "Ada", email: "ada@example.com" });
+  await createUser.run(tx, { name: "Grace", email: "grace@example.com" });
+} catch (error) {
+  // SQL Server may have rolled it back already
+  await tx.rollback().catch(() => {});
+  throw error;
+}
+await tx.commit();
+```
+
 ### `.runSync()`
 
 For databases that support synchronous operations, you can use `.runSync()`.
@@ -846,6 +899,19 @@ if (result.error?.code === "SQLITE_CONSTRAINT_UNIQUE") {
 }
 ```
 
+```ts twoslash tab="main.ts (SQL Server)" dialect="sqlserver"
+import createUser from "./create_user.sql";
+
+const result = await createUser.try(db, {
+  name: "Ada",
+  email: "ada@example.com",
+});
+if (result.error?.number === 2627) {
+  result.error.constraint;
+  //           ^?
+}
+```
+
 ```sql tab="create_user.sql" dialect="all"
 insert into users (name, email) values (:name, :email)
 ```
@@ -857,12 +923,13 @@ The error codes and types are specific to your database dialect, so TypeScript c
 | Postgres | `code`, the SQLSTATE, and `condition`, its name | `constraint`, `table`, `column`, `schema`, `detail`, `hint`, `position` |
 | MySQL | `code`, the error's name, `errno` and `sqlState` | `key`, `constraint`, `table`, `column` |
 | SQLite | `code`, the result code's name, and `errcode` | `table`, `columns`, `constraint` |
+| SQL Server | `number`, the error's number | `constraint`, `table`, `column` |
 
 When the query runs none of your own code, such as a trigger or a function you wrote, Reylo also narrows each error to the names it can carry: a unique violation names one of the unique keys of the tables the query writes, as in the examples above. Your database's page says what it narrows.
 
 - Each driver's error is read into the same fields, and the driver's own error is the `cause`. Any other error still throws, as from `.run()`: a refused connection, say.
 - The file exports the error's type as `QueryError`. On a synchronous SQLite driver, `.trySync()` returns the result itself.
-- On Postgres, an error aborts the transaction it is in, even an error `.try()` returned: every later statement in it fails, and the transaction rolls back. MySQL and SQLite keep it open after most errors. The [Postgres page](/postgres#database-errors) shows how to carry on after an error.
+- On Postgres, an error aborts the transaction it is in, even an error `.try()` returned: every later statement in it fails, and the transaction rolls back. MySQL, SQLite and SQL Server keep it open after most errors. The [Postgres page](/postgres#database-errors) shows how to carry on after an error.
 
 ### `.readOnly`
 

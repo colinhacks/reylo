@@ -28,6 +28,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import postgres from 'postgres';
 import mysql from 'mysql2/promise';
+import mssql from 'mssql';
 import { Session } from '../../src/analyze.ts';
 import { ident, orNull, renderParamType, renderType } from '../../src/render.ts';
 import { docComment, leadingComment, statementAfter } from '../../src/doc-comment.ts';
@@ -35,7 +36,9 @@ import { queryErrorType, reyloImport, standardColumnsType } from '../../src/modu
 import type { Analysis } from '../../src/engine.ts';
 import { analysisWithBases } from '../../src/engine-type.ts';
 import { descriptor } from '../../src/analyze-api.ts';
-import { collectFiles, plan, isStatement, DIALECT_NAME, SCHEMA_FILE, type Block, type Dialect, type Modules } from '../lib/remark-mapper.ts';
+import { captureNative, capturedNative, collectFiles, plan, isStatement, DIALECT_NAME, SCHEMA_FILE, type Block, type Dialect, type Modules } from '../lib/remark-mapper.ts';
+import { EngineCore } from '../../src/engine-core.ts';
+import { nativeBinary } from '../../src/native.ts';
 import { sitePages } from '../lib/page-files.ts';
 import { isErrorExample, type Errors } from '../lib/sql-errors.ts';
 import { schemaType } from './schema-type.ts';
@@ -45,6 +48,7 @@ const site = path.resolve(import.meta.dirname, '..');
 const URLS: Record<Exclude<Dialect, 'sqlite'>, string> = {
   postgres: process.env.REYLO_CAPTURE_POSTGRES ?? 'postgres://postgres@localhost:54329/reylo_capture',
   mysql: process.env.REYLO_CAPTURE_MYSQL ?? 'mysql://root@127.0.0.1:54336/reylo_capture',
+  sqlserver: process.env.REYLO_CAPTURE_SQLSERVER ?? 'sqlserver://sa:Reylo_capture_1@127.0.0.1:54333/reylo_capture?encrypt=true&trustServerCertificate=true',
 };
 /** The scratch database an inference card's own schema is built in, on the same server: made again for each card. */
 const cardUrl = (url: string) => {
@@ -54,8 +58,8 @@ const cardUrl = (url: string) => {
 };
 // The driver each scratch project names, whose defaults the types follow, as for a project with
 // that driver: postgres.js, mysql2 and node:sqlite (no package).
-const DRIVER: Record<Dialect, string | undefined> = { postgres: 'postgres', mysql: 'mysql2', sqlite: undefined };
-const ORDER: Dialect[] = ['postgres', 'mysql', 'sqlite'];
+const DRIVER: Record<Dialect, string | undefined> = { postgres: 'postgres', mysql: 'mysql2', sqlite: undefined, sqlserver: 'mssql' };
+const ORDER: Dialect[] = ['postgres', 'mysql', 'sqlite', 'sqlserver'];
 
 // ---- Arguments ----
 
@@ -68,7 +72,7 @@ for (let i = 0; i < args.length; i++) {
   const schema = /^--schema(?:=(.*))?$/.exec(arg);
   if (schema) {
     const value = schema[1] ?? args[++i];
-    const m = /^(postgres|mysql|sqlite)=(.+)$/.exec(value ?? '');
+    const m = /^(postgres|mysql|sqlite|sqlserver)=(.+)$/.exec(value ?? '');
     if (!m) fail(`--schema takes <dialect>=<file>, as in --schema mysql=schema.sql; got ${value ?? 'nothing'}`);
     schemaFiles[m[1] as Dialect] = readFileSync(path.resolve(m[2]!), 'utf8');
   } else if (arg.startsWith('-')) fail(`unknown option ${arg}`);
@@ -228,6 +232,37 @@ async function buildMysql(schema: string, url = URLS.mysql): Promise<string> {
   return url;
 }
 
+/** The `mssql` configuration of a `sqlserver://` URL, on `database`. */
+function mssqlConfig(url: URL, database: string) {
+  return {
+    server: url.hostname,
+    port: Number(url.port || 1433),
+    user: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+    database,
+    options: { encrypt: url.searchParams.get('encrypt') !== 'false', trustServerCertificate: url.searchParams.get('trustServerCertificate') === 'true' },
+  };
+}
+
+async function buildSqlserver(schema: string, url = URLS.sqlserver): Promise<string> {
+  const { db, admin } = scratch(url);
+  const server = await new mssql.ConnectionPool(mssqlConfig(admin, 'master')).connect();
+  try {
+    await server.request().batch(`if db_id(N'${db}') is not null begin alter database [${db}] set single_user with rollback immediate; drop database [${db}]; end`);
+    await server.request().batch(`create database [${db}]`);
+  } finally {
+    await server.close();
+  }
+  const pool = await new mssql.ConnectionPool(mssqlConfig(admin, db)).connect();
+  try {
+    // A schema's batches, as its `GO` lines part them.
+    for (const batch of schema.split(/^\s*go\s*$/im)) if (batch.trim()) await pool.request().batch(batch);
+  } finally {
+    await pool.close();
+  }
+  return url;
+}
+
 /** A schema with a libSQL vector index is made on libSQL, through the `libsql` package `@libsql/client` opens files with: SQLite has no `libsql_vector_idx`. */
 function buildSqlite(dir: string, schema: string): string {
   const file = path.join(dir, 'capture.db');
@@ -266,6 +301,22 @@ let captured = 0;
 let analyzed = 0;
 // Each inference card's statement, with the engine's own analysis of it, for its type descriptor and Rust types.
 const inference: { dialect: Dialect; name: string; hash: string; raw: Analysis }[] = [];
+
+// A statement written once for every dialect is shown on SQL Server with T-SQL's own `@name` for
+// each `:name` the engine's lexer reads as a placeholder; the build reads these back from
+// lib/sql-modules.json's `$native` (lib/remark-mapper.ts, `nativeText`).
+const lexer = new EngineCore((request) => {
+  const run = spawnSync(nativeBinary(), ['engine', 'sqlserver', 'call'], { input: request, encoding: 'utf8' });
+  if (run.status !== 0) throw new Error(`the engine exited with ${run.status ?? run.signal}: ${run.stderr}`);
+  return run.stdout;
+});
+captureNative((sql) => {
+  // The engine's offsets are UTF-8 bytes.
+  const bytes = Buffer.from(sql, 'utf8');
+  const colons = lexer.lex(sql, 'sqlserver').placeholders.map((p) => bytes.subarray(0, p.start).toString('utf8').length).filter((at) => sql[at] === ':');
+  for (const at of colons.reverse()) sql = `${sql.slice(0, at)}@${sql.slice(at + 1)}`;
+  return sql;
+});
 
 try {
   for (const page of pages) {
@@ -336,7 +387,7 @@ try {
       const dir = project(root, dialect);
       let url: string;
       try {
-        url = dialect === 'postgres' ? await buildPostgres(schema) : dialect === 'mysql' ? await buildMysql(schema) : buildSqlite(dir, schema);
+        url = dialect === 'postgres' ? await buildPostgres(schema) : dialect === 'mysql' ? await buildMysql(schema) : dialect === 'sqlserver' ? await buildSqlserver(schema) : buildSqlite(dir, schema);
       } catch (e) {
         errors.push(`${shown}: the ${DIALECT_NAME[dialect]} ${SCHEMA_FILE} fails: ${(e as Error).message}`);
         continue;
@@ -386,7 +437,7 @@ try {
         const own = project(root, dialect, `${dialect}-card-${i}`);
         let cardDb: string;
         try {
-          cardDb = dialect === 'postgres' ? await buildPostgres(block.schema!, cardUrl(URLS.postgres)) : dialect === 'mysql' ? await buildMysql(block.schema!, cardUrl(URLS.mysql)) : buildSqlite(own, block.schema!);
+          cardDb = dialect === 'postgres' ? await buildPostgres(block.schema!, cardUrl(URLS.postgres)) : dialect === 'mysql' ? await buildMysql(block.schema!, cardUrl(URLS.mysql)) : dialect === 'sqlserver' ? await buildSqlserver(block.schema!, cardUrl(URLS.sqlserver)) : buildSqlite(own, block.schema!);
         } catch (e) {
           report(block, `the card's schema fails: ${(e as Error).message}`);
           continue;
@@ -411,7 +462,7 @@ function indent(text: string) {
 /** The module's parameters, row and row count on one line. */
 function summary(module: string): string {
   const m = /^declare const query: Query<(.*)> & \{$/m.exec(module);
-  return m ? m[1]!.replace(/, "(postgres|mysql|sqlite)", QueryError$/, '') : module;
+  return m ? m[1]!.replace(/, "(postgres|mysql|sqlite|sqlserver)", QueryError$/, '') : module;
 }
 
 for (const w of warnings) console.warn(`warning: ${w}`);
@@ -431,8 +482,10 @@ const before = existsSync(capturesFile) ? (JSON.parse(readFileSync(capturesFile,
 const keyOf = (c: { dialect: string; name: string; hash: string }) => `${c.dialect}\0${c.name}\0${c.hash}`;
 const rust = new Map<string, InferenceCapture['rust']>();
 const renderer = process.env.REYLO_DOCS_RUST;
+// The Rust crate types no SQL Server statement, since sqlx has no SQL Server driver.
+for (const c of inference) if (c.dialect === 'sqlserver') rust.set(keyOf(c), { error: 'The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver.' });
 if (renderer) {
-  const input = inference.map((c) => JSON.stringify({ key: keyOf(c), dialect: c.dialect, analysis: c.raw })).join('\n');
+  const input = inference.filter((c) => c.dialect !== 'sqlserver').map((c) => JSON.stringify({ key: keyOf(c), dialect: c.dialect, analysis: c.raw })).join('\n');
   const run = spawnSync(renderer, [], { input, encoding: 'utf8', maxBuffer: 1 << 28 });
   if (run.status !== 0) fail(`REYLO_DOCS_RUST (${renderer}) exited ${run.status}: ${run.stderr}`);
   for (const line of run.stdout.split('\n').filter(Boolean)) {
@@ -458,7 +511,7 @@ const sorted = Object.fromEntries(
   ORDER.filter((d) => modules[d]).map((d) => [d, Object.fromEntries(Object.entries(modules[d]!).sort(([a], [b]) => a.localeCompare(b)).map(([name, byHash]) => [name, Object.fromEntries(Object.entries(byHash).sort(([a], [b]) => a.localeCompare(b)))]))]),
 );
 const out = path.join(site, 'lib', 'sql-modules.json');
-writeFileSync(out, JSON.stringify({ $comment: 'Written by `nub run capture` (scripts/capture-types.ts); read by lib/remark-mapper.ts. Never edit by hand.', ...sorted }, null, 2) + '\n');
+writeFileSync(out, JSON.stringify({ $comment: 'Written by `nub run capture` (scripts/capture-types.ts); read by lib/remark-mapper.ts. Never edit by hand.', $native: capturedNative(), ...sorted }, null, 2) + '\n');
 const byName = <T,>(entries: Record<string, T>) => Object.fromEntries(Object.entries(entries).sort(([a], [b]) => a.localeCompare(b)));
 const failed = Object.fromEntries(ORDER.filter((d) => failures[d]).map((d) => [d, byName(Object.fromEntries(Object.entries(failures[d]!).map(([name, byHash]) => [name, byName(byHash)])))]));
 writeFileSync(path.join(site, 'lib', 'sql-errors.json'), JSON.stringify({ $comment: 'Written by `nub run capture` (scripts/capture-types.ts): the errors the content mapper gives each error example. Read by lib/sql-errors.ts. Never edit by hand.', ...failed }, null, 2) + '\n');

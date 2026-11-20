@@ -1,0 +1,36 @@
+cast_n_collate_utf8.sql: many () -> { x: varchar(≤10 bytes, UTF-8)? }
+char_param.sql: many (c: char(=4 bytes, windows-1252)) -> { id: int }
+char_utf8.sql: many () -> { c: char(=4 bytes, UTF-8), c2: char(=2 bytes, UTF-8), r: varchar(≤4 bytes, UTF-8) }
+collate_utf8.sql: many () -> { x: varchar(≤10 bytes, UTF-8) }
+concat_len.sql: many () -> { x: varchar(≤20 bytes, windows-1252), y: varchar(≤20 bytes, windows-1252), z: varchar(≤20 bytes, UTF-8), w: nvarchar(≤12 units, UTF-16, ill-formed) }
+datetime_arith.sql: many () -> { a: datetime, b: datetime, c: datetime }
+dec_agg.sql: one () -> { a: decimal(38,6)?, s: decimal(38,2)?, ad: decimal(38,10)? }
+dec_div.sql: many () -> { a: decimal(38,10), b: decimal(11,10), c: decimal(38,10), n: decimal(38,10) }
+dec_mul.sql: many () -> { a: decimal(38,6), b: decimal(11,4), c: decimal(9,6), dd: decimal(38,6) }
+dec_round.sql: many () -> { a: decimal(5,2), b: decimal(5,0), c: decimal(5,0), d: decimal(5,2) }
+echo_nvarchar.sql: many (x: nvarchar(≤4000 units, UTF-16, ill-formed)) -> { echo: nvarchar(≤4000 units, UTF-16, ill-formed)? }
+echo_utf8.sql: many (x: varchar(≤8000 bytes, windows-1252)) -> { echo: varchar(≤8000 bytes, UTF-8)? }
+echo_varchar.sql: many (x: varchar(≤8000 bytes, windows-1252)) -> { echo: varchar(≤8000 bytes, windows-1252)? }
+fixed_case.sql: many () -> { c1: varchar(≤4 bytes, windows-1252), n1: nvarchar(≤4 units, UTF-16, ill-formed), b1: varbinary(≤4) }
+fixed_coalesce.sql: many () -> { c1: varchar(≤4 bytes, windows-1252), c2: char(=4 bytes, windows-1252), b1: varbinary(≤4), b2: binary(=4), b3: varbinary(≤4) }
+fixed_ops.sql: many () -> { c1: char(=8 bytes, windows-1252), b1: binary(=8), b2: varbinary(≤2)?, b3: varbinary(≤2), b4: binary(=4), c3: char(=4 bytes, windows-1252) }
+fixed_union.sql: many () -> { b: varbinary(≤4) }
+fixed_values.sql: many () -> { c: char(=4 bytes, windows-1252)? }
+float_aggs.sql: one () -> { a: float?, b: float?, c: real? }
+floats.sql: many () -> { a: real, b: real, c: float, d: float, g: float, h: float }
+left_sc.sql: many () -> { x: nvarchar(≤2 units, UTF-16, ill-formed), y: nvarchar(≤2 units, UTF-16, ill-formed)?, z: nvarchar(≤1 units, UTF-16, ill-formed) }
+left_sc2.sql: many () -> { a: nvarchar(≤4 units, UTF-16, ill-formed), b: nvarchar(≤4 units, UTF-16, ill-formed), c: nvarchar(≤4 units, UTF-16, ill-formed)?, d: nvarchar(≤6 units, UTF-16, ill-formed), e: nvarchar(≤6 units, UTF-16, ill-formed) }
+left_utf8.sql: many () -> { a: varchar(≤10 bytes, UTF-8), b: varchar(≤10 bytes, UTF-8), c: varchar(≤10 bytes, UTF-8)?, d: varchar(≤8 bytes, UTF-8) }
+lower_utf8.sql: many () -> { x: varchar(≤80 bytes, UTF-8) }
+money.sql: many () -> { a: money(19,4, -922337203685477.5808..922337203685477.5807), b: money(19,4, -922337203685477.5808..922337203685477.5807), c: smallmoney(10,4, -214748.3648..214748.3647), d: numeric(22,5), e: smallmoney(10,4, -214748.3648..214748.3647) }
+offsets.sql: many () -> { a: datetimeoffset(offset)?, b: datetimeoffset(offset)?, c: datetimeoffset(offset)? }
+replace_len.sql: many () -> { x: varchar(≤8000 bytes, windows-1252), y: varchar(≤8000 bytes, UTF-8) }
+scales.sql: many () -> { a: datetime2, b: datetime2, c: time, d: datetime, f: datetime2, h: datetimeoffset(offset) }
+smalldatetime.sql: many () -> { a: smalldatetime, b: smalldatetime }
+stuff_sc.sql: many () -> { f: nvarchar(≤12 units, UTF-16, ill-formed)?, g: nvarchar(≤9 units, UTF-16, ill-formed)?, h: nvarchar(≤4000 units, UTF-16, ill-formed), i: nvarchar(≤11 units, UTF-16, ill-formed)?, j: varchar(≤20 bytes, UTF-8)? }
+tinyint.sql: many () -> { a: tinyint, b: int, d: tinyint, e: int }
+tz_local.sql: many () -> { e: datetimeoffset(offset)?, f: datetimeoffset(offset)?, g: datetimeoffset(offset)? }
+upper_n.sql: many () -> { x: nvarchar(≤5 units, UTF-16, ill-formed), y: nvarchar(≤5 units, UTF-16, ill-formed) }
+upper_utf8.sql: many () -> { x: varchar(≤80 bytes, UTF-8) }
+utf8_misc.sql: many () -> { a: varchar(≤10 bytes, UTF-8)?, b: nvarchar(≤3 units, UTF-16, ill-formed) }
+utf8_to_1252.sql: many () -> { x: varchar(≤10 bytes, windows-1252) }

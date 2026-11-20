@@ -49,6 +49,10 @@ pub enum Db {
     Mysql(mysql_async::Conn),
     #[cfg(feature = "cli")]
     Sqlite(rusqlite::Connection),
+    #[cfg(feature = "cli")]
+    // Boxed, as tiberius's client is larger than every other connection, and every future of a run
+    // holds a `Db`.
+    Sqlserver(Box<reylo_engine::sqlserver::Conn>),
     /// A libSQL server's database, Turso Cloud's among them, over HTTP.
     #[cfg(feature = "cli")]
     Libsql(crate::libsql::Remote),
@@ -59,6 +63,63 @@ pub enum Db {
     /// A database the host holds the connection to, as a Rust app's own pool through
     /// `reylo::migrate!()`.
     Host(Box<dyn Session>),
+}
+
+#[cfg(feature = "cli")]
+pub(crate) fn sqlserver_error(e: tiberius::error::Error) -> Error {
+    match e {
+        tiberius::error::Error::Server(t) => Error(t.message().to_string()),
+        other => Error(other.to_string()),
+    }
+}
+
+/// A SQL Server value as text: a `bit` as `1` or `0`, a number in its decimal digits, binary data in
+/// hexadecimal, and a date or a time as tiberius prints it.
+#[cfg(feature = "cli")]
+fn sqlserver_text(value: &tiberius::ColumnData<'_>) -> Option<String> {
+    use tiberius::ColumnData::*;
+    match value {
+        U8(v) => v.map(|v| v.to_string()),
+        I16(v) => v.map(|v| v.to_string()),
+        I32(v) => v.map(|v| v.to_string()),
+        I64(v) => v.map(|v| v.to_string()),
+        F32(v) => v.map(|v| v.to_string()),
+        F64(v) => v.map(|v| v.to_string()),
+        Bit(v) => v.map(|v| if v { "1".into() } else { "0".into() }),
+        String(v) => v.as_deref().map(str::to_string),
+        Guid(v) => v.map(|v| v.to_string()),
+        Binary(v) => v.as_deref().map(|b| b.iter().map(|byte| format!("{byte:02x}")).collect()),
+        Numeric(v) => v.map(|v| v.to_string()),
+        Xml(v) => v.as_deref().map(|x| x.to_string()),
+        other => Some(format!("{other:?}")),
+    }
+}
+
+/// The rows of every result set of a SQL Server batch, every value as text.
+#[cfg(feature = "cli")]
+async fn sqlserver_rows(client: &mut reylo_engine::sqlserver::Conn, sql: &str) -> Result<Vec<Row>, Error> {
+    let results = client.simple_query(sql).await.map_err(sqlserver_error)?.into_results().await.map_err(sqlserver_error)?;
+    Ok(results
+        .into_iter()
+        .flatten()
+        .map(|row| {
+            let columns = row.columns().iter().map(|c| c.name().to_string()).collect();
+            let values = row.into_iter().map(|v| sqlserver_text(&v)).collect();
+            Row { columns, values }
+        })
+        .collect())
+}
+
+/// A connection to the SQL Server database a URL names, as the engine opens one.
+#[cfg(feature = "cli")]
+pub(crate) async fn open_sqlserver(url: &str) -> Result<reylo_engine::sqlserver::Conn, Error> {
+    reylo_engine::sqlserver::open(url).await.map(|(client, _)| client).map_err(|failure| Error(failure.to_string()))
+}
+
+/// A SQL Server name in brackets, `]` doubled.
+#[cfg(feature = "cli")]
+pub(crate) fn bracket(name: &str) -> String {
+    format!("[{}]", name.replace(']', "]]"))
 }
 
 /// A future a [`Session`] answers with.
@@ -253,6 +314,7 @@ impl Db {
             Dialect::Mysql => Ok(Db::Mysql(crate::db::open_mysql(url).await?)),
             Dialect::Sqlite if crate::libsql::is_url(url) => Ok(Db::Libsql(crate::libsql::Remote::open(url)?)),
             Dialect::Sqlite => Ok(Db::Sqlite(rusqlite::Connection::open(sqlite_path(url, base)).map_err(sqlite_error)?)),
+            Dialect::Sqlserver => Ok(Db::Sqlserver(Box::new(open_sqlserver(url).await?))),
         }
     }
 
@@ -286,6 +348,8 @@ impl Db {
             Db::Mysql(_) => Dialect::Mysql,
             #[cfg(feature = "cli")]
             Db::Sqlite(_) | Db::Libsql(_) | Db::LibsqlLocal(_) => Dialect::Sqlite,
+            #[cfg(feature = "cli")]
+            Db::Sqlserver(_) => Dialect::Sqlserver,
             Db::Host(session) => session.dialect(),
         }
     }
@@ -334,6 +398,8 @@ impl Db {
                 Ok(rows.into_iter().map(|values| Row { columns: columns.clone(), values }).collect())
             }
             #[cfg(feature = "cli")]
+            Db::Sqlserver(client) => sqlserver_rows(client, sql).await,
+            #[cfg(feature = "cli")]
             Db::Libsql(remote) => remote.rows(sql),
             #[cfg(feature = "cli")]
             Db::LibsqlLocal(local) => local.rows(sql),
@@ -351,6 +417,8 @@ impl Db {
             #[cfg(feature = "cli")]
             Db::Sqlite(conn) => conn.execute_batch(sql).map_err(sqlite_error),
             #[cfg(feature = "cli")]
+            Db::Sqlserver(client) => sqlserver_rows(client, sql).await.map(|_| ()),
+            #[cfg(feature = "cli")]
             Db::Libsql(remote) => remote.exec(sql),
             #[cfg(feature = "cli")]
             Db::LibsqlLocal(local) => local.exec(sql),
@@ -358,8 +426,17 @@ impl Db {
     }
 
     /// Runs a script of statements: on MySQL one at a time, since a server that takes several in
-    /// one query reads them as one batch; elsewhere as written.
+    /// one query reads them as one batch; on SQL Server one batch at a time, as its `GO` lines part
+    /// them, and as many times as a `GO` line's count says; elsewhere as written.
     pub async fn script(&mut self, sql: &str) -> Result<(), Error> {
+        if self.dialect() == Dialect::Sqlserver {
+            for (batch, count) in crate::sql::batch_runs(sql) {
+                for _ in 0..count {
+                    self.exec(&batch).await?;
+                }
+            }
+            return Ok(());
+        }
         if self.dialect() != Dialect::Mysql {
             return self.exec(sql).await;
         }
@@ -370,7 +447,7 @@ impl Db {
     }
 
     /// Runs a script as [`Db::script`] does, telling a statement that gave up waiting for a lock
-    /// (Postgres's `lock_timeout`, MySQL's `lock_wait_timeout`) from any other failure: it changed
+    /// (Postgres's `lock_timeout`, MySQL's `lock_wait_timeout`, SQL Server's `lock_timeout`) from any other failure: it changed
     /// nothing, so the file can run again. A host's session can't tell, and fails as `script` does.
     pub(crate) async fn script_or_wait(&mut self, sql: &str) -> Result<(), Ran> {
         match self {
@@ -396,6 +473,21 @@ impl Db {
                 }
                 Ok(())
             }
+            #[cfg(feature = "cli")]
+            Db::Sqlserver(client) => {
+                for (batch, count) in crate::sql::batch_runs(sql) {
+                    for _ in 0..count {
+                        let ran = async { client.simple_query(batch.as_str()).await?.into_results().await };
+                        if let Err(e) = ran.await {
+                            // 1222: a lock waited past `lock_timeout`.
+                            let waited = matches!(&e, tiberius::error::Error::Server(t) if t.code() == 1222);
+                            let e = sqlserver_error(e);
+                            return Err(if waited { Ran::Waited(e) } else { Ran::Failed(e) });
+                        }
+                    }
+                }
+                Ok(())
+            }
             _ => self.script(sql).await.map_err(Ran::Failed),
         }
     }
@@ -417,6 +509,11 @@ impl Db {
             #[cfg(feature = "cli")]
             Db::Sqlite(conn) => conn.execute(sql, rusqlite::params_from_iter(params.iter())).map(|_| ()).map_err(sqlite_error),
             #[cfg(feature = "cli")]
+            Db::Sqlserver(client) => {
+                let params: Vec<&dyn tiberius::ToSql> = params.iter().map(|p| p as &dyn tiberius::ToSql).collect();
+                client.execute(sql, &params).await.map(|_| ()).map_err(sqlserver_error)
+            }
+            #[cfg(feature = "cli")]
             Db::Libsql(remote) => remote.exec_with(sql, params),
             #[cfg(feature = "cli")]
             Db::LibsqlLocal(local) => local.exec_with(sql, params),
@@ -429,6 +526,9 @@ impl Db {
             Db::Mysql(conn) => {
                 let _ = conn.disconnect().await;
             }
+            Db::Sqlserver(client) => {
+                let _ = client.close().await;
+            }
             Db::Libsql(remote) => remote.close(),
             _ => {}
         }
@@ -438,6 +538,7 @@ impl Db {
     pub fn param(&self, n: usize) -> String {
         match self.dialect() {
             Dialect::Postgres => format!("${n}"),
+            Dialect::Sqlserver => format!("@P{n}"),
             _ => "?".into(),
         }
     }
@@ -840,6 +941,45 @@ pub enum Server {
     },
     /// Shadows in memory: on libSQL's engine for a libSQL database (Turso's), else Reylo's SQLite.
     Sqlite { libsql: bool },
+    Sqlserver {
+        /// A connection to `master`, which creates and drops the shadows and holds each one's lock.
+        admin: Box<reylo_engine::sqlserver::Conn>,
+        url: String,
+        /// The target database's collation, which every column created without its own takes.
+        collation: Option<String>,
+    },
+}
+
+/// Everything about a SQL Server a replay's outcome turns on, beside its steps: its version and
+/// collation, the login the shadows are made as, and the server's principals a grant may name.
+#[cfg(feature = "cli")]
+pub(crate) async fn sqlserver_state(admin: &mut reylo_engine::sqlserver::Conn) -> Result<String, Error> {
+    let rows = sqlserver_rows(
+        admin,
+        "select concat_ws(char(10), @@version, cast(serverproperty('Collation') as nvarchar(128)), suser_sname(),
+          (select string_agg(cast(name as nvarchar(max)), N',') within group (order by name) from sys.server_principals where type in ('S', 'U', 'G', 'R'))) as s",
+    )
+    .await?;
+    Ok(rows.first().map(|r| r.text("s").to_string()).unwrap_or_default())
+}
+
+/// Takes the application lock `name` for the session, at once: whether it was granted.
+#[cfg(feature = "cli")]
+async fn sqlserver_lock(admin: &mut reylo_engine::sqlserver::Conn, name: &str) -> Result<bool, Error> {
+    let rows = sqlserver_rows(admin, &format!("declare @r int; exec @r = sp_getapplock @Resource = N'{name}', @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0; select @r as r")).await?;
+    Ok(rows.first().and_then(|r| r.text("r").parse::<i64>().ok()).is_some_and(|r| r >= 0))
+}
+
+#[cfg(feature = "cli")]
+async fn sqlserver_unlock(admin: &mut reylo_engine::sqlserver::Conn, name: &str) {
+    let _ = sqlserver_rows(admin, &format!("exec sp_releaseapplock @Resource = N'{name}', @LockOwner = 'Session'")).await;
+}
+
+/// Drops a SQL Server database, its other sessions ended first.
+#[cfg(feature = "cli")]
+async fn sqlserver_drop(admin: &mut reylo_engine::sqlserver::Conn, name: &str) -> Result<(), Error> {
+    let db = bracket(name);
+    sqlserver_rows(admin, &format!("if db_id(N'{name}') is not null begin alter database {db} set single_user with rollback immediate; drop database {db}; end")).await.map(|_| ())
 }
 
 #[cfg(feature = "cli")]
@@ -976,6 +1116,11 @@ impl Server {
                 Ok(Server::Mysql { admin, url: server_url.to_string(), defaults })
             }
             Dialect::Sqlite => Ok(Server::Sqlite { libsql: target.is_libsql() }),
+            Dialect::Sqlserver => {
+                let admin = Box::new(open_sqlserver(&with_database(server_url, "master")).await?);
+                let collation = target.rows("select cast(collation_name as nvarchar(128)) as c from sys.databases where name = db_name()").await?.first().and_then(|r| r.get("c").map(String::from));
+                Ok(Server::Sqlserver { admin, url: server_url.to_string(), collation })
+            }
         }
     }
 
@@ -984,6 +1129,7 @@ impl Server {
             Server::Postgres { .. } => Dialect::Postgres,
             Server::Mysql { .. } => Dialect::Mysql,
             Server::Sqlite { .. } => Dialect::Sqlite,
+            Server::Sqlserver { .. } => Dialect::Sqlserver,
         }
     }
 
@@ -1012,6 +1158,26 @@ impl Server {
             // version of SQLite Turso Cloud runs.
             Server::Sqlite { libsql: true } => Ok(Shadow { db: Db::LibsqlLocal(crate::libsql_local::Local::memory()?), name: ":memory:".into() }),
             Server::Sqlite { libsql: false } => Ok(Shadow { db: Db::Sqlite(rusqlite::Connection::open_in_memory().map_err(sqlite_error)?), name: ":memory:".into() }),
+            Server::Sqlserver { admin, url, collation } => {
+                let name = random_name();
+                if !sqlserver_lock(admin, &name).await? {
+                    return Err(Error(format!("cannot lock the shadow {name}")));
+                }
+                // A collation's name is a word, which the server reads unquoted alone.
+                let collate = collation.as_deref().filter(|c| c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')).map(|c| format!(" collate {c}")).unwrap_or_default();
+                let made = match admin.simple_query(format!("create database {}{collate}", bracket(&name))).await {
+                    Ok(stream) => stream.into_results().await.map(drop),
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = made {
+                    sqlserver_unlock(admin, &name).await;
+                    // 262, CREATE DATABASE permission denied: the login lacks CREATE ANY DATABASE, which `dbcreator` holds.
+                    let refused = matches!(&e, tiberius::error::Error::Server(t) if t.code() == 262);
+                    return Err(if refused { cannot_create(sqlserver_error(e), false) } else { sqlserver_error(e) });
+                }
+                let db = Db::Sqlserver(Box::new(open_sqlserver(&with_database(url, &name)).await?));
+                Ok(Shadow { db, name })
+            }
         }
     }
 
@@ -1149,6 +1315,11 @@ impl Server {
                 let _ = admin.query_drop(format!("select release_lock('{name}')")).await;
             }
             Server::Sqlite { .. } => {}
+            Server::Sqlserver { admin, .. } => {
+                db.close().await;
+                let _ = sqlserver_drop(admin, &name).await;
+                sqlserver_unlock(admin, &name).await;
+            }
         }
     }
 
@@ -1216,6 +1387,17 @@ impl Server {
                 }
             }
             Server::Sqlite { .. } => {}
+            Server::Sqlserver { admin, .. } => {
+                let names: Vec<String> = sqlserver_rows(admin, &format!("select name from sys.databases where name like N'{}%'", SHADOW_PREFIX.replace('_', "[_]"))).await?.iter().map(|r| r.text("name").to_string()).collect();
+                for name in names {
+                    if !sqlserver_lock(admin, &name).await? {
+                        continue;
+                    }
+                    sqlserver_drop(admin, &name).await?;
+                    sqlserver_unlock(admin, &name).await;
+                    dropped += 1;
+                }
+            }
         }
         // The replay caches no run will use, which are not counted: they are not a run's leftovers.
         crate::cache::sweep(self).await?;
@@ -1223,8 +1405,14 @@ impl Server {
     }
 
     pub async fn close(self) {
-        if let Server::Mysql { admin, .. } = self {
-            let _ = admin.disconnect().await;
+        match self {
+            Server::Mysql { admin, .. } => {
+                let _ = admin.disconnect().await;
+            }
+            Server::Sqlserver { admin, .. } => {
+                let _ = admin.close().await;
+            }
+            _ => {}
         }
     }
 }

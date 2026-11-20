@@ -1,0 +1,1 @@
+select dateadd(nanosecond, 100, d0) as a, cast(dt as datetime2(2)) as b, cast(d2 as time(3)) as c, dateadd(ms, 1, dt) as d, cast(sdt as datetime2(0)) as f, cast(o as datetimeoffset(0)) as h from times

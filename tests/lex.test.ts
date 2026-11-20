@@ -17,6 +17,11 @@ test("the engine's lexer answers alike through its long-lived child and its one-
     ["select 'C:\\', ?3, `:w`, ? -- :v\n /* :u */", "sqlite", ["3", "4"]],
     ["select 'C:\\', :x, \"\\\", :y -- :v\n", "sqlite", ["x", "y"]],
     ["select [a'b] as x, :p as p, [c'd?] as y, [n:m] from t where z = :z", "sqlite", ["p", "z"]],
+    ["merge t using s on t.id = s.id when matched then update set v = :v output $action, inserted.[a:b], @@rowcount, $12.50, geography::Point(:lat, 1, 4326);", "sqlserver", ["v", "lat"]],
+    ["select @a$b#c, @g.STDistance(@h) from t", "sqlserver", ["a$b#c", "g", "h"]],
+    ["declare @since datetime2 = dateadd(day, -@days, sysutcdatetime()), @t table (id int); select id from orders where placed_at > @since and user_id = @user", "sqlserver", ["days", "user"]],
+    ["declare @a int = case when @flag = 1 then 2 else 3 end, @b int = 4; select @b as b", "sqlserver", ["flag"]],
+    ["select [a]]:b] as x, N'it''s :y', e'\\' as z, :p from [t]", "sqlserver", ["p"]],
   ];
   for (const [sql, dialect, params] of statements) {
     // A text of its own for the one-shot form, so that neither answers from what the other kept.
@@ -40,6 +45,10 @@ test("a statement written by hand compiles through the engine's lexer, as a buil
     assert.deepEqual([q.params, q.order], [["id", "name"], ["id", "name", "id"]]);
     assert.deepEqual(q.marks.map(([start, end]) => q.text.slice(start, end)), ["?", "?", "?"]);
   }
+  // SQL Server binds by name: each placeholder is `@p_n`, its place in the binding order.
+  const ss = handWritten("select @id as id, '@no' as s, @name as name", "sqlserver");
+  assert.equal(ss.text, "select @p_1 as id, '@no' as s, @p_2 as name");
+  assert.deepEqual([ss.params, ss.order], [["id", "name"], ["id", "name"]]);
   // A mark is a JavaScript offset, past a character UTF-8 writes in more than one byte.
   const wide = handWritten("select 'é€😀' as s, :id as id", "mysql");
   assert.equal(wide.text.slice(...wide.marks[0]!), "?");

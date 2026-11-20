@@ -553,7 +553,7 @@ async fn bind(client: &Client, sql: &str, analysis: &Value, known: &mut HashMap<
 /// A statement's parameters, several assignments: each takes the next value of every pool; then
 /// again with the n-th parameter's pool turned n places on, so that two parameters of one type,
 /// whose pools are the same, also hold different values. `null` stands in for a pool with no value.
-fn assignments<T: Clone + PartialEq>(pools: &[Vec<T>], null: &T) -> Vec<Vec<T>> {
+pub(crate) fn assignments<T: Clone + PartialEq>(pools: &[Vec<T>], null: &T) -> Vec<Vec<T>> {
     if pools.is_empty() {
         return vec![Vec::new()];
     }
@@ -868,7 +868,7 @@ fn ties(rows: &[&tokio_postgres::SimpleQueryRow], at: &[usize]) -> Option<String
 /// read column by column while they tie. Text and the other kinds sort by rules the server keeps,
 /// so a pair that differs in one is taken as sorted, as is a pair of numbers with no decimal text,
 /// such as `NaN`.
-fn out_of_order<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
+pub(crate) fn out_of_order<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
     let order = analysis["order"].as_array().filter(|o| !o.is_empty())?;
     let keys: Vec<(usize, &str, bool, bool, bool)> = order
         .iter()
@@ -907,7 +907,7 @@ fn out_of_order<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Ite
 /// Why the rows of one run contradict the analysis's result key, if they do: two rows agree on
 /// every column of the key, a NULL counting as equal to another NULL. Each row is its columns'
 /// text, in order, `None` for NULL.
-fn key_repeats<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
+pub(crate) fn key_repeats<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
     let rows: Vec<Vec<Option<&str>>> = rows.collect();
     analysis["unique"].as_array()?.iter().find_map(|key| one_key_repeats(key.as_array()?, columns, rows.iter().cloned()))
 }
@@ -938,7 +938,13 @@ fn one_key_repeats<'r>(key: &[Value], columns: &[Value], rows: impl Iterator<Ite
 /// another length, a NULL element in an array typed without one, its elements separated by
 /// `delimiter`, or a null where JSON a statement built typed a value. A JSON `null` at the top is
 /// the column's null to the run time, so it contradicts a column typed non-null.
-fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Option<String> {
+pub(crate) fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Option<String> {
+    contradiction_written(ty, text, nullable, delimiter, false)
+}
+
+/// [`contradiction`], for a database that writes a UUID inside its JSON in upper case, as SQL
+/// Server's `for json` does, where Postgres writes it in lower case.
+pub(crate) fn contradiction_written(ty: &Value, text: &str, nullable: bool, delimiter: char, upper_uuids: bool) -> Option<String> {
     let whole: Type = serde_json::from_value(ty.clone()).ok()?;
     // An enum's values, from an enum type, a CHECK list or a literal: the value is one of them,
     // and of the type they are of.
@@ -993,11 +999,11 @@ fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Opt
             if json.is_null() {
                 return (!nullable).then(|| "holds the JSON null, typed non-null".to_string());
             }
-            json_contradiction(&content.ty, &json, "")
+            json_contradiction(&content.ty, &json, "", upper_uuids)
         }
         Kind::Json(JsonType { schema: Some(_), .. }) => {
             let json: Value = serde_json::from_str(text).ok()?;
-            json_contradiction(&ty, &json, "")
+            json_contradiction(&ty, &json, "", upper_uuids)
         }
         _ => None,
     }
@@ -1323,7 +1329,7 @@ fn array_has_null(text: &str, delimiter: char) -> bool {
     found
 }
 
-fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
+fn json_contradiction(ty: &Type, json: &Value, path: &str, upper_uuids: bool) -> Option<String> {
     let at = if path.is_empty() { "the top" } else { path };
     match &ty.kind {
         // A JSON column a CHECK holds to a JSON Schema: the value is one the engine's schema
@@ -1335,7 +1341,7 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
         // An enum's value inside a document: of its type, and one of its values, a number as
         // its kind compares and a truth value as its text.
         Kind::Enum(e) => {
-            if let Some(why) = json_contradiction(&e.ty, json, path) {
+            if let Some(why) = json_contradiction(&e.ty, json, path, upper_uuids) {
                 return Some(why);
             }
             let shown = match json {
@@ -1344,11 +1350,17 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
             };
             literal_contradiction(ty, &shown).map(|why| format!("{why} at {at}"))
         }
-        // A row value inside a document is an object of its fields, each key there.
+        // A row value inside a document is an object of its fields, each key there but an optional
+        // one's, as SQL Server leaves out a key whose value is NULL.
         Kind::Struct(record) if !written_as_text(ty) => {
             let Some(obj) = json.as_object() else { return Some(format!("holds {json} at {at}, typed an object")) };
             for f in &record.fields {
-                let Some(v) = obj.get(&f.name) else { return Some(format!("has no key {path}.{}", f.name)) };
+                let Some(v) = obj.get(&f.name) else {
+                    if f.optional {
+                        continue;
+                    }
+                    return Some(format!("has no key {path}.{}", f.name));
+                };
                 // A null where the field's own schema admits one is the column's value.
                 if v.is_null() && !f.ty.schema().is_some_and(|s| reylo_engine_core::schema_type::admits(&s, v)) {
                     if !f.nullable {
@@ -1356,7 +1368,26 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
                     }
                     continue;
                 }
-                if let Some(why) = json_contradiction(&f.ty, v, &format!("{path}.{}", f.name)) {
+                if let Some(why) = json_contradiction(&f.ty, v, &format!("{path}.{}", f.name), upper_uuids) {
+                    return Some(why);
+                }
+            }
+            None
+        }
+        // A tuple inside a document is a JSON array of its elements in order, each of its own type.
+        Kind::Tuple(t) if t.optional_elements.is_empty() && t.rest.is_none() => {
+            let Some(items) = json.as_array() else { return Some(format!("holds {json} at {at}, typed a tuple")) };
+            if items.len() != t.elements.len() {
+                return Some(format!("holds {} elements at {at}, typed a tuple of {}", items.len(), t.elements.len()));
+            }
+            for (i, (item, slot)) in items.iter().zip(&t.elements).enumerate() {
+                if item.is_null() {
+                    if !slot.nullable {
+                        return Some(format!("has a null element at {path}[{i}], typed non-null"));
+                    }
+                    continue;
+                }
+                if let Some(why) = json_contradiction(&slot.ty, item, &format!("{path}[{i}]"), upper_uuids) {
                     return Some(why);
                 }
             }
@@ -1385,13 +1416,13 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
                     }
                     continue;
                 }
-                if let Some(why) = json_contradiction(&array.element.ty, item, &format!("{path}[{i}]")) {
+                if let Some(why) = json_contradiction(&array.element.ty, item, &format!("{path}[{i}]"), upper_uuids) {
                     return Some(why);
                 }
             }
             None
         }
-        _ => (!json_admits(ty, json)).then(|| format!("holds {json} at {at}, typed as {}", ty.short())),
+        _ => (!json_admits(ty, json, upper_uuids)).then(|| format!("holds {json} at {at}, typed as {}", ty.short())),
     }
 }
 
@@ -1399,6 +1430,10 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
 /// structures it: a bit string, pgvector's vectors, the geometric types and the network types
 /// (the spec's facts on what Postgres writes inside its own JSON).
 fn written_as_text(ty: &Type) -> bool {
+    // SQL Server's `bit` is a truth value, written as `true` or `false`.
+    if matches!(ty.kind, Kind::Boolean(_)) {
+        return false;
+    }
     let name = ty.label.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("");
     matches!(name, "bit" | "varbit" | "vector" | "halfvec" | "sparsevec" | "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle" | "inet" | "cidr")
 }
@@ -1410,7 +1445,7 @@ fn written_as_text(ty: &Type) -> bool {
 /// and a UUID as their text ([`written_form`]), and text for every other type the format names (a
 /// structured one written as its text among them). JSON, and a type the engine does not know,
 /// admit any value.
-fn json_admits(ty: &Type, json: &Value) -> bool {
+fn json_admits(ty: &Type, json: &Value, upper_uuids: bool) -> bool {
     let name = ty.label.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("");
     match &ty.kind {
         _ if written_as_text(ty) => json.is_string(),
@@ -1421,13 +1456,13 @@ fn json_admits(ty: &Type, json: &Value) -> bool {
         Kind::Float(FloatType { nan, infinity, .. }) | Kind::Decimal(DecimalType { nan, infinity, .. }) => {
             json.is_number() || (*nan && json.as_str() == Some("NaN")) || (*infinity && matches!(json.as_str(), Some("Infinity" | "-Infinity")))
         }
-        Kind::Uuid(_) | Kind::Date(_) | Kind::Time(_) | Kind::DateTime(_) | Kind::Instant(_) => json.as_str().is_some_and(|text| written_form(&ty.kind, text)),
+        Kind::Uuid(_) | Kind::Date(_) | Kind::Time(_) | Kind::DateTime(_) | Kind::Instant(_) => json.as_str().is_some_and(|text| written_form(&ty.kind, text, upper_uuids)),
         Kind::Text(_) | Kind::Duration(_) | Kind::Bytes(_) | Kind::Range(_) | Kind::Multirange(_) | Kind::Xml(_) => json.is_string(),
         Kind::Map(_) if name == "hstore" => json.as_object().is_some_and(|map| map.values().all(|v| v.is_string() || v.is_null())),
         Kind::Geometry(_) if name == "geometry" => json.get("type").is_some_and(Value::is_string),
         Kind::Geometry(_) => json.is_string(),
         Kind::Opaque if name == "record" => json.is_object(),
-        Kind::Union(u) => u.members.iter().any(|m| json_admits(m, json)),
+        Kind::Union(u) => u.members.iter().any(|m| json_admits(m, json, upper_uuids)),
         _ => true,
     }
 }
@@ -1436,8 +1471,8 @@ fn json_admits(ty: &Type, json: &Value) -> bool {
 /// a document (`JsonEncodeDateTime`, in XSD's style): a year of four digits or more, ` BC` after one
 /// before the year 1, the fraction of a second where it is not zero, a UTC offset in hours and
 /// minutes and its seconds where they are not zero, an infinity where the type holds one, and a
-/// UUID in lowercase.
-fn written_form(kind: &Kind, text: &str) -> bool {
+/// UUID in lowercase (or, for SQL Server's `for json`, uppercase).
+fn written_form(kind: &Kind, text: &str, upper_uuids: bool) -> bool {
     static FORMS: std::sync::OnceLock<[regex::Regex; 6]> = std::sync::OnceLock::new();
     let [date, time, time_offset, timestamp, timestamp_offset, uuid] = FORMS.get_or_init(|| {
         let (date, time, offset) = (r"\d{4,}-\d{2}-\d{2}", r"\d{2}:\d{2}:\d{2}(\.\d+)?", r"[+-]\d{2}:\d{2}(:\d{2})?");
@@ -1449,7 +1484,7 @@ fn written_form(kind: &Kind, text: &str) -> bool {
         Kind::Time(t) => (if t.offset { time_offset } else { time }).is_match(text),
         Kind::DateTime(d) => if infinite { d.infinity } else { timestamp.is_match(text) },
         Kind::Instant(i) => if infinite { i.infinity } else { timestamp_offset.is_match(text) },
-        Kind::Uuid(_) => uuid.is_match(text),
+        Kind::Uuid(_) => uuid.is_match(&if upper_uuids { text.to_ascii_lowercase() } else { text.to_string() }) && (!upper_uuids || !text.bytes().any(|b| b.is_ascii_lowercase())),
         _ => true,
     }
 }
@@ -2286,19 +2321,19 @@ mod tests {
         assert_eq!(contradiction(&document(&object), "{}", false, ',').as_deref(), Some("has no key .ids"));
         assert_eq!(contradiction(&document(&list), r#"["1"]"#, false, ',').as_deref(), Some(r#"holds "1" at [0], typed as int8"#));
         let bits: Type = serde_json::from_value(json!({"kind": "array", "label": "bit", "element": {"type": {"kind": "boolean"}}})).unwrap();
-        assert_eq!(json_contradiction(&bits, &json!("101"), ".b"), None);
-        assert!(json_contradiction(&bits, &json!([true]), ".b").is_some());
+        assert_eq!(json_contradiction(&bits, &json!("101"), ".b", false), None);
+        assert!(json_contradiction(&bits, &json!([true]), ".b", false).is_some());
     }
 
     #[test]
     fn a_leaf_inside_a_document_is_of_the_form_postgres_writes_its_type_in() {
         let ty = |v: Value| serde_json::from_value::<Type>(v).unwrap();
         let int4 = ty(json!({"kind": "integer", "bits": 32, "label": "int4"}));
-        assert!(json_admits(&int4, &json!(1)) && json_admits(&int4, &json!(-2147483648)));
+        assert!(json_admits(&int4, &json!(1), false) && json_admits(&int4, &json!(-2147483648), false));
         for bad in [json!(1.5), json!(1.0), json!("1")] {
-            assert!(!json_admits(&int4, &bad), "{bad}");
+            assert!(!json_admits(&int4, &bad, false), "{bad}");
         }
-        assert!(json_admits(&ty(json!({"kind": "integer", "bits": 32, "label": "oid"})), &json!("1")));
+        assert!(json_admits(&ty(json!({"kind": "integer", "bits": 32, "label": "oid"})), &json!("1"), false));
         let cases: [(Value, &[&str], &[&str]); 7] = [
             (json!({"kind": "date", "infinity": true, "label": "date"}), &["2026-01-01", "0044-03-15 BC", "294276-12-31", "infinity", "-infinity"], &["2026-01-01T00:00:00", "2020-01-01T00:00:00-08:00", "26-01-01", "1/1/2026"]),
             (json!({"kind": "date", "label": "date"}), &["2026-01-01"], &["infinity"]),
@@ -2308,15 +2343,18 @@ mod tests {
             (json!({"kind": "time", "tick": "1/1000000", "offset": true, "label": "timetz"}), &["12:00:00.25+05:30", "12:00:00-08:00"], &["12:00:00"]),
             (json!({"kind": "uuid", "label": "uuid"}), &["3f2b5c1e-8d4a-4b6f-9c2d-1e0f5a6b7c8d"], &["3F2B5C1E-8D4A-4B6F-9C2D-1E0F5A6B7C8D", "{3f2b5c1e-8d4a-4b6f-9c2d-1e0f5a6b7c8d}", "a"]),
         ];
+        let uuid = ty(json!({"kind": "uuid", "label": "uniqueidentifier"}));
+        assert!(json_admits(&uuid, &json!("3F2B5C1E-8D4A-4B6F-9C2D-1E0F5A6B7C8D"), true));
+        assert!(!json_admits(&uuid, &json!("3f2b5c1e-8d4a-4b6f-9c2d-1e0f5a6b7c8d"), true));
         for (t, good, bad) in cases {
             let t = ty(t);
             for text in good {
-                assert!(json_admits(&t, &json!(text)), "{} admits {text}", t.short());
+                assert!(json_admits(&t, &json!(text), false), "{} admits {text}", t.short());
             }
             for text in bad {
-                assert!(!json_admits(&t, &json!(text)), "{} refuses {text}", t.short());
+                assert!(!json_admits(&t, &json!(text), false), "{} refuses {text}", t.short());
             }
-            assert!(!json_admits(&t, &json!(1)), "{} refuses a number", t.short());
+            assert!(!json_admits(&t, &json!(1), false), "{} refuses a number", t.short());
         }
     }
 

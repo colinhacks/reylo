@@ -1,0 +1,1 @@
+select id, row_number() over (order by id) as rn, rank() over (partition by customer_id order by total) as rk, lag(total) over (order by id) as previous, sum(total) over (partition by customer_id) as customer_total, count(*) over () as n from orders

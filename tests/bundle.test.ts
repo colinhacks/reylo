@@ -13,6 +13,7 @@ const OWN: Record<Dialect, string[]> = {
   postgres: ["src/decode.ts", "src/error-codes-postgres.ts"],
   mysql: ["src/decode-mysql.ts", "src/decode.ts", "src/error-codes-mysql.ts"],
   sqlite: ["src/decode-sqlite.ts", "src/error-codes-sqlite.ts"],
+  sqlserver: ["src/decode-sqlserver.ts"],
 };
 
 test("a bundle of a query holds its dialect's drivers and error codes, and no other dialect's", async () => {

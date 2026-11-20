@@ -11,7 +11,7 @@ import { bareName, isMysqlSet, nestsAnyDeep, schemaOf, type EngineType, type Jso
 import { columnKind, RANGE_BOUNDS, sqliteAffinity, sqliteWide, type ScalarKind } from "./values.ts";
 import { leafCodec, type Codec, type Codecs } from "./codecs.ts";
 
-type Dialect = "postgres" | "mysql" | "sqlite";
+type Dialect = "postgres" | "mysql" | "sqlite" | "sqlserver";
 type Schema = { [key: string]: unknown };
 type Analysis = {
   /** The prose written in comments before the statement, which describes both schemas. */
@@ -125,7 +125,7 @@ function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean
     // RFC 3339's time, which JSON Schema's `time` format names, needs an offset and stops at 23:59:60.
     case "time": return t.offset ? { type: "string", description: `pg type ${name}` } : { type: "string", description: "a time of day without a time zone (10:00:00.5)" };
     case "duration": return { type: "string", description: "a length of time as MySQL writes it, up to 838:59:59 either way (-12:00:00.5)" };
-    default: return { type: "string", description: `${dialect === "mysql" ? "MySQL" : "pg"} type ${name || t.kind}` };
+    default: return { type: "string", description: `${dialect === "mysql" ? "MySQL" : dialect === "sqlserver" ? "SQL Server" : "pg"} type ${name || t.kind}` };
   }
 }
 

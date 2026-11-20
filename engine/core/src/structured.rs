@@ -416,9 +416,12 @@ fn mysql_text(base: &str) -> bool {
     matches!(base, "text" | "varchar" | "char" | "character" | "character varying" | "bpchar" | "uuid")
 }
 
-/// What a `::type` cast after a parameter is written as on MySQL or SQLite: the text before and
-/// after the placeholder, none for the bare placeholder, or why the dialect cannot cast to it.
+/// What a `::type` cast after a parameter is written as on MySQL, SQLite or SQL Server: the text
+/// before and after the placeholder, none for the bare placeholder, or why the dialect cannot cast to it.
 fn cast_around(written: &str, dialect: Dialect, spot: Spot, server: &Server) -> Result<Option<(String, String)>, String> {
+    if dialect == Dialect::Sqlserver {
+        return sqlserver_cast(written);
+    }
     let db = if dialect == Dialect::Sqlite { "SQLite" } else if server.mariadb { "MariaDB" } else { "MySQL" };
     if written.ends_with("[]") {
         return Err(format!("{db} has no arrays: `::{written}` cannot be written as its cast."));
@@ -482,6 +485,50 @@ fn cast_around(written: &str, dialect: Dialect, spot: Spot, server: &Server) -> 
         "timestamptz" => Err("MySQL has no type for an instant with its zone: DATETIME keeps the wall-clock time and drops the zone. Write `::datetime` for a wall-clock time.".to_string()),
         "bool" | "boolean" => Err(format!("MySQL has no boolean type to cast to: `::{written}` would make the value a number. Compare the parameter instead, or pass 1 or 0 and write `::int`.")),
         _ => Err(format!("MySQL's CAST has no type for `::{written}`: write MySQL's own `CAST(… AS …)`, whose types are SIGNED, UNSIGNED, DECIMAL, FLOAT, DOUBLE, CHAR, DATE, TIME, DATETIME, YEAR, JSON and BINARY.")),
+    }
+}
+
+/// A `::type` cast on SQL Server: its own `CAST(… AS …)`, to the type written where SQL Server has
+/// one of that name, and to its type of the same values for the others (`::text` is
+/// `nvarchar(max)`, `::boolean` is `bit`, `::timestamptz` is `datetimeoffset(7)`). A type whose
+/// SQL Server default would cut a value is refused: `decimal` alone is `decimal(18, 0)`, which drops
+/// a fraction, and `varchar` alone is `varchar(30)`. A JSON parameter is its text, an
+/// `nvarchar(max)`, which SQL Server's JSON functions read and a JSON column takes.
+fn sqlserver_cast(written: &str) -> Result<Option<(String, String)>, String> {
+    let cast = |t: &str| Ok(Some(("CAST(".to_string(), format!(" AS {t})"))));
+    if written.ends_with("[]") {
+        return Err(format!("SQL Server has no arrays: `::{written}` cannot be written as its cast."));
+    }
+    let (base, modifiers) = match written.find('(') {
+        Some(k) => (written[..k].trim_end(), &written[k..]),
+        None => (written, ""),
+    };
+    let sized = |name: &str, default: &str| cast(&format!("{name}{}", if modifiers.is_empty() { default } else { modifiers }));
+    match base {
+        "tinyint" => cast("tinyint"),
+        "smallint" | "int2" => cast("smallint"),
+        "int" | "int4" | "integer" => cast("int"),
+        "bigint" | "int8" => cast("bigint"),
+        "numeric" | "decimal" | "dec" if modifiers.is_empty() => Err(format!("SQL Server's `{base}` with no precision and scale is `decimal(18, 0)`, which drops a value's fraction: write its precision and scale, as in `::{base}(10, 2)`.")),
+        "numeric" | "decimal" | "dec" => cast(&format!("decimal{modifiers}")),
+        "money" | "smallmoney" | "date" | "datetime" | "smalldatetime" | "uniqueidentifier" | "xml" | "sql_variant" => cast(base),
+        "uuid" => cast("uniqueidentifier"),
+        "real" | "float4" => cast("real"),
+        "float" | "float8" | "double" | "double precision" => cast("float"),
+        "bit" | "bool" | "boolean" => cast("bit"),
+        "text" | "ntext" => cast("nvarchar(max)"),
+        "nvarchar" => sized("nvarchar", "(max)"),
+        "varchar" | "character varying" => sized("varchar", "(max)"),
+        "char" | "character" | "nchar" if modifiers.is_empty() => Err(format!("SQL Server's `{base}` with no length is one character: write its length, as in `::{base}(8)`, or `::nvarchar` for text of any length.")),
+        "char" | "character" => cast(&format!("char{modifiers}")),
+        "nchar" => cast(&format!("nchar{modifiers}")),
+        "time" => sized("time", "(7)"),
+        "timestamp" | "datetime2" => sized("datetime2", "(7)"),
+        "timestamptz" | "datetimeoffset" => sized("datetimeoffset", "(7)"),
+        "binary" if !modifiers.is_empty() => cast(&format!("binary{modifiers}")),
+        "bytea" | "blob" | "binary" | "varbinary" => sized("varbinary", "(max)"),
+        "json" | "jsonb" => cast("nvarchar(max)"),
+        _ => Err(format!("SQL Server has no type `{written}` to cast to: write one of its types, as in `::int`, `::decimal(10, 2)`, `::nvarchar(100)`, `::datetime2` or `::uniqueidentifier`.")),
     }
 }
 
@@ -1257,6 +1304,7 @@ fn binary(m: &Member, dialect: Dialect) -> bool {
     match dialect {
         Dialect::Postgres => false,
         Dialect::Sqlite => m.schema.is_none() && affinity(&m.ty) == "BLOB",
+        Dialect::Sqlserver => false,
         Dialect::Mysql => {
             let t = m.ty.to_ascii_lowercase();
             ["binary", "varbinary", "tinyblob", "blob", "mediumblob", "longblob"].iter().any(|b| t == *b || t.starts_with(&format!("{b}(")))
@@ -1292,7 +1340,8 @@ fn text_member(m: &Member) -> bool {
 /// What the expansion writes for `found`, standing where the author put it.
 pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server) -> Lowered {
     // A typed JSON parameter is the dialect's JSON parameter, its schema left out: Postgres
-    // receives `$1::jsonb`, MySQL `cast(? as json)` and SQLite `?` (wiki/typed-json-params.md).
+    // receives `$1::jsonb`, MySQL `cast(? as json)`, SQLite `?` and SQL Server its text, as
+    // `CAST(@p_1 AS nvarchar(max))` (wiki/typed-json-params.md).
     if let Some(cast) = &found.plain {
         let (before, after) = cast.around.clone().unwrap_or_default();
         return Lowered { placeholder: (before.len(), before.len() + placeholder.len()), text: format!("{before}{placeholder}{after}"), members: Vec::new(), lists: Vec::new() };
@@ -1304,6 +1353,9 @@ pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server
             Dialect::Mysql if server.mariadb => ("JSON_COMPACT(", ")"),
             Dialect::Mysql => ("cast(", " as json)"),
             Dialect::Sqlite => ("", ""),
+            // Its text, which SQL Server's JSON functions read and a JSON column takes; bare, SQL
+            // Server can't tell its type where nothing else does, as in a `with`'s select list.
+            Dialect::Sqlserver => ("CAST(", " AS nvarchar(max))"),
         };
         let text = format!("{before}{placeholder}{after}");
         return Lowered { placeholder: (before.len(), before.len() + placeholder.len()), text, members: Vec::new(), lists: Vec::new() };
@@ -1469,6 +1521,7 @@ pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server
                 w.push(&format!(") AS {alias}"));
             }
         }
+        Dialect::Sqlserver => unreachable!("SQL Server refuses rows(…) and row(…) before the pass reads them (analyze)"),
         Dialect::Mysql => {
             // A binary member is read as its hexadecimal text and decoded with UNHEX().
             let table = |w: &mut Writer, ordinal: bool, alias: &str| {
@@ -1652,6 +1705,13 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
     if found.is_empty() {
         return inner(sql, &[]);
     }
+    // SQL Server takes a `::type` cast, a typed JSON parameter and `::nullable(…)`; a list of rows
+    // or a row would be OPENJSON over its JSON text, which is not built.
+    if dialect == Dialect::Sqlserver {
+        if let Some(f) = found.iter().find(|f| f.json.is_none() && f.plain.is_none() && !f.members.is_empty()) {
+            return refused(DescriptorError { message: "SQL Server takes no rows(…) or row(…) parameter yet: pass each value as a parameter of its own.".into(), start: f.region.0, end: f.region.1 });
+        }
+    }
     // On MySQL the expansion depends on the server, asked once a session.
     let server = if dialect == Dialect::Mysql {
         match host.query(MYSQL_SERVER_QUERY, Vec::new(), Scope::Session)? {
@@ -1741,8 +1801,8 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
                 }
                 // SQLite's `json(?)` takes JSON text, and the parameter is a JSON value, written
                 // as its text as every MySQL and SQLite JSON parameter is.
-                // MariaDB's JSON_COMPACT(?) takes it as text too.
-                if (dialect == Dialect::Sqlite || server.mariadb) && matches!(cast.written.as_str(), "json" | "jsonb") {
+                // MariaDB's JSON_COMPACT(?) takes it as text too, and SQL Server's nvarchar(max).
+                if (dialect == Dialect::Sqlite || dialect == Dialect::Sqlserver || server.mariadb) && matches!(cast.written.as_str(), "json" | "jsonb") {
                     p.ty = Type::json();
                 }
             }
@@ -2079,6 +2139,7 @@ fn table_columns<D: Describe>(f: &Found, sql: &str, dialect: Dialect, server: &S
             let (schema, name) = split_name(written);
             host.query(SQLITE_TABLE_QUERY, vec![serde_json::json!(name), serde_json::json!(schema.unwrap_or_else(|| "main".into()))], Scope::Statement)?
         }
+        Dialect::Sqlserver => return Some(Vec::new()),
         Dialect::Mysql => {
             let (schema, name) = split_name(written);
             host.query(if server.mariadb { MARIADB_TABLE_QUERY } else { MYSQL_TABLE_QUERY }, vec![schema.map_or(Value::Null, Value::String), serde_json::json!(name)], Scope::Statement)?
@@ -2095,6 +2156,7 @@ fn table_columns<D: Describe>(f: &Found, sql: &str, dialect: Dialect, server: &S
                     TableColumn { name: text(r, 0), base: text(r, 1), written: text(r, 2), not_null: flag(r, 3), has_default: flag(r, 4), generated: flag(r, 5), always: flag(r, 6), default, inherited: flag(r, 9) }
                 }
                 Dialect::Mysql => TableColumn { name: text(r, 0), base: text(r, 1), written: text(r, 2), not_null: flag(r, 3), has_default: flag(r, 4), generated: flag(r, 5), always: false, default: None, inherited: false },
+                Dialect::Sqlserver => unreachable!("SQL Server refuses rows(…) and row(…) before the pass reads them (analyze)"),
                 Dialect::Sqlite => {
                     let declared = text(r, 1);
                     let pk = r.get(4).and_then(Value::as_i64).unwrap_or(0);
@@ -2244,6 +2306,7 @@ fn type_differs(m: &Member, field: &Field, c: &TableColumn, domains: &std::colle
             }
             (mysql_type(&m.ty) != mysql_type(&c.written)).then(|| advice.to_string())
         }
+        Dialect::Sqlserver => None,
         // SQLite keeps a value by the column's affinity; a JSON member is text to it.
         Dialect::Sqlite => (m.schema.is_none() && affinity(&m.ty) != affinity(&c.written)).then(|| format!("their affinities differ ({} and {}), and {advice}", affinity(&m.ty), affinity(&c.written))),
     }

@@ -1,4 +1,4 @@
-// What the loader's tests share: the test databases `REYLO_TEST_PG` and `REYLO_TEST_MYSQL` name and a database of a test's own on each, the drivers `lab/drivers` installs, a statement written by hand compiled by the engine's lexer, and the content mapper run over its JSON-RPC protocol, as the type check runs it.
+// What the loader's tests share: the test databases `REYLO_TEST_PG`, `REYLO_TEST_MYSQL` and `REYLO_TEST_SQLSERVER` name and a database of a test's own on each, the drivers `lab/drivers` installs, a statement written by hand compiled by the engine's lexer, and the content mapper run over its JSON-RPC protocol, as the type check runs it.
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -15,12 +15,15 @@ export const MAPPER = join(ROOT, "src", "mapper.ts");
 export const INDEX = pathToFileURL(join(ROOT, "src", "index.ts")).href;
 export const PG = process.env.REYLO_TEST_PG;
 export const MYSQL = process.env.REYLO_TEST_MYSQL;
+export const SQLSERVER = process.env.REYLO_TEST_SQLSERVER;
 /** A Postgres that takes TLS and asks for a password (SCRAM), with the password in its URL, for the test of channel binding. */
 export const PG_TLS = process.env.REYLO_TEST_PG_TLS;
 /** Why a test of the live Postgres skips, or `false`. */
 export const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
 /** Why a test of the live MySQL skips, or `false`. */
 export const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : !existsSync(join(DRIVERS, "mysql2")) ? "lab/drivers is not installed" : false;
+/** Why a test of the live SQL Server skips, or `false`. */
+export const sqlserverLive = !SQLSERVER ? "REYLO_TEST_SQLSERVER names no server" : !existsSync(join(DRIVERS, "mssql")) ? "lab/drivers is not installed" : false;
 
 /** A driver as `lab/drivers` installs it: an ES module's default export, as postgres.js 4's. */
 export function driver(name: string): any {
@@ -76,7 +79,8 @@ const handWrittenKept = new Map<string, HandWritten>();
  * reads its placeholders (the `lex` request, through the one-shot `reylo engine <database> call`,
  * so that a test can define a query at once), and each is written as its database binds it, `$n`
  * on Postgres, numbered once per name by `params` (by default the names in the order they first
- * appear), and one `?` per placeholder on MySQL and SQLite. `text` is the statement the database
+ * appear), one `?` per placeholder on MySQL and SQLite, and on SQL Server, whose driver binds by
+ * name, `@p_n`, its place in the binding order. `text` is the statement the database
  * receives, `order` the name each value binds, `marks` each placeholder's place in `text`, and
  * `params` the names, which spread into `defineQuery` beside `sql`.
  */
@@ -102,7 +106,7 @@ export function handWritten(sql: string, dialect: Dialect, params?: readonly str
   for (const p of lexed.placeholders) {
     if (dialect === "postgres" && !names.includes(p.name)) throw new Error(`${JSON.stringify(sql)}: its placeholder for ${p.name} is not one of ${JSON.stringify(names)}`);
     text += sql.slice(last, at(p.start));
-    const written = dialect === "postgres" ? `$${names.indexOf(p.name) + 1}` : "?";
+    const written = dialect === "postgres" ? `$${names.indexOf(p.name) + 1}` : dialect === "sqlserver" ? `@p_${order.length + 1}` : "?";
     marks.push([text.length, text.length + written.length]);
     text += written;
     order.push(p.name);
@@ -164,6 +168,45 @@ export async function mysqlDatabase(prefix: string, setup?: string) {
       await db.end();
       await admin.query(`drop database if exists ${name}`);
       await admin.end();
+    },
+  };
+}
+
+/** The `mssql` configuration of the SQL Server `url` names (`sqlserver://user:password@host:port/database?encrypt=true&trustServerCertificate=true`), on `database`, with `options` beside its TLS settings. */
+export function mssqlConfig(url: string, database: string, options: Record<string, unknown> = {}) {
+  const u = new URL(url);
+  return {
+    server: u.hostname,
+    port: Number(u.port || 1433),
+    user: decodeURIComponent(u.username),
+    password: decodeURIComponent(u.password),
+    database,
+    options: { encrypt: u.searchParams.get("encrypt") !== "false", trustServerCertificate: u.searchParams.get("trustServerCertificate") === "true", ...options },
+  };
+}
+
+/** A database of a test's own on the test SQL Server, its URL, and an `mssql` pool of it with `options` (the driver's, such as `decimalAsString`), with `setup` run first, batch by batch as its `GO` lines part it. */
+export async function sqlserverDatabase(prefix: string, setup?: string, options: Record<string, unknown> = {}) {
+  const mssql = driver("mssql");
+  const admin = await new mssql.ConnectionPool(mssqlConfig(SQLSERVER!, "master")).connect();
+  const name = `${prefix}_${process.pid}`;
+  const drop = `if db_id(N'${name}') is not null begin alter database [${name}] set single_user with rollback immediate; drop database [${name}]; end`;
+  await admin.request().batch(drop);
+  await admin.request().batch(`create database [${name}]`);
+  const pool = await new mssql.ConnectionPool(mssqlConfig(SQLSERVER!, name, options)).connect();
+  for (const batch of (setup ?? "").split(/^\s*go\s*$/im)) if (batch.trim()) await pool.request().batch(batch);
+  const url = new URL(SQLSERVER!);
+  url.pathname = `/${name}`;
+  return {
+    url: url.href,
+    pool,
+    mssql,
+    /** Another pool of the database, with other options. */
+    connect: (other: Record<string, unknown>) => new mssql.ConnectionPool(mssqlConfig(SQLSERVER!, name, other)).connect(),
+    async drop() {
+      await pool.close();
+      await admin.request().batch(drop);
+      await admin.close();
     },
   };
 }

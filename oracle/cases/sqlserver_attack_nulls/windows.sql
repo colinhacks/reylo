@@ -1,0 +1,1 @@
+select lag(n) over (order by id) as l, lead(n, 1, n) over (order by id) as ld, first_value(n) over (order by id rows between 1 following and 1 following) as fv, last_value(n) over (order by id rows between unbounded preceding and 1 preceding) as lv from f

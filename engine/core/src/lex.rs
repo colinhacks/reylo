@@ -1,22 +1,27 @@
 //! Placeholders, read off the raw statement text.
 //!
 //! One named form works in every dialect, `:name`, which is also the form mysql2's
-//! `namedPlaceholders` and SQLite accept; SQLite's own `@name` and `$name` are named placeholders
-//! there too. Beside them a statement may use its database's own positional form instead, never
+//! `namedPlaceholders` and SQLite accept; a database's own named form works there too: SQLite's
+//! `@name` and `$name`, and SQL Server's `@name`. Beside them a statement may use its database's own positional form instead, never
 //! both: `$1` on Postgres, `?` on MySQL, `?` and `?NNN` on SQLite. A form the database does not
 //! have is refused where the database would misread it: SQLite takes `$1` for a parameter named
 //! `$1`, and a Postgres `$name` outside a dollar quote is a syntax error, so each is an error that
 //! says what to write; MySQL's `@name` is a user variable and `$` a character of its identifiers,
-//! so both stay text there, as `@` (an operator) does on Postgres. A parameter's name drops the
+//! so both stay text there, as `@` (an operator) does on Postgres. SQL Server has no positional
+//! form, and a `?` is an error; its `@name` is a name as T-SQL writes one (no dots, and `@`, `#`
+//! and `$` may follow its first letter), its `@@name` a function, and its `$` starts a money
+//! literal or a pseudo-column (`$action`), so that stays text. A parameter's name drops the
 //! prefix: `:id`, `@id` and `$id` are `id`, and `$2` and `?2` are both `2`. SQLite reads `:id` and
-//! `@id` as two parameters, so the named placeholders of one statement share one prefix. A bare `?` takes the number after the largest one so far, as SQLite numbers it, so `?, ?`
+//! `@id` as two parameters, so the named placeholders of one statement share one prefix, and so
+//! do SQL Server's. A bare `?` takes the number after the largest one so far, as SQLite numbers it, so `?, ?`
 //! is `1`, `2`. Each parameter appears once in a statement, so that one place types it: a value
 //! needed twice is selected once in a `with` and read from there, and every later use of a name
 //! is an error at its place ([`repeated`]); a bare `?` is a parameter of its own. A name may be
 //! dotted (`:auth.user_id`): each `.segment` starts like a name, so `arr[1:2]` and `:t.*` end
 //! where they should. The engine rewrites placeholders to whatever the
 //! database binds by position (`$n` on Postgres, `?` on MySQL, `?n` for the SQLite prepare, where
-//! SQLite's own `:name` would end at the first dot) and keeps a map back to the author's text, so
+//! SQLite's own `:name` would end at the first dot, and `@p_n` on SQL Server, whose driver binds by
+//! name) and keeps a map back to the author's text, so
 //! a server error at a rewritten position lands on the right characters of the `.sql` file.
 //!
 //! The pass knows what the parser knows about text: single-quoted literals (with `''`), `E''`
@@ -25,7 +30,8 @@
 //! `sql_mode` ([`MysqlText`]): a backslash in a string escapes the character after it, a
 //! double-quoted word is a string, `#` starts a line comment as `-- ` does (`--` followed by
 //! anything else is two minus signs), a block comment ends at its first `*/`, and backquotes quote
-//! a name. The spans it skipped as text are returned as [`Lexed::opaque`], so a caller that looks
+//! a name. SQL Server's `[name]` quotes a name, in which `]]` is one `]`, and its `E'…'` is no escape
+//! string. The spans it skipped as text are returned as [`Lexed::opaque`], so a caller that looks
 //! for its own construct in the statement does not need a scanner of its own.
 
 use crate::dialect::Dialect;
@@ -90,6 +96,9 @@ pub enum Target {
     /// [`Target::Dollar`], a gap closes (`$3` alone is `?1`): the binding order is `params` either
     /// way, and SQLite reads `?n` as position `n`.
     Numbered,
+    /// `@p_n`, numbered by binding order: SQL Server's driver binds a parameter by its `@` name.
+    /// The underscore keeps clear of `@p1`, which mssql's own drivers name their parameters.
+    AtNumbered,
 }
 
 /// A rewritten statement plus the map back to the author's text.
@@ -269,9 +278,156 @@ pub fn lex_mysql(sql: &str, named: Named, text: MysqlText) -> Result<Lexed, LexE
     lex_text(sql, Dialect::Mysql, named, text)
 }
 
+/// The names a T-SQL batch gives `@` that are no placeholder: the variables it declares (`declare
+/// @since datetime2 = …, @t table (…)`), by their lowercased names, as SQL Server compares them, and
+/// the offsets of the argument names an `exec` passes by name (`exec dbo.find @id = @id`), which are
+/// the procedure's own. Every other `@name` is a parameter, as `sp_executesql` reads the batch.
+struct Variables {
+    declared: std::collections::HashSet<String>,
+    arguments: std::collections::HashSet<usize>,
+}
+
+/// The words that start a T-SQL statement, which end a `declare`'s list or an `exec`'s arguments
+/// where no `;` does.
+const TSQL_STARTS: &[&str] = &[
+    "select", "insert", "update", "delete", "merge", "set", "if", "else", "while", "exec", "execute", "begin", "end", "declare", "return", "print", "throw", "raiserror", "with", "open", "fetch", "close", "deallocate",
+    "waitfor", "goto", "break", "continue", "truncate", "create", "alter", "drop", "commit", "rollback", "save", "use",
+];
+
+fn tsql_variables(sql: &str) -> Variables {
+    #[derive(PartialEq)]
+    enum Mode {
+        None,
+        Declare { expect: bool },
+        Exec,
+    }
+    let b = sql.as_bytes();
+    let mut out = Variables { declared: Default::default(), arguments: Default::default() };
+    let mut mode = Mode::None;
+    let mut depth = 0usize;
+    // The `case` expressions open at the top level, whose `else` and `end` end no statement.
+    let mut cases = 0usize;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\'' | b'"' | b'[' => {
+                let close = if b[i] == b'[' { b']' } else { b[i] };
+                i += 1;
+                while i < b.len() {
+                    if b[i] == close {
+                        if b.get(i + 1) == Some(&close) {
+                            i += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let mut nest = 0;
+                while i < b.len() {
+                    if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+                        nest += 1;
+                        i += 2;
+                    } else if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
+                        nest -= 1;
+                        i += 2;
+                        if nest == 0 {
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            b';' if depth == 0 => {
+                mode = Mode::None;
+                cases = 0;
+                i += 1;
+            }
+            b',' if depth == 0 => {
+                if let Mode::Declare { expect } = &mut mode {
+                    *expect = true;
+                }
+                i += 1;
+            }
+            b'@' if b.get(i + 1) == Some(&b'@') => i += 2,
+            b'@' if b.get(i + 1).is_some_and(|&c| is_name_start(c)) => {
+                let start = i;
+                let mut end = i + 1;
+                while end < b.len() && (is_name_char(b[end]) || matches!(b[end], b'@' | b'#' | b'$')) {
+                    end += 1;
+                }
+                if depth == 0 {
+                    match &mut mode {
+                        Mode::Declare { expect } if *expect => {
+                            out.declared.insert(sql[start + 1..end].to_ascii_lowercase());
+                            *expect = false;
+                        }
+                        Mode::Exec => {
+                            let after = skip_space(b, end);
+                            if b.get(after) == Some(&b'=') && b.get(after + 1) != Some(&b'=') {
+                                out.arguments.insert(start);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                i = end;
+            }
+            c if is_name_start(c) && !prev_is_name_char(b, i) => {
+                let end = name_end(b, i);
+                let word = sql[i..end].to_ascii_lowercase();
+                if depth == 0 {
+                    match word.as_str() {
+                        "case" => cases += 1,
+                        "end" if cases > 0 => cases -= 1,
+                        _ if cases > 0 => {}
+                        w if TSQL_STARTS.contains(&w) => {
+                            mode = match w {
+                                "declare" => Mode::Declare { expect: true },
+                                "exec" | "execute" => Mode::Exec,
+                                _ => Mode::None,
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                i = end;
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+fn skip_space(b: &[u8], mut i: usize) -> usize {
+    while i < b.len() && b[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
 fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Result<Lexed, LexError> {
     let sqlite_named = dialect == Dialect::Sqlite && named == Named::Dialect;
     let mysql = dialect == Dialect::Mysql;
+    let sqlserver = dialect == Dialect::Sqlserver;
+    let variables = if sqlserver { tsql_variables(sql) } else { Variables { declared: Default::default(), arguments: Default::default() } };
     let b = sql.as_bytes();
     let mut i = 0usize;
     let mut last = Last::Other;
@@ -306,7 +462,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 i = end;
                 last = Last::Other;
             }
-            b'E' | b'e' if b.get(i + 1) == Some(&b'\'') && !prev_is_name_char(b, i) && !mysql => {
+            b'E' | b'e' if b.get(i + 1) == Some(&b'\'') && !prev_is_name_char(b, i) && !mysql && !sqlserver => {
                 let start = i;
                 i += 2;
                 loop {
@@ -448,7 +604,9 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                         i = end;
                         last = Last::Operand;
                     }
-                    Some(&n) if (is_name_start(n) || n.is_ascii_digit()) && dialect != Dialect::Mysql => {
+                    // MySQL's `$` is a character of its names, and SQL Server's starts a money
+                    // literal (`$12.50`) and a pseudo-column (`$action`, `$identity`).
+                    Some(&n) if (is_name_start(n) || n.is_ascii_digit()) && !mysql && !sqlserver => {
                         return Err(foreign(sql, i, dialect));
                     }
                     _ => {
@@ -458,6 +616,27 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 }
             }
             b'@' => match b.get(i + 1) {
+                // SQL Server's `@@rowcount` and its like are functions.
+                Some(&b'@') if sqlserver => {
+                    i = name_end(b, i + 2);
+                    last = Last::Operand;
+                }
+                Some(&n) if is_name_start(n) && !prev_is_name_char(b, i) && sqlserver && named == Named::Dialect => {
+                    let mut end = i + 1;
+                    while end < b.len() && (is_name_char(b[end]) || matches!(b[end], b'@' | b'#' | b'$')) {
+                        end += 1;
+                    }
+                    // A variable the batch declares, or an argument's name in an `exec`, is T-SQL's own.
+                    if variables.declared.contains(&sql[i + 1..end].to_ascii_lowercase()) || variables.arguments.contains(&i) {
+                        i = end;
+                        last = Last::Operand;
+                        continue;
+                    }
+                    one_prefix(sql, &mut first_named, i, end)?;
+                    push(sql[i + 1..end].to_string(), i, end, &mut params);
+                    i = end;
+                    last = Last::Operand;
+                }
                 Some(&n) if is_name_start(n) && !prev_is_name_char(b, i) && sqlite_named => {
                     let end = dotted_name_end(b, i + 1);
                     one_prefix(sql, &mut first_named, i, end)?;
@@ -473,6 +652,10 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                     last = Last::Other;
                 }
             },
+            // SQL Server has no `?`: its driver binds by name.
+            b'?' if sqlserver => {
+                return Err(LexError { message: "SQL Server has no ? placeholder; write @name".into(), offset: i });
+            }
             b'?' if dialect != Dialect::Postgres => {
                 if b.get(i + 1).is_some_and(u8::is_ascii_digit) && dialect == Dialect::Mysql {
                     let end = digits_end(b, i + 1);
@@ -504,6 +687,21 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
             }
             // SQLite's `[name]` is a quoted identifier, which ends at the first `]`: a quote or a
             // `?` inside it is part of the name.
+            // SQL Server's `[name]` is a quoted identifier, in which `]]` is one `]`.
+            b'[' if sqlserver => {
+                let mut j = i + 1;
+                loop {
+                    match b.get(j) {
+                        None => return Err(LexError { message: "unterminated quoted identifier".into(), offset: i }),
+                        Some(b']') if b.get(j + 1) == Some(&b']') => j += 2,
+                        Some(b']') => break,
+                        Some(_) => j += 1,
+                    }
+                }
+                opaque.push((i, j + 1));
+                i = j + 1;
+                last = Last::Operand;
+            }
             b'[' if dialect == Dialect::Sqlite => {
                 let Some(close) = b[i..].iter().position(|&c| c == b']') else {
                     return Err(LexError { message: "unterminated quoted identifier".into(), offset: i });
@@ -648,6 +846,7 @@ pub fn rewrite_with(sql: &str, lexed: &Lexed, target: Target, decorate: &dyn Fn(
             }
             Target::Question => "?".to_string(),
             Target::Numbered => format!("?{}", lexed.params.iter().position(|q| q == &p.name).map_or(0, |i| i + 1)),
+            Target::AtNumbered => format!("@p_{}", lexed.params.iter().position(|q| q == &p.name).map_or(0, |i| i + 1)),
         };
         let rendered = decorate(&p.name, &rendered);
         out.push_str(&sql[last..p.start]);
@@ -797,6 +996,41 @@ mod tests {
         assert!(names("select @ -5, a$1, b$c from t", Dialect::Postgres).is_empty());
         // A `-- @returns one` line is a comment like any other.
         assert!(names("-- @returns one\nselect 1", Dialect::Postgres).is_empty());
+    }
+
+    #[test]
+    fn sql_server_text_and_placeholders() {
+        // `:name` and T-SQL's own `@name`; `@@rowcount`, `$action`, a money literal and a static
+        // method's `::` are T-SQL's own.
+        let sql = "merge t using s on t.id = s.id when matched then update set v = :v output $action, inserted.[a:b], @@rowcount, $12.50, geography::Point(:lat, 1, 4326);";
+        assert_eq!(names(sql, Dialect::Sqlserver), ["v", "lat"]);
+        assert_eq!(names(&sql.replace(":v", "@v").replace(":lat", "@lat"), Dialect::Sqlserver), ["v", "lat"]);
+        // A T-SQL name may hold `@`, `#` and `$` after its first letter, and has no dots.
+        assert_eq!(names("select @a$b#c, @g.STDistance(@h) from t", Dialect::Sqlserver), ["a$b#c", "g", "h"]);
+        // In a batch, a variable it declares and an argument's name in an `exec` are T-SQL's own;
+        // every other `@name` is a parameter, as `sp_executesql` reads the batch.
+        assert_eq!(names("declare @since datetime2 = dateadd(day, -@days, sysutcdatetime()), @t table (id int); select id from orders where placed_at > @since and user_id = @user", Dialect::Sqlserver), ["days", "user"]);
+        assert_eq!(names("exec dbo.find_user @id = @id, @Flag = 1", Dialect::Sqlserver), ["id"]);
+        // A `case` in a declaration is an expression: its `else` and `end` end neither the list nor a block.
+        assert_eq!(names("declare @a int = case when @flag = 1 then 2 else 3 end, @b int = 4; select @b as b", Dialect::Sqlserver), ["flag"]);
+        assert_eq!(names("begin declare @c int = case @f when 1 then case when @g = 2 then 1 end else 0 end, @d int = 1 end select @d, @e", Dialect::Sqlserver), ["f", "g", "e"]);
+        assert_eq!(names("declare @n int\nselect @n = count(*) from t\nselect @N as n, @x as x, '@n' as s", Dialect::Sqlserver), ["x"]);
+        // One statement keeps one prefix.
+        assert_eq!(lex("select @a, :b", Dialect::Sqlserver).unwrap_err().message, ":b and @a have different prefixes; write every named parameter of a statement with one prefix, here @b");
+        // A bracketed name is text, `]]` inside it a `]`; a string is text, and `e'…'` escapes nothing.
+        assert_eq!(names("select [a]]:b] as x, N'it''s :y', e'\\' as z, :p from [t]", Dialect::Sqlserver), ["p"]);
+        assert_eq!(lex("select [a]] from t", Dialect::Sqlserver).unwrap_err().offset, 7);
+        assert_eq!(lex("select ? from t", Dialect::Sqlserver).unwrap_err().message, "SQL Server has no ? placeholder; write @name");
+        // The driver binds by name, so each parameter is `@p_n` in binding order.
+        let sql = "select id from users where email = :email and org = :org.id";
+        let rewritten = rewrite(sql, &lex(sql, Dialect::Sqlserver).unwrap(), Dialect::Sqlserver.binds());
+        assert_eq!(rewritten.sql, "select id from users where email = @p_1 and org = @p_2");
+        assert_eq!(rewritten.order, ["email", "org.id"]);
+        assert_eq!(rewritten.to_original(rewritten.sql.find("@p_2").unwrap()), sql.find(":org").unwrap());
+        let sql = "select id from users where email = @email and org_id = @org_id";
+        let rewritten = rewrite(sql, &lex(sql, Dialect::Sqlserver).unwrap(), Dialect::Sqlserver.binds());
+        assert_eq!(rewritten.sql, "select id from users where email = @p_1 and org_id = @p_2");
+        assert_eq!(rewritten.order, ["email", "org_id"]);
     }
 
     #[test]

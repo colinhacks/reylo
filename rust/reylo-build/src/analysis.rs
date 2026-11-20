@@ -153,6 +153,7 @@ impl Dialect {
             "postgres" | "postgresql" => Ok(Dialect::Postgres),
             "sqlite" | "file" => Ok(Dialect::Sqlite),
             "mysql" => Ok(Dialect::Mysql),
+            "sqlserver" | "mssql" => Err("the Rust crate runs its queries on sqlx, which has no SQL Server driver: type SQL Server's statements with the npm package `reylo`".into()),
             other => Err(format!("cannot tell the database from the URL's scheme {other:?}: reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs")),
         }
     }

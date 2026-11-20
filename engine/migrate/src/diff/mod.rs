@@ -10,6 +10,7 @@
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
+pub mod sqlserver;
 
 use crate::db::Db;
 use crate::{Dialect, Error};
@@ -21,6 +22,7 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
         Dialect::Postgres => postgres::read(db).await,
         Dialect::Mysql => mysql::read(db).await,
         Dialect::Sqlite => sqlite::read(db).await,
+        Dialect::Sqlserver => sqlserver::read(db).await,
     }
 }
 
@@ -36,6 +38,7 @@ pub async fn alterer(db: &mut Db) -> Result<Box<dyn Alterer>, Error> {
             Box::new(mysql::MysqlAlterer::for_mode(&mode))
         }
         Dialect::Sqlite => Box::new(sqlite::SqliteAlterer::default()),
+        Dialect::Sqlserver => Box::new(sqlserver::SqlserverAlterer),
     })
 }
 
@@ -162,6 +165,18 @@ pub trait Alterer: Send {
     fn narrows(&self, from: &Object, to: &Object) -> Option<String> {
         let _ = (from, to);
         None
+    }
+    /// Whether a blocking change of an object refuses `dependent`, which depends on it without being
+    /// its own, so that it is dropped before the change and created again after. Postgres and MySQL
+    /// rebuild an index or a constraint themselves; SQL Server refuses those too.
+    fn refused_by(&self, dependent: &Object) -> bool {
+        matches!(dependent.kind, Some(Kind::View | Kind::Rule | Kind::Policy | Kind::Trigger))
+    }
+    /// Whether this change of an object whose changes block (`Change::Alter { blocks: true }`)
+    /// blocks: SQL Server changes a column's default without `alter column`, which nothing refuses.
+    fn blocks(&self, from: &Object, to: &Object) -> bool {
+        let _ = (from, to);
+        true
     }
     /// Whether a blocking change of `from` to `to` changes the object under the functions that
     /// depend on it (an enum made again, a column's type), so that each is made again around the
@@ -355,8 +370,7 @@ impl Plan {
             out.push_str(&format!("-- loses data: {} {why}\n", column.trim_start_matches("column ")));
         }
         for s in &self.statements {
-            out.push_str(s.trim_end());
-            out.push_str(if s.starts_with("--") { "\n" } else { ";\n" });
+            out.push_str(&if s.starts_with("--") { format!("{}\n", s.trim_end()) } else { format!("{}\n", ended(s)) });
         }
         out
     }
@@ -366,6 +380,8 @@ impl Plan {
         self.statements.iter().filter(|s| !s.starts_with("--"))
     }
 }
+
+pub use crate::sql::{ended, GO};
 
 /// The objects `id` is dropped with: its owners, and what the server drops it with, nearest first.
 fn owners<'a>(schema: &'a Schema, id: &str) -> Vec<&'a str> {
@@ -495,6 +511,7 @@ fn table_parts(id: &str) -> Vec<String> {
             Some(q) if ch == q => quoted = None,
             Some(_) => out.last_mut().unwrap().push(ch),
             None if ch == '"' || ch == '`' => quoted = Some(ch),
+            None if ch == '[' => quoted = Some(']'),
             None if ch == '.' => out.push(String::new()),
             None => out.last_mut().unwrap().push(ch),
         }
@@ -793,7 +810,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     let mut drops: BTreeSet<String> = BTreeSet::new();
     let mut creates: BTreeSet<String> = BTreeSet::new();
     let mut alters: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    // Altered in a way a view, rule, policy or trigger on it blocks, and of those, made again.
+    // Altered in a way that what depends on it can block (`Alterer::refused_by`), and of those, made again.
     let mut blocking: BTreeSet<String> = BTreeSet::new();
     let mut remade: BTreeSet<String> = BTreeSet::new();
     for (id, a) in &from.objects {
@@ -805,7 +822,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             Some(b) if a.def != b.def => match (&b.change, alterer.alter(a, b)) {
                 (Change::Alter { blocks }, Some(statements)) => {
                     let remakes = alterer.remakes(a, b);
-                    if *blocks || remakes {
+                    if (*blocks && alterer.blocks(a, b)) || remakes {
                         blocking.insert(id.clone());
                     }
                     if remakes {
@@ -1002,10 +1019,11 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                         continue;
                     }
                 }
-                // A blocking change refuses only views, rules, policies and triggers on it; the server
-                // rebuilds an index or a constraint itself. A column of a type changed so changes
-                // type too, and so blocks what is on it.
-                if !replaced && d.kind == Some(Kind::Column) && !owned {
+                // A blocking change refuses what its alterer says (views, rules, policies and triggers
+                // on it, where the server rebuilds an index or a constraint itself). A column of a type
+                // changed so changes type too, and so blocks what is on it, but for one the alterer says
+                // the change refuses, as SQL Server's computed columns refuse a change to what they read.
+                if !replaced && d.kind == Some(Kind::Column) && !owned && !alterer.refused_by(d) {
                     // What the column takes off around the change (a child's own default under its
                     // parent's retype) and puts back.
                     if !drops.contains(*dependent) {
@@ -1055,7 +1073,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                         continue;
                     }
                 }
-                if !replaced && !owned && !made_again && !matches!(d.kind, Some(Kind::View | Kind::Rule | Kind::Policy | Kind::Trigger)) {
+                if !replaced && !owned && !made_again && !alterer.refused_by(d) {
                     continue;
                 }
                 if !replaced && owned {
@@ -1681,12 +1699,14 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 // A table or column dropped loses its rows, made again or not; a column whose table
                 // goes is the table's loss.
                 let in_lost_table = o.kind == Some(Kind::Column) && o.owner.as_ref().is_some_and(|t| drops.contains(t));
+                // A computed column (an extra line `computed`) loses nothing: its values are its expression's.
+                let computed = o.extra.iter().any(|l| l == "computed");
                 // A foreign table's rows are its server's.
                 let table = if o.kind == Some(Kind::Column) { o.owner.as_ref().and_then(|t| from.objects.get(t)) } else { Some(o) };
                 let foreign = table.is_some_and(|t| t.extra.iter().any(|l| l.starts_with("shape foreign")));
                 // A generated column's values are its expression's, which loses nothing.
                 let generated = o.extra.iter().any(|l| l == GENERATED);
-                if matches!(o.kind, Some(Kind::Table | Kind::Column)) && !in_lost_table && !foreign && !generated {
+                if matches!(o.kind, Some(Kind::Table | Kind::Column)) && !in_lost_table && !foreign && !computed && !generated {
                     plan.losses.push(id.clone());
                 }
                 plan.statements.extend(o.drop.clone());

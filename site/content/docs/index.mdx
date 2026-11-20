@@ -115,6 +115,36 @@ create table events (
 ) strict;
 ```
 
+```sql file="schema.sql" tab="SQL Server" tab-group="dialect"
+create table users (
+  id int identity(1, 1) primary key,          -- at most one row per id
+  name nvarchar(100) not null,                -- name: string
+  email nvarchar(255) unique,                 -- email: string | null
+  role varchar(10) not null default 'member'  -- role: string
+    check (role in ('admin', 'member')),
+  tags nvarchar(max) not null default '[]'    -- tags: string, JSON text
+    check (isjson(tags) = 1),
+  created_at datetimeoffset(3)                -- created_at: string
+    not null default sysdatetimeoffset()
+);
+
+create table posts (
+  id int identity(1, 1) primary key,
+  user_id int not null references users (id),
+  title nvarchar(200) not null,
+  body nvarchar(max),
+  published_at datetimeoffset(3)
+);
+
+create table events (
+  id int identity(1, 1) primary key,
+  kind varchar(10) not null
+    check (kind in ('click', 'key')),
+  payload nvarchar(max) not null
+    check (isjson(payload) = 1)
+);
+```
+
 ```sql title="get_author.sql"
 select u.id, u.name, count(p.id)::int as post_count
 from users u
@@ -159,7 +189,7 @@ Reylo gets type information about a query by sending it to a *live dev database*
 - 🌵 **DRY** — no redundant hand-written types
 - 🎯 **Checked against your database** — a misspelled column is a compile error
 - 🤖 **Agent-friendly** — DRY code is more maintainable for agents
-- 🧩 **Postgres, MySQL and SQLite** — Neon, PlanetScale, Cloudflare D1, Turso and more
+- 🧩 **Postgres, MySQL, SQLite and SQL Server** — Neon, PlanetScale, Cloudflare D1, Turso and more
 - 🔌 **Your own driver** — `pg`, postgres.js, `mysql2`, `better-sqlite3` and [more](/typescript#run) in TypeScript<Rust>, sqlx in Rust</Rust>
 
 </div>

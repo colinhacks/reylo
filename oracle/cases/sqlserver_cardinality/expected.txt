@@ -1,0 +1,20 @@
+aggregate.sql: one (customer_id: int) -> { n: int }
+by_composite.sql: at_most_one (order_id: bigint, n: int) -> { qty: smallint }
+by_key.sql: at_most_one (id: int) -> { id: int, email: nvarchar(≤200 units, UTF-16, ill-formed) }
+by_unique.sql: at_most_one (email: nvarchar(≤200 units, UTF-16, ill-formed)) -> { id: int }
+cte.sql: many () -> { email: nvarchar(≤200 units, UTF-16, ill-formed), last: datetimeoffset(offset)? }
+delete_output.sql: many (order_id: bigint) -> { order_id: bigint, n: int }
+derived.sql: many () -> { n: int? }
+exists.sql: one (customer_id: int) -> { has_orders: int }
+insert_one.sql: none (id: int, email: nvarchar(≤200 units, UTF-16, ill-formed)) -> {  }
+insert_output.sql: one (customer_id: int, total: decimal(12,2)) -> { id: bigint, placed: datetimeoffset(offset) }
+insert_select.sql: many () -> { id: int }
+insert_two.sql: none (a: int, ea: nvarchar(≤200 units, UTF-16, ill-formed), b: int, eb: nvarchar(≤200 units, UTF-16, ill-formed)) -> {  }
+offset_fetch.sql: many (skip: bigint) -> { id: int }
+order_by.sql: many () -> { id: bigint, total: decimal(12,2) }
+top_1.sql: at_most_one () -> { id: int }
+top_n.sql: many () -> { id: int }
+union_distinct.sql: many () -> { id: int }
+update_key.sql: at_most_one (name: nvarchar(≤100 units, UTF-16, ill-formed)?, id: int) -> { old_name: nvarchar(≤100 units, UTF-16, ill-formed)?, new_name: nvarchar(≤100 units, UTF-16, ill-formed)? }
+update_many.sql: none (customer_id: int) -> {  }
+values_union.sql: many () -> { a: int }

@@ -1,0 +1,7 @@
+bare_decimal_cast.sql: many (x: unknown) -> {  } !! reylo20: SQL Server's `decimal` with no precision and scale is `decimal(18, 0)`, which drops a value's fraction: write its precision and scale, as in `::decimal(10, 2)`.
+batch.sql: one () -> { x: int? }
+exec.sql: many () -> { spid: smallint, ecid: smallint, status: nchar(=30 units, UTF-16, ill-formed), loginame: nvarchar(≤128 units, UTF-16, ill-formed)?, hostname: nchar(=128 units, UTF-16, ill-formed), blk: char(=5 bytes, windows-1252)?, dbname: nvarchar(≤128 units, UTF-16, ill-formed)?, cmd: nchar(=26 units, UTF-16, ill-formed), request_id: int }
+missing.sql: many () -> {  } !! reylo6: Invalid column name 'nope'.
+rows_param.sql: many (ids: unknown) -> {  } !! reylo20: SQL Server takes no rows(…) or row(…) parameter yet: pass each value as a parameter of its own.
+two_statements.sql: many () -> {  } !! reylo10: Reylo types a batch's first result set, and a typed .sql file returns one: a select that returns rows, or a write with an output, in each path through the batch. This one may return two or more.
+untyped.sql: many (p: unknown) -> {  } !! reylo6: SQL Server cannot tell the type of :p here (The parameter type for ':p' cannot be uniquely deduced; two possibilities are 'sql_variant' and 'xml'): give it one, as in cast(:p as int).

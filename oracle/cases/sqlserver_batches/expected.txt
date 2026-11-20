@@ -1,0 +1,15 @@
+assign_then_set.sql: one (min: decimal(38,19)) -> { n: int? }
+block.sql: at_most_one (flag: int, id: int) -> { id: int, note: nvarchar(≤50 units, UTF-16, ill-formed)? }
+branch.sql: at_most_one (flag: int, id: int) -> { id: int, note: nvarchar(≤50 units, UTF-16, ill-formed)? }
+branches.sql: many (flag: int) -> { id: int, total: decimal(10,2) }
+declare_list.sql: many (min: decimal(10,2)) -> { id: int, total: decimal(10,2) }
+declare_select.sql: many (days: int) -> { id: int, total: decimal(10,2), shout: nvarchar(≤50 units, UTF-16, ill-formed)? }
+exec_proc.sql: many (min: decimal(10,2)) -> { id: int, total: decimal(10,2) }
+insert_identity.sql: one (total: decimal(10,2)) -> { id: int? }
+options_off.sql: many () -> { doubled: decimal(12,2)? }
+return_early.sql: at_most_one (flag: int, id: int) -> { id: int, note: nvarchar(≤50 units, UTF-16, ill-formed)? }
+table_variable.sql: many (min: decimal(38,19)) -> { id: int, total: decimal(10,2) }
+temp_table.sql: many () -> {  } !! reylo6: The metadata could not be determined because statement 'insert #t values (1)' uses a temp table.  Metadata discovery only supports temp tables when analyzing a single-statement batch. SQL Server describes no batch that fills a temporary table: use a table variable, as in declare @t table (id int).
+two_sets.sql: many () -> {  } !! reylo10: Reylo types a batch's first result set, and a typed .sql file returns one: a select that returns rows, or a write with an output, in each path through the batch. This one may return two or more.
+variable_key.sql: at_most_one (id: int) -> { id: int, total: decimal(10,2) }
+while_set.sql: one (upto: int) -> { n: int? }

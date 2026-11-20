@@ -23,7 +23,9 @@
 # and checked against a SHA-256, and the patch from `postgres/vendor/` applied into
 # `postgres/.patched/pg_query`. SQLite is the 3.53.4 amalgamation fetched into `sqlite/.sqlite/`
 # and checked against a SHA-256, with the hooks of `sqlite/csrc/patch-sqlite.py` applied. tokio-postgres 0.7.18 is fetched from
-# crates.io into `wasip2/.patched/` with the patch beside it, which builds its runtime for wasip2.
+# crates.io into `wasip2/.patched/` with the patch beside it, which builds its runtime for wasip2. tiberius
+# 0.13.0, SQL Server's client, is fetched from crates.io into `native/.patched/` with the patch beside
+# it, which makes ring its TLS fallback, as every other connection of the binary, for aws-lc-rs.
 # `./build.sh --prepare` stops after that, which is what a native build of the binary needs, and
 # what any cargo command in the workspace needs first (the workspace `[patch]` points at the copy).
 set -euo pipefail
@@ -93,6 +95,24 @@ if [ "$(cat $TP/.source 2>/dev/null || true)" != "$TP_SOURCE" ]; then
   tar -xzf wasip2/.patched/tokio-postgres.crate -C wasip2/.patched && mv wasip2/.patched/tokio-postgres-0.7.18 "$TP" && rm wasip2/.patched/tokio-postgres.crate
   (cd "$TP" && patch -s -p1 < ../../tokio-postgres-0.7.18.patch)
   echo "$TP_SOURCE" > "$TP/.source"
+fi
+# tiberius falls back to aws-lc-rs, a C library, for TLS where the process installed no crypto
+# provider, and builds tokio-rustls with it: the patch beside it makes the fallback ring, which the
+# binary's other connections use, so its TLS builds no C, and makes it the crate `reylo-tiberius`,
+# without tiberius's own tests and examples. tiberius-rs/tiberius#456 makes the provider a feature.
+TIB=native/.patched/tiberius
+TIB_SHA256=e07324791de2bdaed058af4aa433a0b5ec5c0beac407a9797419c19805df2415
+TIB_SOURCE="$TIB_SHA256 $(sha256 native/tiberius-0.13.0.patch)"
+if [ "$(cat $TIB/.source 2>/dev/null || true)" != "$TIB_SOURCE" ]; then
+  rm -rf "$TIB" && mkdir -p native/.patched
+  curl -fsSL -A reylo-build -o native/.patched/tiberius.crate https://static.crates.io/crates/tiberius/tiberius-0.13.0.crate
+  if [ "$(sha256 native/.patched/tiberius.crate)" != "$TIB_SHA256" ]; then
+    echo "tiberius 0.13.0: the crate's SHA-256 is $(sha256 native/.patched/tiberius.crate), expected $TIB_SHA256" >&2
+    exit 1
+  fi
+  tar -xzf native/.patched/tiberius.crate -C native/.patched && mv native/.patched/tiberius-0.13.0 "$TIB" && rm native/.patched/tiberius.crate
+  (cd "$TIB" && patch -s -p1 < ../../tiberius-0.13.0.patch)
+  echo "$TIB_SOURCE" > "$TIB/.source"
 fi
 if [ "$(cat $PATCHED/pg_query/.source 2>/dev/null || true)" != "$PG_QUERY_SOURCE" ]; then
   # Straight from GitHub, not through `cargo fetch`: the workspace's `[patch]` points at the

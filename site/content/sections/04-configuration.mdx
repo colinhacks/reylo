@@ -40,6 +40,11 @@ DATABASE_URL=mysql://root@localhost:3306/app
 DATABASE_URL=file:./app.db
 ```
 
+```sh title=".env" tab="SQL Server" tab-group="dialect"
+# or mssql://
+DATABASE_URL=sqlserver://sa:secret@localhost:1433/app?trustServerCertificate=true
+```
+
 Point it at a direct connection, not a pooler: describing a query through a pooler in transaction mode, such as PgBouncer's, can fail. You can interpolate other variables from your environment to construct a connection string.
 
 ```yaml title=".reylo.yaml"

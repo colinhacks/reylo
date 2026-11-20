@@ -1,0 +1,9 @@
+count_big.sql: one () -> { n: bigint, units: bigint? }
+distinct.sql: many () -> { status: varchar(≤10 bytes, windows-1252) }
+empty_group.sql: many () -> { total: decimal(38,2) }
+grouped.sql: many () -> { customer_id: int, n: int, total: decimal(38,2), last_shipped: date? }
+having.sql: many () -> { status: varchar(≤10 bytes, windows-1252), n: int }
+rollup.sql: many () -> { customer_id: int?, status: varchar(≤10 bytes, windows-1252)?, total: decimal(38,2)? }
+string_agg.sql: many () -> { customer_id: int, statuses: varchar(≤8000 bytes, windows-1252) }
+totals.sql: one () -> { n: int, named: int, credit: money(19,4, -922337203685477.5808..922337203685477.5807)?, average: money(19,4, -922337203685477.5808..922337203685477.5807)?, first: datetime2?, last: nvarchar(≤200 units, UTF-16, ill-formed)? }
+windows.sql: many () -> { id: bigint, rn: bigint, rk: bigint, previous: decimal(12,2)?, customer_total: decimal(38,2), n: int }

@@ -1,0 +1,3 @@
+view_insert.sql: none (x: int) -> {  }
+view_update.sql: none (x: int, gid: int) -> {  }
+view_update_plain.sql: none (n: int, id: int) -> {  }

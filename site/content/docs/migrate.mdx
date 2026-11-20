@@ -1,6 +1,6 @@
 ---
 title: Reylo Migrate
-description: Put your schema in schema.sql, and Reylo Migrate writes, checks and runs each migration, on Postgres, MySQL and SQLite.
+description: Put your schema in schema.sql, and Reylo Migrate writes, checks and runs each migration, on Postgres, MySQL, SQLite and SQL Server.
 ---
 
 <p className="dk-subheader">Put your schema in a SQL file, and Reylo Migrate writes the migrations</p>
@@ -910,6 +910,7 @@ Each database makes them its own way:
 - **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do the roles Neon and Supabase give you. Reylo Migrate keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new. On Azure Database for PostgreSQL, list each extension your migrations create in the server's `azure.extensions` parameter first, or no shadow can create it. Timescale Cloud refuses `create database`, so point `shadow_url` at a server with TimescaleDB and `timescaledb_toolkit`, such as the `timescale/timescaledb-ha` image. On Supabase, each shadow also gets Supabase's extensions and schemas, such as `auth` and `storage`, so a migration that references `auth.users` replays as it runs.
 - **MySQL:** on your database's server, with `create database`, so your user needs the `CREATE` privilege on every database. PlanetScale's Vitess refuses `create database`, so point `shadow_url` at a plain MySQL 8.4 server.
 - **SQLite:** in memory. There's nothing to grant. A Turso database's shadows run on libSQL's own engine, as Turso Cloud does ([Turso](/turso#migrations)).
+- **SQL Server:** on your database's server, with `create database`, so your login needs the `CREATE ANY DATABASE` permission, which the `dbcreator` role holds.
 
 A migration that would reach past its shadow is refused: one that changes a role, a database, a tablespace or a server setting, and on MySQL one that names a database, as in `app.users`. Code inside a `do` block or a function isn't checked, so keep it from changing those.
 

@@ -35,7 +35,7 @@ export function MigrateLanding({ stars }: { stars?: number }) {
           <h1 className="ml-h1">
             <span>SQL-first</span> <em>schema and migrations.</em>
           </h1>
-          <p className="ml-lede">Model your schema in <code>schema.sql</code>. Generate migrations, or write your own. Works on Postgres, MySQL and SQLite.</p>
+          <p className="ml-lede">Model your schema in <code>schema.sql</code>. Generate migrations, or write your own. Works on Postgres, MySQL, SQLite and SQL Server.</p>
           <Install />
         </div>
         <div className="ml-hero-visual">
@@ -80,7 +80,7 @@ export function MigrateLanding({ stars }: { stars?: number }) {
       </Row>
 
       <Row n={10} title="Works with your database" visual={<Hosts />} flip>
-        <p>Works with Postgres, MySQL, SQLite—and all major database hosts and backends.</p>
+        <p>Works with Postgres, MySQL, SQLite, SQL Server—and all major database hosts and backends.</p>
       </Row>
 
       <Row n={11} title="Switch easily" visual={<Term lines={INIT} />}>
@@ -525,7 +525,8 @@ function SchemaToMigration() {
 
 /**
  * One edit to schema.sql, and the migration `reylo migrate new email_required` writes for it on each
- * database, as reylo 0.8.0 wrote them: Postgres and MySQL alter the column, SQLite rebuilds the table.
+ * database, as reylo 0.8.0 wrote them, and SQL Server's as the release that adds it writes it: Postgres,
+ * MySQL and SQL Server alter the column, SQLite rebuilds the table.
  */
 const DIALECTS: { name: string; sql: ReactNode }[] = [
   {
@@ -552,6 +553,14 @@ const DIALECTS: { name: string; sql: ReactNode }[] = [
         {kw('insert into')} new_users (id, email, name) {kw('select')} id, email, name {kw('from')} users;{'\n'}
         {kw('drop table')} users;{'\n'}
         {kw('alter table')} new_users {kw('rename to')} users;
+      </>
+    ),
+  },
+  {
+    name: 'SQL Server',
+    sql: (
+      <>
+        {kw('alter table')} users {kw('alter column')} email {ty('text')} {kw('not null')};
       </>
     ),
   },
@@ -677,10 +686,7 @@ function Hosts() {
     </span>
   );
   return (
-    <div className="ml-hosts">
-      <div className="ml-dbs">{DATABASES.map(tile)}</div>
-      <div className="ml-hostgrid">{HOSTS.map(tile)}</div>
-    </div>
+    <div className="ml-hosts">{[...DATABASES, ...HOSTS].map(tile)}</div>
   );
 }
 

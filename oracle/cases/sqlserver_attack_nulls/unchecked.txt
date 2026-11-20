@@ -1,0 +1,4 @@
+fn_json.sql: JSON text is not properly formatted. Unexpected character 'a' is found at position 0. (13609)
+log_zero.sql: An invalid floating point operation occurred. (3623)
+power_neg.sql: Divide by zero error encountered. (8134)
+sqrt_neg.sql: An invalid floating point operation occurred. (3623)

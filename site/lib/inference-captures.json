@@ -5756,5 +5756,1403 @@
         }
       }
     }
+  },
+  "sqlserver": {
+    "create_users.sql": {
+      "74f5ab5f2b96eacf": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "users",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "email": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "additionalProperties": true
+                  },
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "dashboard.sql": {
+      "b7cccbd1fdcce127": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "limit",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "user_count",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "post_count",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "recent_posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "integer",
+                                "bits": 32,
+                                "label": "int"
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "encoding": "UTF-16",
+                                "ill_formed": true,
+                                "size": {
+                                  "unit": "code_unit",
+                                  "max": 200
+                                },
+                                "label": "nvarchar"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "get_user.sql": {
+      "2533cdf8d435fa96": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 255
+                  },
+                  "label": "nvarchar"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_create_user.sql": {
+      "68b96c4743ee7370": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "name",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-16",
+                "ill_formed": true,
+                "label": "nvarchar"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_post_count.sql": {
+      "17b098b89924254c": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_posts_by_user.sql": {
+      "4733fccdab91299e": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              },
+              "nullable": true
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 200
+                  },
+                  "label": "nvarchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_published_titles.sql": {
+      "4986df0dcb3da6b2": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "since",
+              "type": {
+                "kind": "zoned_datetime",
+                "tick": "1/10000000",
+                "offset_only": true,
+                "label": "datetimeoffset"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 200
+                  },
+                  "label": "nvarchar"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_rename_user.sql": {
+      "2c710d52afa4d371": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "name",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-16",
+                "ill_formed": true,
+                "size": {
+                  "unit": "code_unit",
+                  "max": 100
+                },
+                "label": "nvarchar"
+              }
+            },
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_search_users.sql": {
+      "df62f75ff6ffd13f": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "q",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-16",
+                "ill_formed": true,
+                "label": "nvarchar"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_user_by_email.sql": {
+      "19550320f6addf3f": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "email",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-16",
+                "ill_formed": true,
+                "label": "nvarchar"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_user_flags.sql": {
+      "05ec67ee254c5288": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "role",
+              "type": {
+                "kind": "text",
+                "encoding": "windows-1252",
+                "size": {
+                  "unit": "byte",
+                  "max": 10
+                },
+                "label": "varchar"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 255
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "has_posts",
+                "type": {
+                  "kind": "boolean",
+                  "label": "bit"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_user_posts.sql": {
+      "32444824d386905d": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "since",
+              "type": {
+                "kind": "zoned_datetime",
+                "tick": "1/1000",
+                "offset_only": true,
+                "label": "datetimeoffset"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "integer",
+                                "bits": 32,
+                                "label": "int"
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "encoding": "UTF-16",
+                                "ill_formed": true,
+                                "size": {
+                                  "unit": "code_unit",
+                                  "max": 200
+                                },
+                                "label": "nvarchar"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_user_titles.sql": {
+      "63d76f5ad11dda40": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 200
+                  },
+                  "label": "nvarchar"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "inferred_users.sql": {
+      "e3d2a9535f381777": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "role",
+              "type": {
+                "kind": "text",
+                "encoding": "windows-1252",
+                "size": {
+                  "unit": "byte",
+                  "max": 10
+                },
+                "label": "varchar"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "lateral_joins.sql": {
+      "04cce01415a59d93": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 200
+                  },
+                  "label": "nvarchar"
+                },
+                "nullable": true
+              },
+              {
+                "name": "published_at",
+                "type": {
+                  "kind": "zoned_datetime",
+                  "tick": "1/1000",
+                  "offset_only": true,
+                  "label": "datetimeoffset"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "post_total.sql": {
+      "5f02df84293e7b54": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "user_id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "one",
+            "columns": [
+              {
+                "name": "",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "record_click.sql": {
+      "6b5ff1ad636d53fe": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "payload",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "type": "integer"
+                    },
+                    "y": {
+                      "type": "integer"
+                    },
+                    "button": {
+                      "enum": [
+                        "left",
+                        "right"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "x",
+                    "y"
+                  ],
+                  "additionalProperties": true,
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "record_events.sql": {
+      "ee7c7faedca006a3": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "events",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "enum": [
+                              "click"
+                            ]
+                          },
+                          "x": {
+                            "type": "integer"
+                          },
+                          "y": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "x",
+                          "y"
+                        ],
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "enum": [
+                              "key"
+                            ]
+                          },
+                          "code": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "code"
+                        ],
+                        "additionalProperties": true
+                      }
+                    ]
+                  },
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "record_order.sql": {
+      "6a7c3ab7c4adc940": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "order",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "customer": {
+                      "type": "string"
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "sku": {
+                            "type": "string"
+                          },
+                          "qty": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "sku",
+                          "qty"
+                        ],
+                        "additionalProperties": true
+                      },
+                      "minItems": 1
+                    },
+                    "shipping": {
+                      "enum": [
+                        "standard",
+                        "express"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "customer",
+                    "items"
+                  ],
+                  "additionalProperties": true,
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "none",
+            "columns": []
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "rollups.sql": {
+      "77581083bec65a2f": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "user_id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                },
+                "nullable": true
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "search_posts.sql": {
+      "a179260593b7c882": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "filters",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "q": {
+                      "type": "string"
+                    },
+                    "author_id": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "enum": [
+                        "published",
+                        "draft",
+                        "all"
+                      ]
+                    },
+                    "sort": {
+                      "enum": [
+                        "newest",
+                        "oldest",
+                        "title"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false,
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 200
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "author",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "sort_users.sql": {
+      "4fd373f305f651cb": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "sort",
+              "type": {
+                "kind": "text",
+                "encoding": "UTF-16",
+                "ill_formed": true,
+                "label": "nvarchar"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "users_by_ids.sql": {
+      "653ee610c6075376": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "ids",
+              "type": {
+                "kind": "json",
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  },
+                  "$schema": "https://json-schema.org/draft/2020-12/schema"
+                },
+                "label": "json"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "users_with_posts.sql": {
+      "18ded8abd43e4415": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "label": "int"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 100
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "posts",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "array",
+                      "element": {
+                        "type": {
+                          "kind": "struct",
+                          "fields": [
+                            {
+                              "name": "id",
+                              "type": {
+                                "kind": "integer",
+                                "bits": 32,
+                                "label": "int"
+                              }
+                            },
+                            {
+                              "name": "title",
+                              "type": {
+                                "kind": "text",
+                                "encoding": "UTF-16",
+                                "ill_formed": true,
+                                "size": {
+                                  "unit": "code_unit",
+                                  "max": 200
+                                },
+                                "label": "nvarchar"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "name": "latest_post",
+                "type": {
+                  "kind": "json",
+                  "content": {
+                    "type": {
+                      "kind": "struct",
+                      "fields": [
+                        {
+                          "name": "id",
+                          "type": {
+                            "kind": "integer",
+                            "bits": 32,
+                            "label": "int"
+                          }
+                        },
+                        {
+                          "name": "title",
+                          "type": {
+                            "kind": "text",
+                            "encoding": "UTF-16",
+                            "ill_formed": true,
+                            "size": {
+                              "unit": "code_unit",
+                              "max": 200
+                            },
+                            "label": "nvarchar"
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    },
+    "window_functions.sql": {
+      "2af3718689994aa3": {
+        "descriptor": {
+          "params": [],
+          "result": {
+            "kind": "table",
+            "cardinality": "many",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "label": "int"
+                }
+              },
+              {
+                "name": "title",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 200
+                  },
+                  "label": "nvarchar"
+                }
+              },
+              {
+                "name": "n",
+                "type": {
+                  "kind": "integer",
+                  "bits": 64,
+                  "label": "bigint"
+                }
+              },
+              {
+                "name": "prev",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-16",
+                  "ill_formed": true,
+                  "size": {
+                    "unit": "code_unit",
+                    "max": 200
+                  },
+                  "label": "nvarchar"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no SQL Server support yet: sqlx has no SQL Server driver."
+        }
+      }
+    }
   }
 }

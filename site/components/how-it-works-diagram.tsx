@@ -13,12 +13,12 @@ const mono = 'var(--font-code), ui-monospace, monospace';
 const sans = 'var(--font-text), ui-sans-serif, system-ui, sans-serif';
 
 const label =
-  'How Reylo types a .sql import. TypeScript 7.1 hands the .sql file to Reylo, its content mapper. Reylo has your database (Postgres, MySQL or SQLite) prepare the statement without running it, reads the catalog, and gives TypeScript the types of its parameters and result.';
+  'How Reylo types a .sql import. TypeScript 7.1 hands the .sql file to Reylo, its content mapper. Reylo has your database (Postgres, MySQL, SQLite or SQL Server) prepare the statement without running it, reads the catalog, and gives TypeScript the types of its parameters and result.';
 
 const nodes = [
   { title: 'TypeScript 7.1', note: 'tsc and the editor' },
   { title: 'Reylo', note: 'content mapper', accent: true },
-  { title: 'your database', note: 'Postgres, MySQL or SQLite' },
+  { title: 'your database', note: 'Postgres, MySQL, SQLite or SQL Server' },
 ];
 
 // What goes along each leg between two nodes: the request, then the answer.
@@ -125,7 +125,7 @@ function Stack({ w }: { w: number }) {
 const stackHeight = 3 * 64 + 2 * 72;
 
 /** The widths of the three nodes in the row, each wide enough for its note. */
-const rowWidths = [140, 124, 176];
+const rowWidths = [128, 116, 236];
 const rowHeight = 72;
 
 /**

@@ -1,0 +1,36 @@
+alias_eq_count.sql: one () -> { c: int }
+big_by_float.sql: many () -> { id: int, k: bigint }
+conv_by_int.sql: many () -> { id: int, code: varchar(≤10 bytes, windows-1252) }
+conv_by_param.sql: many (n: int) -> { id: int, code: varchar(≤10 bytes, windows-1252) }
+conv_delete.sql: many () -> { id: int }
+conv_update.sql: many () -> { id: int }
+cte_shadow.sql: many (id: int) -> { id: int, v: int? }
+dis_by_k.sql: many (k: int) -> { id: int }
+fetch_one.sql: at_most_one () -> { id: int }
+group_by_empty.sql: many () -> { c: int? }
+having_fromless.sql: at_most_one () -> { a: int }
+idk_default.sql: many () -> { id: int }
+idk_insert.sql: at_most_one (id: int, v: int?) -> { id: int }
+idk_synonym_insert.sql: at_most_one (id: int, v: int) -> { id: int }
+idk_view_insert.sql: at_most_one (id: int, v: int) -> { id: int }
+merge_trig.sql: many (id: int) -> { n: int? }
+offset_count.sql: at_most_one () -> { c: int }
+offset_fromless.sql: at_most_one () -> { a: int }
+soft_by_k.sql: many (k: int) -> { id: int }
+soft_by_k_live.sql: many (k: int) -> { id: int }
+top0_count.sql: at_most_one () -> { c: int }
+top0_fromless.sql: at_most_one () -> { a: int }
+top0_percent_count.sql: at_most_one () -> { c: int }
+top_param_count.sql: at_most_one (n: bigint) -> { c: int }
+top_percent.sql: many () -> { id: int }
+top_ties.sql: many () -> { id: int }
+trig_delete.sql: many (id: int) -> { n: int? }
+trig_insert_select.sql: many () -> { n: int? }
+trig_update.sql: many (v: int?, id: int) -> { n: int? }
+tt_all.sql: many () -> { id: int, v: int }
+tt_asof.sql: at_most_one () -> { id: int, v: int }
+view_fanout.sql: many (id: int) -> { id: int, v: int? }
+words_ab.sql: many () -> { id: int, w: varchar(≤10 bytes, windows-1252) }
+words_ae.sql: many () -> { id: int, w: varchar(≤10 bytes, windows-1252) }
+words_param.sql: at_most_one (w: varchar(≤10 bytes, windows-1252)) -> { id: int, w: varchar(≤10 bytes, windows-1252) }
+words_ss.sql: many () -> { id: int, w: varchar(≤10 bytes, windows-1252) }

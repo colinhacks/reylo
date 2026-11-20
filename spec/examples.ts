@@ -1,7 +1,7 @@
 /**
  * Examples of Reylo Type Defs, the type descriptor format (`index.ts`), database by database: each a statement, the schema it reads, and what introspecting it gives, whole or the part the example is about. `nub run typecheck` checks each against the types, and `tests/typedefs.test.ts` against the JSON Schema.
  *
- * Those of Postgres, MySQL and SQLite are what Reylo's engine writes: `tests/spec-examples.test.ts` runs each one's setup and statement on its database and compares every field the example shows, all but the server's version. Reylo runs no SQL Server, Oracle or DuckDB, so those are written by hand. `nub run typedefs` copies every example into `examples.json`, which the engine's own tests read.
+ * Those of Postgres, MySQL, SQLite and SQL Server are what Reylo's engine writes: `tests/spec-examples.test.ts` runs each one's setup and statement on its database and compares every field the example shows, all but the server's version. Reylo runs no Oracle or DuckDB, so those are written by hand. `nub run typedefs` copies every example into `examples.json`, which the engine's own tests read.
  */
 
 import type { FloatType, InstantType, IntegerType, StructType, StatementDescriptor, TextType } from "./index.ts";
@@ -226,7 +226,7 @@ export const mysql_columns: Example = {
   },
 };
 
-/** SQL Server, written by hand. `at` keeps the offset each value was written with, and `label` may hold a lone surrogate, counted in UTF-16 units. */
+/** SQL Server. `at` keeps the offset each value was written with, and `label` may hold a lone surrogate, counted in UTF-16 units. */
 export const sqlserver_columns: Example = {
   database: "sqlserver",
   setup: "create table s (at datetimeoffset(3), label nvarchar(10))",

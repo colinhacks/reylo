@@ -20,7 +20,7 @@ import { source } from '@/lib/source';
  */
 const FOLD: Record<string, readonly string[]> = {};
 
-const DIALECT_PAGES = new Set(['postgres', 'mysql', 'sqlite']);
+const DIALECT_PAGES = new Set(['postgres', 'mysql', 'sqlite', 'sqlserver']);
 
 /** The pages with no table of contents, by slug, each with the width of its column, which takes the right column's room: a page whose whole point is one wide table. */
 const CENTERED: Record<string, string> = {

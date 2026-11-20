@@ -1,5 +1,5 @@
 # One Cargo workspace over the engine (`engine/`: `reylo-engine-core`, what every database shares;
-# `reylo-engine-postgres`, `reylo-engine-sqlite` and `reylo-engine-mysql`, one per
+# `reylo-engine-postgres`, `reylo-engine-sqlite`, `reylo-engine-mysql` and `reylo-engine-sqlserver`, one per
 # database; `reylo-engine-build`, their build scripts' source hash; `reylo-engine`, what a Rust host
 # links, each database's engine with its client, and the program that connects it to its database
 # (`engine/native`); and `reylo-cli`, the `reylo` binary that serves them all, `engine/cli`), the Rust
@@ -11,7 +11,9 @@
 # `engine/postgres/vendor/`, which `engine/build.sh --prepare` fetches and applies into
 # `engine/postgres/.patched/pg_query`, renamed so that it publishes as a crate of its own, and a
 # member here, as every path dependency under this directory is);
-# `reylo-sqlparser`, the MySQL crate's copy of `sqlparser` (`engine/mysql/vendor/sqlparser`); and
+# `reylo-sqlparser`, the MySQL crate's copy of `sqlparser` (`engine/mysql/vendor/sqlparser`);
+# `reylo-tiberius`, SQL Server's client (tiberius 0.13.0 with `engine/native/tiberius-0.13.0.patch`,
+# which makes ring its TLS fallback, fetched and patched into `engine/native/.patched/tiberius`); and
 # the SQLite amalgamation the prepare step patches into `engine/sqlite/.sqlite/`, which
 # `reylo-engine-sqlite` packages. Run the prepare step once before any cargo command here.
 [workspace]
@@ -25,6 +27,7 @@ members = [
   "engine/postgres",
   "engine/sqlite",
   "engine/mysql",
+  "engine/sqlserver",
   "oracle",
   "rust/reylo",
   "rust/reylo-macros",
@@ -49,7 +52,7 @@ license = "MIT"
 repository = "https://github.com/reylosql/reylo"
 homepage = "https://reylo.dev"
 
-# The crates of this workspace, each by path and by the version crates.io knows it at. The two copies
+# The crates of this workspace, each by path and by the version crates.io knows it at. The three copies
 # of upstream crates keep their own versions, which change only with what they copy.
 [workspace.dependencies]
 reylo-engine-build = { path = "engine/build-support", version = "=0.8.0" }
@@ -57,6 +60,7 @@ reylo-engine-core = { path = "engine/core", version = "=0.8.0" }
 reylo-engine-postgres = { path = "engine/postgres", version = "=0.8.0" }
 reylo-engine-sqlite = { path = "engine/sqlite", version = "=0.8.0" }
 reylo-engine-mysql = { path = "engine/mysql", version = "=0.8.0" }
+reylo-engine-sqlserver = { path = "engine/sqlserver", version = "=0.8.0" }
 reylo-engine = { path = "engine/native", version = "=0.8.0", default-features = false }
 reylo-migrate = { path = "engine/migrate", version = "=0.8.0", default-features = false }
 reylo-macros = { path = "rust/reylo-macros", version = "=0.8.0" }
@@ -64,6 +68,7 @@ reylo = { path = "rust/reylo", version = "=0.8.0", default-features = false }
 reylo-build = { path = "rust/reylo-build", version = "=0.8.0", default-features = false }
 pg_query = { package = "reylo-pg-query", path = "engine/postgres/.patched/pg_query", version = "=18.0.0" }
 sqlparser = { package = "reylo-sqlparser", path = "engine/mysql/vendor/sqlparser", version = "=0.63.0", default-features = false }
+tiberius = { package = "reylo-tiberius", path = "engine/native/.patched/tiberius", version = "=0.13.0", default-features = false }
 
 [profile.release]
 # 3 rather than "s": 7 µs less CPU on a 50-row read (71 against 78 with the other fixes), for a

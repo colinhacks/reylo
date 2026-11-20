@@ -1,0 +1,1 @@
+merge customers as t using (select :id as id, :email as email) as s on t.id = s.id when matched then update set email = s.email when not matched then insert (id, email) values (s.id, s.email) output $action as act, inserted.id, deleted.email as old_email;

@@ -385,7 +385,8 @@ function renderFields(fields: readonly Field[], dialect: Dialect, extra?: Slot):
     const all = [...new Set([other, ...each.map(([f, t]) => (f.optional ? `${t} | undefined` : t))])].join(" | ");
     return `{ ${[...each.map(([f, t]) => `${ident(f.name)}${f.optional ? "?" : ""}: ${t}`), `[key: string]: ${all}`].join("; ")} }`;
   }
-  return fields.length ? `{ ${each.map(([f, t]) => `${ident(f.name)}: ${t}`).join("; ")} }` : "Record<never, never>";
+  // A key that may be absent, as SQL Server's `for json` leaves out one whose value is NULL.
+  return fields.length ? `{ ${each.map(([f, t]) => `${ident(f.name)}${f.optional ? "?" : ""}: ${t}`).join("; ")} }` : "Record<never, never>";
 }
 
 /**

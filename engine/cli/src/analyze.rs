@@ -47,6 +47,7 @@ enum Session {
     Postgres(reylo_engine::postgres::Session),
     Mysql(reylo_engine::mysql::Session),
     Sqlite(reylo_engine::sqlite::Session),
+    Sqlserver(reylo_engine::sqlserver::Session),
 }
 
 impl Session {
@@ -55,6 +56,7 @@ impl Session {
         Ok(match dialect {
             "postgres" => Session::Postgres(reylo_engine::postgres::Session::open(url).await?),
             "mysql" => Session::Mysql(reylo_engine::mysql::Session::open(url).await?),
+            "sqlserver" => Session::Sqlserver(reylo_engine::sqlserver::Session::open(url).await?),
             _ => Session::Sqlite(reylo_engine::sqlite::Session::open(&project::sqlite_path(url, base).map_err(|why| Failure::Error(format!("Cannot read the SQLite URL {url}: {why}.")))?)?),
         })
     }
@@ -64,6 +66,7 @@ impl Session {
             Session::Postgres(s) => &s.version,
             Session::Mysql(s) => &s.version,
             Session::Sqlite(s) => &s.version,
+            Session::Sqlserver(s) => &s.version,
         }
     }
 
@@ -72,6 +75,7 @@ impl Session {
             Session::Postgres(s) => s.analyze(sql).await,
             Session::Mysql(s) => s.analyze(sql).await,
             Session::Sqlite(s) => s.analyze(sql),
+            Session::Sqlserver(s) => s.analyze(sql).await,
         }
     }
 }
@@ -138,7 +142,7 @@ pub fn run(args: &[String]) -> i32 {
         Err(message) => return fail(&message),
     };
     let Some(dialect) = project::dialect_of(&url) else {
-        return fail(&format!("Cannot tell the database from the URL ({source}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs."));
+        return fail(&format!("Cannot tell the database from the URL ({source}): reylo reads postgres://, postgresql://, mysql://, sqlserver://, file: and sqlite: URLs."));
     };
     // A relative SQLite path in a URL typed on the command line is the shell's, from the working
     // directory; one in the project's URL is from the project's root, as the type check reads it.
@@ -179,6 +183,7 @@ async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, proje
     let engine_dialect = match dialect {
         "postgres" => Dialect::Postgres,
         "mysql" => Dialect::Mysql,
+        "sqlserver" => Dialect::Sqlserver,
         _ => Dialect::Sqlite,
     };
     let mut flagged = false;

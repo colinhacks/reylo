@@ -1,4 +1,4 @@
-// The examples of the type descriptor format (spec/examples.ts) held to the engine: each example of a database Reylo runs has its setup run on an empty database of its own and its statement analyzed there by the root module's `analyze`, which returns what `reylo analyze` prints, and every field the example shows must be what the engine writes, all but the server's version, which is the test server's own. Reylo runs no SQL Server, Oracle or DuckDB, so their examples are written by hand.
+// The examples of the type descriptor format (spec/examples.ts) held to the engine: each example of a database Reylo runs has its setup run on an empty database of its own and its statement analyzed there by the root module's `analyze`, which returns what `reylo analyze` prints, and every field the example shows must be what the engine writes, all but the server's version, which is the test server's own. Reylo runs no Oracle or DuckDB, so their examples are written by hand.
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -10,7 +10,7 @@ import { analyze } from "../src/index.ts";
 import * as examples from "../spec/examples.ts";
 import type { Example } from "../spec/examples.ts";
 import type { StatementDescriptor } from "../spec/index.ts";
-import { mysqlDatabase, mysqlLive, pgLive, postgresDatabase } from "./helpers.ts";
+import { mysqlDatabase, mysqlLive, pgLive, postgresDatabase, sqlserverDatabase, sqlserverLive } from "./helpers.ts";
 
 const schema = JSON.parse(readFileSync(new URL("../spec/typedefs.schema.json", import.meta.url), "utf8"));
 const ajv = new Ajv2020({ strict: false, allErrors: true });
@@ -29,7 +29,7 @@ function held(name: string, example: Example, found: StatementDescriptor): void 
   }
 }
 
-test("every example is of a database held to the engine below, or of SQL Server, Oracle or DuckDB, written by hand", () => {
+test("every example is of a database held to the engine below, or of Oracle or DuckDB, written by hand", () => {
   assert.ok(all.length > 0);
   for (const [name, example] of all) assert.ok(["postgres", "mysql", "sqlite", "duckdb", "sqlserver", "oracle"].includes(example.database), `${name}: ${example.database}`);
 });
@@ -57,6 +57,19 @@ test("the MySQL examples are what the engine writes", { skip: mysqlLive }, async
   for (const [name, example] of of("mysql")) {
     await t.test(name, async () => {
       const db = await mysqlDatabase(`reylo_spec_${name}`, example.setup);
+      try {
+        held(name, example, await analyze({ url: db.url, sql: example.statement }));
+      } finally {
+        await db.drop();
+      }
+    });
+  }
+});
+
+test("the SQL Server examples are what the engine writes", { skip: sqlserverLive }, async (t) => {
+  for (const [name, example] of of("sqlserver")) {
+    await t.test(name, async () => {
+      const db = await sqlserverDatabase(`reylo_spec_${name}`, example.setup);
       try {
         held(name, example, await analyze({ url: db.url, sql: example.statement }));
       } finally {

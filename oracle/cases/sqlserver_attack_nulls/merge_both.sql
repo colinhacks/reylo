@@ -1,0 +1,1 @@
+merge g as t using (select :id as id) as s on t.id = s.id when matched then delete when not matched then insert (id, f_id, x) values (s.id, 0, 0) output $action as act, inserted.id as ins, deleted.id as del, inserted.x as insx, deleted.x as delx;

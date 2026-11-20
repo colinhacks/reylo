@@ -1,0 +1,5 @@
+delete_top.sql: many () -> { id: bigint }
+insert_default.sql: one (id: int, email: nvarchar(≤200 units, UTF-16, ill-formed), name: nvarchar(≤100 units, UTF-16, ill-formed)?) -> { vip: bit, joined: datetime2, name: nvarchar(≤100 units, UTF-16, ill-formed)? }
+merge_delete.sql: many (id: int) -> { act: nvarchar(≤10 units, UTF-16, ill-formed), kept: int?, removed: int }
+merge_upsert.sql: many (id: int, email: nvarchar(≤200 units, UTF-16, ill-formed)) -> { act: nvarchar(≤10 units, UTF-16, ill-formed), id: int, old_email: nvarchar(≤200 units, UTF-16, ill-formed)? }
+update_from.sql: many () -> { id: bigint, status: varchar(≤10 bytes, windows-1252) }

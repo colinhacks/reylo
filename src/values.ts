@@ -28,7 +28,7 @@
 // reached through `globalThis` where one exists.
 import { bareName, isMysqlSet, type EngineType } from "./engine-type.ts";
 
-export type Dialect = "postgres" | "mysql" | "sqlite";
+export type Dialect = "postgres" | "mysql" | "sqlite" | "sqlserver";
 
 /** A scalar value's representation. */
 export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "money" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "hstore" | Geometric | "enum" | "set" | "geometry" | "unknown";

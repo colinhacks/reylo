@@ -266,7 +266,7 @@ export type IpAddress = { Address4: new (text: string) => AddressValue; Address6
 /** An ip-address value: its text as given, the prefix after a slash included, and its prefix's length. */
 type AddressValue = { address: string; subnetMask: number; correctForm(): string };
 /** The classes a module's codecs build values with, which it imports from the app's install: `decimal`, the class of `js.codecs.decimal`'s library, and `inet`, ip-address's module. */
-export type Libraries = { readonly decimal?: DecimalClass; readonly inet?: IpAddress };
+export type Libraries = { readonly decimal?: DecimalClass; readonly inet?: IpAddress; /** The `TYPES` of the app's `mssql`, which a SQL Server module imports to bind each parameter as its type (src/decode-sqlserver.ts). */ readonly mssql?: unknown };
 
 /** A decimal library's codec's package. */
 const libraryOf = (codec: Codec) => codec.slice("decimal:".length) as DecimalLibrary;

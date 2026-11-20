@@ -6,5 +6,7 @@
 pub mod mysql_async;
 #[cfg(feature = "sqlite")]
 pub mod rusqlite;
+#[cfg(feature = "sqlserver")]
+pub mod tiberius;
 #[cfg(feature = "postgres")]
 pub mod tokio_postgres;

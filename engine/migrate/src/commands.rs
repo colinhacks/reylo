@@ -154,6 +154,7 @@ async fn unlock(db: &mut Db) -> Result<(), Error> {
     match db.dialect() {
         Dialect::Postgres => db.exec("select pg_advisory_unlock(hashtextextended('reylo_migrate', 0))").await,
         Dialect::Mysql => db.exec("do release_lock(concat('reylo_migrate_', left(sha2(coalesce(database(), ''), 256), 32)))").await,
+        Dialect::Sqlserver => db.exec("exec sp_releaseapplock @Resource = N'reylo_migrate', @LockOwner = 'Session'").await,
         // The file's lock is released with the file, which the run dropped.
         Dialect::Sqlite => Ok(()),
     }
@@ -324,6 +325,19 @@ fn history_ddl(d: Dialect) -> String {
         Dialect::Postgres => format!("create table if not exists {HISTORY_TABLE} (name text primary key, sql text not null, applied_at timestamptz, fingerprint text, catalog text)"),
         Dialect::Mysql => format!("create table if not exists {HISTORY_TABLE} (name varchar(255) primary key, `sql` longtext not null, applied_at datetime(6) null, fingerprint text null, catalog longtext null) engine=InnoDB"),
         Dialect::Sqlite => format!("create table if not exists {HISTORY_TABLE} (name text primary key, sql text not null, applied_at text, fingerprint text, catalog text)"),
+        // `id` orders rows written within the clock's step, as SQLite's rowid does.
+        Dialect::Sqlserver => format!(
+            "if object_id(N'{HISTORY_TABLE}', N'U') is null create table {HISTORY_TABLE} (id bigint identity(1, 1) not null, name nvarchar(450) not null primary key, sql nvarchar(max) not null, applied_at datetime2(7) null, fingerprint nvarchar(max) null, catalog nvarchar(max) null)"
+        ),
+    }
+}
+
+/// The statement that opens a migration's transaction.
+fn begin(d: Dialect) -> &'static str {
+    match d {
+        Dialect::Mysql => "start transaction",
+        Dialect::Sqlserver => "begin transaction",
+        _ => "begin",
     }
 }
 
@@ -335,6 +349,9 @@ fn now_sql(d: Dialect) -> String {
         Dialect::Postgres => format!("greatest(clock_timestamp(), (select max(applied_at) + interval '1 microsecond' from {HISTORY_TABLE}))"),
         Dialect::Mysql => format!("greatest(now(6), coalesce((select max(h.applied_at) + interval 1 microsecond from (select applied_at from {HISTORY_TABLE}) h), now(6)))"),
         Dialect::Sqlite => "strftime('%Y-%m-%d %H:%M:%f', 'now')".into(),
+        // T-SQL takes no subquery in an insert's values; rows written within the clock's step are
+        // ordered by their `id`, as SQLite's by rowid ([`read_history`]).
+        Dialect::Sqlserver => "sysutcdatetime()".into(),
     }
 }
 
@@ -351,6 +368,7 @@ async fn has_history(db: &mut Db) -> Result<bool, Error> {
         Dialect::Postgres => format!("select to_regclass('{HISTORY_TABLE}') is not null as ok"),
         Dialect::Mysql => format!("select count(*) > 0 as ok from information_schema.tables where table_schema = database() and table_name = '{HISTORY_TABLE}'"),
         Dialect::Sqlite => format!("select count(*) > 0 as ok from sqlite_schema where name = '{HISTORY_TABLE}'"),
+        Dialect::Sqlserver => format!("select case when object_id(N'{HISTORY_TABLE}', N'U') is null then 0 else 1 end as ok"),
     };
     Ok(db.rows(&sql).await?.first().is_some_and(|r| r.flag("ok")))
 }
@@ -362,13 +380,25 @@ async fn read_history(db: &mut Db) -> Result<Vec<HistoryRow>, Error> {
     let d = db.dialect();
     // Rows are written each after the last (`now_sql`); on SQLite, whose clock has milliseconds, rows
     // written in one run tie, and are read in the order they were written, by rowid.
-    let applied_at = if d == Dialect::Postgres { "applied_at::text" } else { "applied_at" };
-    let tie = if d == Dialect::Sqlite { "rowid, " } else { "" };
+    let applied_at = match d {
+        Dialect::Postgres => "applied_at::text",
+        Dialect::Sqlserver => "convert(varchar(33), applied_at, 126)",
+        _ => "applied_at",
+    };
+    let tie = match d {
+        Dialect::Sqlite => "rowid, ",
+        Dialect::Sqlserver => "id, ",
+        _ => "",
+    };
+    // T-SQL orders by no truth value, so the rows without a time go last by a case.
+    let unapplied = if d == Dialect::Sqlserver { "case when applied_at is null then 1 else 0 end" } else { "applied_at is null" };
+    // SQL Server orders by the column itself, which the text of the same name would otherwise stand for.
+    let order_at = if d == Dialect::Sqlserver { format!("{HISTORY_TABLE}.applied_at") } else { "applied_at".to_string() };
     // A table an earlier build made has no fingerprint column until the next run adds it.
     let fingerprint = if has_fingerprint(db).await? { "fingerprint" } else { "null as fingerprint" };
     let rows = db
         .rows(&format!(
-            "select name, {} as body, {applied_at} as applied_at, {fingerprint} from {HISTORY_TABLE} order by applied_at is null, applied_at, {tie}case when name = '{INIT}' then '' else name end",
+            "select name, {} as body, {applied_at} as applied_at, {fingerprint} from {HISTORY_TABLE} order by {unapplied}, {order_at}, {tie}case when name = '{INIT}' then '' else name end",
             sql_col(d)
         ))
         .await?;
@@ -388,6 +418,7 @@ async fn has_column(db: &mut Db, column: &str) -> Result<bool, Error> {
         Dialect::Postgres => format!("select count(*) > 0 as ok from pg_attribute where attrelid = to_regclass('{HISTORY_TABLE}') and attname = '{column}' and not attisdropped"),
         Dialect::Mysql => format!("select count(*) > 0 as ok from information_schema.columns where table_schema = database() and table_name = '{HISTORY_TABLE}' and column_name = '{column}'"),
         Dialect::Sqlite => format!("select count(*) > 0 as ok from pragma_table_info('{HISTORY_TABLE}') where name = '{column}'"),
+        Dialect::Sqlserver => format!("select case when col_length(N'{HISTORY_TABLE}', N'{column}') is null then 0 else 1 end as ok"),
     };
     Ok(db.rows(&sql).await?.first().is_some_and(|r| r.flag("ok")))
 }
@@ -396,11 +427,18 @@ async fn has_column(db: &mut Db, column: &str) -> Result<bool, Error> {
 async fn ensure_history(db: &mut Db) -> Result<(), Error> {
     let d = db.dialect();
     db.exec(&history_ddl(d)).await?;
+    // T-SQL's `alter table … add` takes no `column`.
+    let add = if d == Dialect::Sqlserver { "add" } else { "add column" };
+    let text = match d {
+        Dialect::Mysql => "longtext null",
+        Dialect::Sqlserver => "nvarchar(max) null",
+        _ => "text",
+    };
     if !has_fingerprint(db).await? {
-        db.exec(&format!("alter table {HISTORY_TABLE} add column fingerprint text")).await?;
+        db.exec(&format!("alter table {HISTORY_TABLE} {add} fingerprint {}", if d == Dialect::Sqlserver { text } else { "text" })).await?;
     }
     if !has_column(db, "catalog").await? {
-        db.exec(&format!("alter table {HISTORY_TABLE} add column catalog {}", if d == Dialect::Mysql { "longtext null" } else { "text" })).await?;
+        db.exec(&format!("alter table {HISTORY_TABLE} {add} catalog {text}")).await?;
     }
     Ok(())
 }
@@ -461,6 +499,7 @@ async fn fingerprint_of(db: &mut Db, lines: &[String]) -> Result<String, Error> 
         Dialect::Postgres => "select (current_setting('server_version_num')::int / 10000)::text as v",
         Dialect::Mysql => "select substring_index(version(), '.', 2) as v",
         Dialect::Sqlite => "select sqlite_version() as v",
+        Dialect::Sqlserver => "select cast(serverproperty('ProductMajorVersion') as nvarchar(10)) as v",
     };
     let version = db.rows(version).await?.first().map(|r| r.text("v").to_string()).unwrap_or_default();
     let mut digest = crate::cache::Sha256::new();
@@ -495,6 +534,15 @@ async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Erro
         Dialect::Mysql => {
             let rows = db.rows("select get_lock(concat('reylo_migrate_', left(sha2(coalesce(database(), ''), 256), 32)), 600)").await?;
             if rows.first().and_then(|r| r.first()) != Some("1") {
+                return Err(Error("another run of reylo migrate held this database for ten minutes; try again once it finishes".into()));
+            }
+            Ok(None)
+        }
+        // An application lock of the database's, the session's until its connection closes, waited
+        // for ten minutes.
+        Dialect::Sqlserver => {
+            let rows = db.rows("declare @r int; exec @r = sp_getapplock @Resource = N'reylo_migrate', @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 600000; select @r as ok").await?;
+            if !rows.first().and_then(|r| r.text("ok").parse::<i64>().ok()).is_some_and(|r| r >= 0) {
                 return Err(Error("another run of reylo migrate held this database for ten minutes; try again once it finishes".into()));
             }
             Ok(None)
@@ -600,6 +648,16 @@ async fn holders(db: &mut Db) -> String {
             from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid() and xact_start is not null order by xact_start limit 3"
         }
         Dialect::Mysql => "select trx_mysql_thread_id as id, timestampdiff(second, trx_started, now()) as secs, trx_state as state, left(coalesce(trx_query, ''), 80) as q from information_schema.innodb_trx order by trx_started limit 3",
+        // Reading other sessions takes VIEW SERVER STATE (VIEW DATABASE STATE on Azure SQL); without
+        // it the query fails and the message names no transaction.
+        Dialect::Sqlserver => {
+            "select top 3 cast(s.session_id as varchar(10)) as id, cast(datediff(second, t.transaction_begin_time, sysdatetime()) as varchar(20)) as secs, s.status as state,
+            left(replace(replace(coalesce(q.text, ''), char(13), ' '), char(10), ' '), 80) as q
+            from sys.dm_tran_session_transactions st join sys.dm_tran_active_transactions t on t.transaction_id = st.transaction_id
+            join sys.dm_exec_sessions s on s.session_id = st.session_id left join sys.dm_exec_connections c on c.session_id = s.session_id
+            outer apply sys.dm_exec_sql_text(c.most_recent_sql_handle) q
+            where st.session_id <> @@spid and s.database_id = db_id() order by t.transaction_begin_time"
+        }
         Dialect::Sqlite => return String::new(),
     };
     let Ok(rows) = db.rows(sql).await else { return String::new() };
@@ -611,7 +669,8 @@ async fn holders(db: &mut Db) -> String {
 }
 
 /// Sets how long the session's statements wait for a lock: a transaction's own on Postgres
-/// (`set local`, which its commit or rollback ends), the session's on MySQL until `reset_lock_wait`.
+/// (`set local`, which its commit or rollback ends), the session's on MySQL and SQL Server until
+/// `reset_lock_wait`.
 async fn limit_lock_wait(db: &mut Db) -> Result<(), Error> {
     match db {
         #[cfg(feature = "cli")]
@@ -619,6 +678,8 @@ async fn limit_lock_wait(db: &mut Db) -> Result<(), Error> {
         // MySQL counts whole seconds, at least one.
         #[cfg(feature = "cli")]
         Db::Mysql(_) => db.exec("set session lock_wait_timeout = 1").await,
+        #[cfg(feature = "cli")]
+        Db::Sqlserver(_) => db.exec(&format!("set lock_timeout {LOCK_TIMEOUT_MS}")).await,
         _ => Ok(()),
     }
 }
@@ -633,6 +694,8 @@ async fn reset_lock_wait(db: &mut Db) -> Result<(), Error> {
             let seconds = rows.first().and_then(|r| r.first()).and_then(|v| v.parse::<u64>().ok()).ok_or_else(|| Error("cannot read the server's lock_wait_timeout".into()))?;
             db.exec(&format!("set session lock_wait_timeout = {seconds}")).await
         }
+        #[cfg(feature = "cli")]
+        Db::Sqlserver(_) => db.exec("set lock_timeout -1").await,
         _ => Ok(()),
     }
 }
@@ -653,12 +716,14 @@ async fn run_once(db: &mut Db, m: &Migration, record: bool) -> Result<(), Ran> {
         };
         let before = invalid(db).await?;
         // On Postgres such a statement is built concurrently, whose waits block no one, so it waits
-        // as long as it must; MySQL's DDL waits for its lock as the app's queries queue behind it.
-        if d == Dialect::Mysql {
+        // as long as it must; MySQL's and SQL Server's DDL wait for their lock as the app's queries
+        // queue behind them.
+        let limited = matches!(d, Dialect::Mysql | Dialect::Sqlserver);
+        if limited {
             limit_lock_wait(db).await?;
         }
         let result = db.script_or_wait(&m.sql).await;
-        if d == Dialect::Mysql {
+        if limited {
             reset_lock_wait(db).await?;
         }
         if let Err(e) = result {
@@ -686,9 +751,9 @@ async fn run_once(db: &mut Db, m: &Migration, record: bool) -> Result<(), Ran> {
     if d == Dialect::Sqlite {
         db.exec("pragma foreign_keys = off").await?;
     }
-    db.exec(if d == Dialect::Mysql { "start transaction" } else { "begin" }).await?;
+    db.exec(begin(d)).await?;
     let result = async {
-        if d == Dialect::Postgres {
+        if matches!(d, Dialect::Postgres | Dialect::Sqlserver) {
             limit_lock_wait(db).await?;
         }
         db.script_or_wait(&m.sql).await?;
@@ -711,6 +776,9 @@ async fn run_once(db: &mut Db, m: &Migration, record: bool) -> Result<(), Ran> {
     }
     if d == Dialect::Sqlite {
         db.exec("pragma foreign_keys = on").await?;
+    }
+    if d == Dialect::Sqlserver {
+        reset_lock_wait(db).await?;
     }
     result?;
     // The migration has committed: a fingerprint that can't be read now leaves its row pending,
@@ -2250,6 +2318,13 @@ async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
             .iter()
             .map(|r| format!("`{}`", r.text("n").replace('`', "``")))
             .collect(),
+        Dialect::Sqlserver => db
+            // A system-versioned table's history is its own, and refuses a delete.
+            .rows(&format!("select quotename(schema_name(schema_id)) + '.' + quotename(name) as n from sys.tables where is_ms_shipped = 0 and temporal_type <> 1 and name <> N'{HISTORY_TABLE}'"))
+            .await?
+            .iter()
+            .map(|r| r.text("n").to_string())
+            .collect(),
         // A virtual table's own tables (an FTS5 index's, an R*Tree's) are its to empty, and a libSQL
         // vector index's are libSQL's: deleting from them directly breaks it.
         Dialect::Sqlite => db
@@ -2279,6 +2354,32 @@ async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
             }
             db.exec("set foreign_key_checks = 1").await?;
             result?
+        }
+        // Each table emptied with its constraints off, its identity started again, and its
+        // constraints checked again: a delete, since `truncate` refuses a table a foreign key names.
+        Dialect::Sqlserver => {
+            // An identity a row has taken starts again at its seed: reseeded one step before it,
+            // where a table that never held a row would take the reseed value itself.
+            let used: Vec<(String, String)> = db
+                .rows("select quotename(object_schema_name(object_id)) + '.' + quotename(object_name(object_id)) as n, cast(cast(seed_value as decimal(38, 0)) - cast(increment_value as decimal(38, 0)) as varchar(40)) as reseed from sys.identity_columns where last_value is not null")
+                .await?
+                .iter()
+                .map(|r| (r.text("n").to_string(), r.text("reseed").to_string()))
+                .collect();
+            let mut sql = String::new();
+            for n in &names {
+                sql.push_str(&format!("alter table {n} nocheck constraint all;\n"));
+            }
+            for n in &names {
+                sql.push_str(&format!("delete from {n};\n"));
+            }
+            for (n, reseed) in used.iter().filter(|(n, _)| names.contains(n)) {
+                sql.push_str(&format!("dbcc checkident (N'{}', reseed, {reseed}) with no_infomsgs;\n", n.replace('\'', "''")));
+            }
+            for n in &names {
+                sql.push_str(&format!("alter table {n} with check check constraint all;\n"));
+            }
+            db.exec(&sql).await?
         }
         Dialect::Sqlite => {
             db.exec("pragma foreign_keys = off").await?;
@@ -2496,7 +2597,7 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, init:
     // The rows that stay as they are, with the time each ran: the history's start, as far as it
     // agrees with what is recorded, in its order. The rest is written again, in order, after them.
     let kept = before.iter().zip(recorded).take_while(|(r, f)| r.applied && r.name == f.name && same_statements(&r.sql, &f.sql, d)).count();
-    db.exec(if d == Dialect::Mysql { "start transaction" } else { "begin" }).await?;
+    db.exec(begin(d)).await?;
     let written = async {
         let names: Vec<String> = recorded[..kept].iter().map(|f| crate::db::literal(&f.name)).collect();
         if names.is_empty() {
@@ -2831,6 +2932,7 @@ async fn applied_times(db: &mut Db) -> Result<std::collections::HashMap<String, 
         Dialect::Postgres => "cast(floor(extract(epoch from applied_at)) as bigint)",
         Dialect::Mysql => "floor(unix_timestamp(applied_at))",
         Dialect::Sqlite => "cast(strftime('%s', applied_at) as integer)",
+        Dialect::Sqlserver => "datediff_big(second, '1970-01-01', applied_at)",
     };
     let rows = db.rows(&format!("select name, {at} as at from {HISTORY_TABLE} where applied_at is not null")).await?;
     Ok(rows
@@ -3301,6 +3403,7 @@ fn split_name(name: &str) -> Vec<String> {
             Some(q) if ch == q => quote = None,
             Some(_) => part.push(ch),
             None if ch == '"' || ch == '`' => quote = Some(ch),
+            None if ch == '[' => quote = Some(']'),
             None if ch == '.' => out.push(std::mem::take(&mut part)),
             None => part.push(ch),
         }
@@ -3451,7 +3554,12 @@ fn table_rename_statements(d: Dialect, current: &crate::diff::Schema, target: &c
         if let Some(view) = new_id.strip_prefix("table ").and_then(|n| current.objects.get(&format!("view {n}"))) {
             out.extend(view.drop.iter().map(|drop| if d == Dialect::Postgres { format!("{drop} cascade") } else { drop.clone() }));
         }
-        out.push(format!("alter {}table {from_w} rename to {new_name}", if foreign { "foreign " } else { "" }));
+        if d == Dialect::Sqlserver {
+            // sp_rename takes the new name as it is, never quoted.
+            out.push(crate::diff::sqlserver::rename_object(&from_w, &new));
+        } else {
+            out.push(format!("alter {}table {from_w} rename to {new_name}", if foreign { "foreign " } else { "" }));
+        }
         names.push((old, new, old_id.clone(), new_id.clone()));
     }
     if d == Dialect::Postgres {
@@ -3920,7 +4028,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
             match split {
                 Some(files) => crate::locks::file_texts(plan, files),
                 None if d == Dialect::Mysql => plan.runnable().cloned().collect(),
-                None => vec![plan.runnable().map(|s| format!("{};", s.trim_end())).collect::<Vec<_>>().join("\n")],
+                None => vec![plan.runnable().map(|s| crate::diff::ended(s)).collect::<Vec<_>>().join("\n")],
             }
         };
         let run_pieces = async |db: &mut Db, sqls: Vec<String>| -> Result<(Option<String>, Vec<crate::locks::Hazard>), Error> {
@@ -4063,6 +4171,9 @@ async fn schema_as_sql_on(db: &mut Db, opts: &Options, schemas: &[String]) -> Re
         // the plan's own stays as written.
         let sql = if planned.lines().any(|l| l.trim_start().starts_with("--")) {
             planned
+        } else if db.dialect() == Dialect::Sqlserver {
+            // Batch by batch, with the `GO` lines that part them.
+            crate::sql::batches(&planned).iter().map(|b| crate::sql::split_statements(b, Dialect::Sqlserver).iter().map(|st| format!("{};", st.text.trim())).collect::<Vec<_>>().join("\n\n")).collect::<Vec<_>>().join("\nGO\n\n")
         } else {
             crate::sql::split_statements(&planned, db.dialect()).iter().map(|st| format!("{};", st.text.trim())).collect::<Vec<_>>().join("\n\n")
         };
@@ -4082,6 +4193,23 @@ async fn schema_as_sql_on(db: &mut Db, opts: &Options, schemas: &[String]) -> Re
         Ok(Some(sql)) => Ok(format!("{}\n", sql.trim_end())),
         _ => Ok(dumped),
     }
+}
+
+/// SQL Server's schema as the statements that make it, having no dump tool: the diff engine's plan
+/// from an empty database to this one.
+#[cfg(feature = "cli")]
+async fn sqlserver_dump(db: &mut Db) -> Result<String, Error> {
+    let target = crate::diff::read(db).await?;
+    let alterer = crate::diff::alterer(db).await?;
+    let plan = crate::diff::plan(&crate::diff::Schema::default(), &target, alterer.as_ref());
+    Ok(crate::diff::sqlserver::written(&plan.statements))
+}
+
+/// Without the command line's diff engine nothing writes SQL Server's schema; an app's connection is
+/// never SQL Server's, since sqlx has no driver for it.
+#[cfg(not(feature = "cli"))]
+async fn sqlserver_dump(_: &mut Db) -> Result<String, Error> {
+    Err(Error("SQL Server's schema is written by the reylo command".into()))
 }
 
 /// A statement of pg_dump's without the column options a platform stamps on every column it makes,
@@ -4126,6 +4254,7 @@ fn without_entries_of(text: &str, owners: &[String], project: &[String]) -> Stri
 
 async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<String, Error> {
     match db.dialect() {
+        Dialect::Sqlserver => sqlserver_dump(db).await,
         Dialect::Postgres => {
             let version: i64 = db.rows("select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
             let mut args: Vec<String> = ["--schema-only", "--no-publications", "--no-subscriptions", "--no-security-labels", "--no-tablespaces"].map(String::from).to_vec();
@@ -4526,7 +4655,7 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
     let d = db.dialect();
     let expect = crate::catalog::without_comments(expect);
     let expect = &expect[..];
-    let statements: Vec<String> = plan.iter().filter(|s| !s.starts_with("--")).map(|s| format!("{};", s.trim_end().trim_end_matches(';'))).chain(then.iter().cloned()).collect();
+    let statements: Vec<String> = plan.iter().filter(|s| !s.starts_with("--")).map(|s| crate::sql::ended(s)).chain(then.iter().cloned()).collect();
     let differs = |now: &[String]| describe_diff("this database", now, "the target", expect);
     if d == Dialect::Mysql || statements.iter().any(|s| runs_alone(s, d)) {
         for s in &statements {
@@ -4538,7 +4667,7 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
     if d == Dialect::Sqlite {
         db.exec("pragma foreign_keys = off").await?;
     }
-    db.exec("begin").await?;
+    db.exec(begin(d)).await?;
     let result = async {
         db.script(&statements.join("\n")).await?;
         if d == Dialect::Sqlite && !db.rows("pragma foreign_key_check").await?.is_empty() {
@@ -4590,7 +4719,7 @@ async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String
         db.exec("pragma foreign_keys = off").await?;
     }
     if transactional {
-        db.exec("begin").await?;
+        db.exec(begin(d)).await?;
     }
     let result = async {
         let (renames, plan) = match plan_asked(db, target, true, asking).await? {
@@ -4599,7 +4728,7 @@ async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String
         };
         let mut committed = false;
         for s in plan.runnable().chain(then) {
-            if let Err(e) = db.script(&format!("{};", s.trim_end().trim_end_matches(';'))).await {
+            if let Err(e) = db.script(&crate::diff::ended(s)).await {
                 return Err(if committed { Error(format!("{}\n{COMMITTED}", e.0)) } else { e });
             }
             committed |= s == crate::diff::COMMIT;
@@ -5157,7 +5286,7 @@ async fn scoped_change(db: &mut Db, history: &mut Db, explaining: &[crate::diff:
     style(db, &mut undo, &target).await.ok()?;
     let mut change = crate::diff::plan(&target, &current, alterer.as_ref());
     style(db, &mut change, &current).await.ok()?;
-    let statements: Vec<String> = undo.runnable().map(|s| format!("{};", s.trim_end().trim_end_matches(';'))).collect();
+    let statements: Vec<String> = undo.runnable().map(|s| crate::diff::ended(s)).collect();
     (!statements.is_empty() && !change.statements.is_empty()).then(|| (change.sql(), statements))
 }
 

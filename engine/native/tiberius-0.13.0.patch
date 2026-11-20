@@ -1,0 +1,377 @@
+diff -ru a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -12,7 +12,10 @@
+ [package]
+ edition = "2021"
+ rust-version = "1.88"
+-name = "tiberius"
++# tiberius 0.13.0 (tiberius-rs/tiberius) with ring as its TLS fallback in place of aws-lc-rs, so
++# that a build compiles no C for TLS, published under a name of its own so that Reylo's crates build
++# from crates.io. Its library keeps the name `tiberius`.
++name = "reylo-tiberius"
+ version = "0.13.0"
+ authors = [
+     "Steffen Butzer <steffen.butzer@outlook.com>",
+@@ -26,16 +29,16 @@
+ autoexamples = false
+ autotests = false
+ autobenches = false
+-description = "A TDS (MSSQL) driver"
+-documentation = "https://docs.rs/tiberius/"
++description = "tiberius 0.13.0, the TDS (SQL Server) driver, with ring as its TLS fallback in place of aws-lc-rs, for Reylo's engine."
+ readme = "README.md"
+ keywords = [
+     "tds",
+     "mssql",
+     "sql",
+ ]
+-license = "MIT/Apache-2.0"
+-repository = "https://github.com/prisma/tiberius"
++license = "MIT OR Apache-2.0"
++repository = "https://github.com/reylosql/reylo"
++include = ["src/**/*.rs", "README.md", "LICENSE-MIT.txt", "LICENSE-APACHE.txt"]
+ 
+ [package.metadata.docs.rs]
+ features = ["all"]
+@@ -45,31 +48,25 @@
+ ]
+ 
+ [features]
++# The features of tiberius's that this copy builds: TDS 7.3 and 8.0, TLS over rustls, and its value
++# types. Windows and Kerberos sign-in, native-tls, OpenSSL and the smol SQL Browser are left out, with
++# the dependencies only they take.
+ all = [
+     "chrono",
+     "time",
+     "tds73",
+     "tds80",
+     "sql-browser-tokio",
+-    "sql-browser-smol",
+-    "integrated-auth-gssapi",
+     "rust_decimal",
+     "bigdecimal",
+-    "native-tls",
++    "rustls",
+     "serde",
+-    "sspi-rs",
+ ]
+-bigdecimal = ["bigdecimal_"]
++bigdecimal = ["bigdecimal_", "num-traits"]
+ default = [
+     "tds80",
+-    "winauth",
+-    "native-tls",
++    "rustls",
+ ]
+-integrated-auth-gssapi = ["libgssapi"]
+-native-tls = [
+-    "async-native-tls",
+-    "rustls-pki-types",
+-]
+ rustls = [
+     "tokio-rustls",
+     "tokio-util",
+@@ -85,102 +82,21 @@
+     "dep:serde",
+     "uuid/serde",
+ ]
+-sql-browser-smol = [
+-    "async-io",
+-    "async-net",
+-    "futures-lite",
+-]
+ sql-browser-tokio = [
+     "tokio",
+     "tokio-util",
+ ]
+-sspi-rs = ["sspi"]
+ tds73 = []
+ tds80 = ["tds73"]
+-vendored-openssl = [
+-    "opentls",
+-    "rustls-pki-types",
+-]
+ 
+ [lib]
+ name = "tiberius"
+ path = "src/lib.rs"
++# Its tests are tiberius's own, with dev-dependencies this copy leaves out: no target builds them.
++test = false
++doctest = false
++bench = false
+ 
+-[[example]]
+-name = "aad-auth"
+-path = "examples/aad-auth.rs"
+-
+-[[example]]
+-name = "bulk"
+-path = "examples/bulk.rs"
+-
+-[[example]]
+-name = "named-pipes"
+-path = "examples/named-pipes.rs"
+-
+-[[example]]
+-name = "tokio"
+-path = "examples/tokio.rs"
+-
+-[[test]]
+-name = "bulk"
+-path = "tests/bulk.rs"
+-
+-[[test]]
+-name = "command"
+-path = "tests/command.rs"
+-
+-[[test]]
+-name = "custom-cert"
+-path = "tests/custom-cert.rs"
+-
+-[[test]]
+-name = "deadlocks"
+-path = "tests/deadlocks.rs"
+-
+-[[test]]
+-name = "login_errors"
+-path = "tests/login_errors.rs"
+-
+-[[test]]
+-name = "named-instance-smol"
+-path = "tests/named-instance-smol.rs"
+-required-features = ["sql-browser-smol"]
+-
+-[[test]]
+-name = "named-instance-tokio"
+-path = "tests/named-instance-tokio.rs"
+-required-features = ["sql-browser-tokio"]
+-
+-[[test]]
+-name = "query"
+-path = "tests/query.rs"
+-
+-[[test]]
+-name = "serde"
+-path = "tests/serde.rs"
+-required-features = ["serde"]
+-
+-[[test]]
+-name = "special_char_password"
+-path = "tests/special_char_password.rs"
+-
+-[[test]]
+-name = "transactions"
+-path = "tests/transactions.rs"
+-
+-[dependencies.async-io]
+-version = "2"
+-optional = true
+-
+-[dependencies.async-native-tls]
+-version = "0.6"
+-optional = true
+-
+-[dependencies.async-net]
+-version = "2"
+-optional = true
+-
+ [dependencies.async-trait]
+ version = "0.1"
+ 
+@@ -212,10 +128,6 @@
+ [dependencies.enumflags2]
+ version = "0.7"
+ 
+-[dependencies.futures-lite]
+-version = "2"
+-optional = true
+-
+ [dependencies.futures-timer]
+ version = "3"
+ 
+@@ -229,18 +141,11 @@
+ 
+ [dependencies.num-traits]
+ version = "0.2"
++optional = true
+ 
+ [dependencies.once_cell]
+ version = "1.3"
+ 
+-[dependencies.opentls]
+-version = "0.2.1"
+-features = [
+-    "io-async-std",
+-    "vendored",
+-]
+-optional = true
+-
+ [dependencies.pin-project-lite]
+ version = "0.2"
+ 
+@@ -296,6 +201,12 @@
+ [dependencies.tokio-rustls]
+ version = "0.26.4"
+ optional = true
++default-features = false
++features = [
++    "logging",
++    "tls12",
++    "ring",
++]
+ 
+ [dependencies.tokio-util]
+ version = "0.7"
+@@ -316,82 +227,10 @@
+ [dependencies.zeroize]
+ version = "1.8.2"
+ 
+-[dev-dependencies.anyhow]
+-version = "1"
+-
+-[dev-dependencies.azure_core]
+-version = "1"
+-
+-[dev-dependencies.azure_identity]
+-version = "1.0"
+-
+-[dev-dependencies.chrono]
+-version = "0.4.38"
+-
+-[dev-dependencies.env_logger]
+-version = "0.11"
+-
+-[dev-dependencies.indicatif]
+-version = "0.18"
+-
+-[dev-dependencies.indoc]
+-version = "2"
+-
+-[dev-dependencies.names]
+-version = "0.14"
+-
+-[dev-dependencies.paste]
+-version = "1.0"
+-
+-[dev-dependencies.reqwest]
+-version = "0.13"
+-
+-[dev-dependencies.serde_json]
+-version = "1.0"
+-
+-[dev-dependencies.smol]
+-version = "2"
+-
+-[dev-dependencies.tokio]
+-version = "1.0"
+-features = [
+-    "macros",
+-    "sync",
+-    "io-std",
+-    "time",
+-    "io-util",
+-    "net",
+-    "rt-multi-thread",
+-]
+-
+-[dev-dependencies.tokio-util]
+-version = "0.7"
+-features = ["compat"]
+-
+-[dev-dependencies.url]
+-version = "2.5"
+-
+-[dev-dependencies.uuid]
+-version = "1.0"
+-features = ["v4"]
+-
+ [target."cfg(unix)".dependencies.libc]
+ version = "0.2"
+ 
+-[target."cfg(unix)".dependencies.libgssapi]
+-version = "0.11"
+-optional = true
+-default-features = false
+-
+-[target."cfg(unix)".dependencies.sspi]
+-version = "0.18"
+-optional = true
+-
+-[target."cfg(windows)".dependencies.winauth]
+-version = "0.0.5"
+-optional = true
+-
+-[lints.rust.unexpected_cfgs]
+-level = "warn"
+-priority = 0
+-check-cfg = ["cfg(docsrs)"]
++# tiberius's own code, whose lints are upstream's: a build of the workspace shows none of them, and the
++# cfgs of the features this copy leaves out read as unknown.
++[lints.rust]
++warnings = "allow"
+diff -ru a/src/client/tls_stream/rustls_tls_stream.rs b/src/client/tls_stream/rustls_tls_stream.rs
+--- a/src/client/tls_stream/rustls_tls_stream.rs
++++ b/src/client/tls_stream/rustls_tls_stream.rs
+@@ -21,7 +21,7 @@
+             danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+             WantsClientCert,
+         },
+-        crypto::{aws_lc_rs, CryptoProvider},
++        crypto::{ring, CryptoProvider},
+         pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, ServerName, UnixTime},
+         ClientConfig, ConfigBuilder, DigitallySignedStruct, Error as RustlsError, RootCertStore,
+         SignatureScheme,
+@@ -267,7 +267,7 @@
+ 
+ /// Resolve the rustls `CryptoProvider`: honour a process-installed default
+ /// (`CryptoProvider::install_default`) if present, otherwise fall back to
+-/// aws-lc-rs.
++/// ring.
+ fn resolve_crypto_provider(installed: Option<Arc<CryptoProvider>>) -> Arc<CryptoProvider> {
+     match installed {
+         Some(provider) => {
+@@ -280,9 +280,9 @@
+         None => {
+             event!(
+                 Level::DEBUG,
+-                "No process-installed CryptoProvider; using the aws-lc-rs default"
++                "No process-installed CryptoProvider; using the ring default"
+             );
+-            Arc::new(aws_lc_rs::default_provider())
++            Arc::new(ring::default_provider())
+         }
+     }
+ }
+@@ -501,7 +501,7 @@
+ 
+     #[test]
+     fn resolve_crypto_provider_honours_installed() {
+-        let installed = Arc::new(aws_lc_rs::default_provider());
++        let installed = Arc::new(ring::default_provider());
+         let got = resolve_crypto_provider(Some(installed.clone()));
+         assert!(
+             Arc::ptr_eq(&got, &installed),
+@@ -510,11 +510,11 @@
+     }
+ 
+     #[test]
+-    fn resolve_crypto_provider_falls_back_to_aws_lc_rs() {
++    fn resolve_crypto_provider_falls_back_to_ring() {
+         let got = resolve_crypto_provider(None);
+         assert!(
+             !got.cipher_suites.is_empty(),
+-            "the aws-lc-rs fallback must provide cipher suites"
++            "the ring fallback must provide cipher suites"
+         );
+     }
+ 
+@@ -938,7 +938,7 @@
+         // deliberately absent, so `leaf` cannot chain to anything trusted.
+         roots.add(leaf.clone()).unwrap();
+ 
+-        let provider = Arc::new(aws_lc_rs::default_provider());
++        let provider = Arc::new(ring::default_provider());
+         let verifier = tokio_rustls::rustls::client::WebPkiServerVerifier::builder_with_provider(
+             Arc::new(roots),
+             provider,

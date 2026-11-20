@@ -20,7 +20,7 @@ import type { Members, Structured } from "./rows.ts";
 import type { RowBuilder } from "./row.ts";
 import { decodeCodecs, encodePlan, type Libraries, type Plan } from "./codecs.ts";
 
-export type Dialect = "postgres" | "mysql" | "sqlite";
+export type Dialect = "postgres" | "mysql" | "sqlite" | "sqlserver";
 
 /**
  * pg's Pool, Client and PoolClient; PGlite and its transactions; Neon's Pool and Client;
@@ -168,12 +168,19 @@ export type KnexClient = {
 export type PostgresClient = PgQueryClient | NeonHttpClient | UnsafeClient | CallableClient | SlonikClient | DrizzleDatabase<PgQueryClient | NeonHttpClient | UnsafeClient | CallableClient> | DrizzlePgTransaction | KnexClient;
 /** Every MySQL client `run` takes, or a transaction or connection taken from one. */
 export type MysqlClient = MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | MariadbCallbackClient | BunSqlClient | DrizzleDatabase<MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | BunSqlClient> | DrizzleMysqlTransaction | KnexClient;
+/**
+ * mssql's ConnectionPool and Transaction, which make a request for each statement (`request()`),
+ * and a Request of either: input(name, type, value) and query(text) → { recordset }.
+ */
+export type MssqlClient = { request(): unknown; begin?(...args: any[]): unknown; connect?(...args: any[]): unknown } | { input(name: string, ...args: any[]): unknown; query(text: string): PromiseLike<unknown>; batch(text: string): PromiseLike<unknown> };
+/** Every SQL Server client `run` takes, or a transaction or a request taken from one. */
+export type SqlserverClient = MssqlClient;
 /** Every SQLite client `run` takes, or a transaction taken from one. */
 export type SqliteClient = SyncSqliteClient | SqliteWasmDatabase | SqlJsDatabase | DurableObjectSql | D1Client | LibsqlClient | TursoClient | Sqlite3Client | SqlitePromiseClient | BunSqlClient | DrizzleDatabase<SyncSqliteClient | SqlJsDatabase | DurableObjectStorage | D1Client | LibsqlClient | BunSqlClient> | DrizzleSqliteTransaction | KnexClient;
 
 // Each dialect's clients are one named union, so a hover over `run` reads
 // `run(client: PostgresClient, …)` rather than listing every client's shape.
-export type ClientFor<D extends Dialect> = D extends "postgres" ? PostgresClient : D extends "mysql" ? MysqlClient : SqliteClient;
+export type ClientFor<D extends Dialect> = D extends "postgres" ? PostgresClient : D extends "mysql" ? MysqlClient : D extends "sqlserver" ? SqlserverClient : SqliteClient;
 
 /** The clients `runSync` takes: the synchronous SQLite drivers, and none for Postgres or MySQL. */
 export type SyncClientFor<D extends Dialect> = D extends "sqlite" ? SyncSqliteClient | SqliteWasmDatabase | SqlJsDatabase | DurableObjectSql | DrizzleDatabase<SyncSqliteClient | SqlJsDatabase | DurableObjectStorage> | DrizzleSyncSqliteTransaction : never;
@@ -838,7 +845,8 @@ function dateText(d: Date): string {
  * placeholder's place in it: the engine's compiled text where a build step wrote one into the
  * module. A query defined by hand without it is taken as written: its `sql` is the statement the
  * database receives, in the database's own placeholders (`$1` on Postgres, `?` on MySQL and
- * SQLite), and its `params` the binding order, one name per value. Nothing in the run time reads
+ * SQLite, `@p_1` on SQL Server, whose driver binds by name), and its `params` the binding order,
+ * one name per value. Nothing in the run time reads
  * a placeholder off the text: only the engine's lexer knows every string and comment of each dialect.
  */
 export function compile(query: QueryModule): { text: string; order: readonly string[]; marks: Marks | undefined } {
@@ -849,6 +857,7 @@ export function compile(query: QueryModule): { text: string; order: readonly str
 const accepted: Record<Dialect, string> = {
   postgres: "query(text, values) as on pg, PGlite, Neon, @vercel/postgres and pg-promise; unsafe(text, values) as on postgres.js and Bun.sql; Neon's neon() function; a Slonik pool, connection or transaction; or a Drizzle database or Knex instance over one of them",
   mysql: "execute(text, values) as on mysql2 and PlanetScale; query(text, values) as on mariadb's pool or connection, from its promise or callback API; unsafe(text, values) as on Bun.sql; a mysql2 callback pool or connection; or a Drizzle database or Knex instance over one of them",
+  sqlserver: "an mssql ConnectionPool or Transaction, whose request() runs the statement, or an mssql Request",
   sqlite: "prepare(sql) as on better-sqlite3, node:sqlite, bun:sqlite, Turso's @tursodatabase/database, Cloudflare D1, the oo1 Database of @sqlite.org/sqlite-wasm and sql.js; exec(sql, ...values) as on a Durable Object's ctx.storage.sql; execute({ sql, args }) as on @libsql/client; all(sql, params) as on sqlite3 and sqlite; unsafe(text, values) as on Bun.sql; or a Drizzle database or Knex instance over one of them",
 };
 
