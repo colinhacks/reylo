@@ -1984,7 +1984,9 @@ impl Analyzer<'_> {
             // regexp: a match of NULL text is 0, and a NULL pattern an error.
             "regexp_like" => done("integer", Nulls::Never),
             "regexp_substr" | "regexp_capture" => done("text", Nulls::Always),
-            "regexp_replace" => Fact::new("text", first.non_null),
+            // Where nothing matches, or the replacement is NULL, it hands back its value as it was:
+            // `regexp_replace(123, 'z', 'x')` is the integer 123.
+            "regexp_replace" => Fact { ty: if scalar_name(&first.ty) == Some("text") { first.ty.clone() } else { Ty::Unknown }, non_null: first.non_null },
             _ => Fact::unknown(),
         }
     }
@@ -2781,6 +2783,7 @@ impl Analyzer<'_> {
         if !n.agg && !n.window && self.extras.function(name, n.args.len()).is_some() {
             return Ctx::None;
         }
+        let name = sqlean_alias(name);
         let text = || Ctx::Typed(Some(Fact::new("text", true)));
         let integer = || Ctx::Typed(Some(Fact::new("integer", true)));
         let real = || Ctx::Typed(Some(Fact::new("real", true)));
@@ -2827,8 +2830,8 @@ impl Analyzer<'_> {
             "bm25" if i > 0 => real(),
             // libSQL takes a vector as its text (`'[1,2,3]'`) or its blob: a parameter is the text.
             "vector" | "vector32" | "vector64" | "vector1bit" | "vector8" | "vector16" | "vectorb16" | "vector_extract" | "vector_distance_cos" | "vector_distance_l2" => text(),
-            // sqlean's, by the name each alias stands for ([`sqlean_alias`]).
-            _ => match sqlean_alias(name) {
+            // sqlean's, each alias by the name it stands for ([`sqlean_alias`]).
+            _ => match name {
                 // A count or a length after the text: `left(s, n)`, `lpad(s, n, fill)`,
                 // `split_part(s, sep, n)`, `text_slice(s, from, to)`, `regexp_capture(s, re, group)`.
                 "left" | "right" | "text_left" | "text_right" | "repeat" | "text_repeat" | "lpad" | "rpad" | "text_lpad" | "text_rpad" if i == 1 => integer(),
@@ -4302,8 +4305,12 @@ mod tests {
             // sqlean's tests answer 1 or 0.
             let tests = a("select starts_with(name, 'a') as a, text_contains(name, :part) as b, regexp_like(nick, '^a') as c from people");
             assert_eq!(["a", "b", "c"].map(|c| col(&tests, c)), [("bool", false), ("bool", false), ("bool", false)].map(|(t, n)| (t.to_string(), n)));
-            let re = a("select regexp_substr(name, 'a+') as a, regexp_capture(name, 'b(a+)', 1) as b, regexp_replace(name, 'a', 'b') as c, regexp_replace(nick, 'a', 'b') as d from people where name regexp 'a'");
-            assert_eq!(["a", "b", "c", "d"].map(|c| col(&re, c)), [("text", true), ("text", true), ("text", false), ("text", true)].map(|(t, n)| (t.to_string(), n)));
+            // `regexp_replace` hands back a value it changes nothing in as it was: an integer stays one.
+            let re = a("select regexp_substr(name, 'a+') as a, regexp_capture(name, 'b(a+)', 1) as b, regexp_replace(name, 'a', 'b') as c, regexp_replace(nick, 'a', 'b') as d, regexp_replace(id, 'z', 'x') as e from people where name regexp 'a'");
+            assert_eq!(["a", "b", "c", "d", "e"].map(|c| col(&re, c)), [("text", true), ("text", true), ("text", false), ("text", true), ("unknown", false)].map(|(t, n)| (t.to_string(), n)));
+            // An alias takes the parameter types of the function it stands for.
+            let aliased = a("select math_floor(:x) as a, fuzzy_soundex(:s) as b, stats_perc(score, :p) as c from people");
+            assert_eq!((param(&aliased, "x"), param(&aliased, "s"), param(&aliased, "p")), ("real".into(), "text".into(), "real".into()));
             // `math_floor` is `floor`, read by SQLite's own rules, which sqlean's keep.
             let math = a("select math_floor(score) as a, math_sqrt(score) as b, math_pi() as c from people");
             assert_eq!(["a", "b", "c"].map(|c| col(&math, c)), [("real", false), ("real", true), ("real", false)].map(|(t, n)| (t.to_string(), n)));
