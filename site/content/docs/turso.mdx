@@ -125,6 +125,7 @@ steps:
 - From code, pass the same URL: `migrate({ url })` ([API](/migrate/docs#api)).
 - Shadow databases are in memory, on libSQL's own engine as Turso Cloud runs it: SQLite 3.47.0, libSQL's SQL, and the functions Turso Cloud adds, such as `floor`, `percentile`, `uuid4` and `regexp_like`.
 - Migrations can use libSQL's own SQL, such as a vector index (`libsql_vector_idx`) or `alter table … alter column`. When your migrations or `schema.sql` do, `reylo migrate dev` and every other command open your local file on libSQL's engine too.
+- Tables named `__turso_internal_…` belong to Turso's engine, which keeps each `AUTOINCREMENT` table's counter in one. Reylo leaves them out of `schema.sql` and every plan, and keeps them in step when a table is dropped, renamed or rebuilt.
 - Each migration runs in one transaction with its history row. Two deploys on one machine take turns; two on different machines at once don't, and one of them fails, changing nothing.
 
 ## SQLite version

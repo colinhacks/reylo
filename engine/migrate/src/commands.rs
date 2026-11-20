@@ -697,6 +697,7 @@ async fn run_once(db: &mut Db, m: &Migration, record: bool) -> Result<(), Ran> {
             if !broken.is_empty() {
                 return Err(Ran::Failed(Error(format!("{} rows break a foreign key after this migration", broken.len()))));
             }
+            crate::catalog::keep_turso_sequences(db).await?;
         }
         if record {
             insert_row(db, m, true, Some(PENDING)).await?;
@@ -2253,7 +2254,8 @@ async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
         // vector index's are libSQL's: deleting from them directly breaks it.
         Dialect::Sqlite => db
             .rows(&format!(
-                "select name as n from pragma_table_list where schema = 'main' and type in ('table', 'virtual') and name not like 'sqlite_%' and name <> '{HISTORY_TABLE}' and {}",
+                "select name as n from pragma_table_list where schema = 'main' and type in ('table', 'virtual') and name not like 'sqlite_%' and name <> '{HISTORY_TABLE}' and name {} and {}",
+                crate::catalog::NOT_TURSO_OWN,
                 crate::catalog::NOT_LIBSQL_VECTOR_OWN
             ))
             .await?
@@ -2318,7 +2320,9 @@ async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
             sql.push_str(&after);
             let has_sequence = db.rows("select count(*) > 0 as ok from sqlite_schema where name = 'sqlite_sequence'").await?.first().is_some_and(|r| r.flag("ok"));
             let reset = if has_sequence { "delete from sqlite_sequence;" } else { "" };
-            let result = db.script(&format!("begin; {sql} {reset} commit;")).await;
+            let turso = crate::catalog::holds_turso_tables(db).await?;
+            let restart = crate::catalog::turso_sequences(db, turso, true).await?;
+            let result = db.script(&format!("begin; {sql} {reset} {restart} commit;")).await;
             if result.is_err() {
                 let _ = db.exec("rollback").await;
             }
@@ -2947,6 +2951,9 @@ async fn reset_on(db: &mut Db, server: &mut Server, opts: &Options, log: Log<'_>
     if !problems.is_empty() {
         return Ok(refuse(&problems, log));
     }
+    // Emptied, a file Turso's engine wrote holds none of its tables until the migrations make the
+    // tables again, each with its sequence.
+    let turso = crate::catalog::holds_turso_tables(db).await?;
     match emptied(db, server, opts, log).await? {
         0 => {}
         code => return Ok(code),
@@ -2955,6 +2962,7 @@ async fn reset_on(db: &mut Db, server: &mut Server, opts: &Options, log: Log<'_>
         0 => {}
         code => return Ok(code),
     }
+    crate::catalog::keep_turso_sequences_as(db, turso).await?;
     let ran = read_history(db).await.map(|h| h.iter().filter(|r| r.applied).count()).unwrap_or(0);
     if ran > 0 {
         log(&format!("{} Rebuilt from {ran} migration{}", paint("green", "✓"), if ran == 1 { "" } else { "s" }));
@@ -4330,9 +4338,10 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             let rows = db
                 .rows(&format!(
                     "select sql from sqlite_schema where sql is not null and name not like 'sqlite_%' and tbl_name <> '{HISTORY_TABLE}'
-                      and name not in (select name from pragma_table_list where type = 'shadow') and {}
+                      and name not in (select name from pragma_table_list where type = 'shadow') and name {turso} and tbl_name {turso} and {}
                     order by case type when 'table' then 0 when 'index' then 1 when 'view' then 2 else 3 end, rowid",
-                    crate::catalog::NOT_LIBSQL_VECTOR_OWN
+                    crate::catalog::NOT_LIBSQL_VECTOR_OWN,
+                    turso = crate::catalog::NOT_TURSO_OWN
                 ))
                 .await?;
             Ok(format!("{}\n", rows.iter().map(|r| format!("{};", r.text("sql"))).collect::<Vec<_>>().join("\n\n")))
@@ -4535,6 +4544,7 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
         if d == Dialect::Sqlite && !db.rows("pragma foreign_key_check").await?.is_empty() {
             return Err(Error("rows would break a foreign key".into()));
         }
+        crate::catalog::keep_turso_sequences(db).await?;
         let now = crate::catalog::without_comments(&crate::catalog::without_extra_children(&catalog(db).await?, expect));
         if now != expect {
             return Ok(Err(differs(&now)));
@@ -4597,6 +4607,7 @@ async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String
         if d == Dialect::Sqlite && !db.rows("pragma foreign_key_check").await?.is_empty() {
             return Err(Error("rows would break a foreign key".into()));
         }
+        crate::catalog::keep_turso_sequences(db).await?;
         let now = crate::catalog::without_comments(&crate::catalog::without_extra_children(&catalog(db).await?, expect));
         if now != expect {
             return Ok(Err(Unreached::Differs(describe_diff("this database", &now, "the target", expect))));
@@ -5723,7 +5734,9 @@ pub async fn run_sql(opts: &Options, items: &[(String, String)], log: Log<'_>) -
             }
         }
     }
+    let kept = if code == 0 { crate::catalog::keep_turso_sequences(&mut db).await } else { Ok(()) };
     db.close().await;
+    kept?;
     Ok(code)
 }
 
