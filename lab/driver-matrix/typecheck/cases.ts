@@ -954,3 +954,6 @@ declare const c127: SqlJs.Database; // sql.js (@types/sql.js 1.4.11) Database
 /*@750*/ pgQ.run(c127, { id: 1 });
 /*@751*/ myQ.run(c127, { id: 1 });
 /*@752*/ sqQ.run(c127, { id: 1 });
+/*@753*/ { const k: "promise" = kind(sqQ.run(c127, { id: 1 })); void k; }
+/*@754*/ { const k: "promise" = kind(sqQ.with(c127)({ id: 1 })); void k; }
+/*@755*/ { const k: "value" = kind(sqQ.runSync(c127, { id: 1 })); void k; }

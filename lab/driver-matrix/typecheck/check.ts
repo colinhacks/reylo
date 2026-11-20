@@ -185,7 +185,7 @@ sq("D1 (@cloudflare/workers-types 5.20260929.1)", "D1DatabaseSession (withSessio
 sq("@sqlite.org/sqlite-wasm@3.54.1-build1", "oo1.DB", "SqliteWasmDb", true);
 sq("@sqlite.org/sqlite-wasm@3.54.1-build1", "oo1.OpfsDb", "OpfsDatabase", true);
 sq("@sqlite.org/sqlite-wasm@3.54.1-build1", "OpfsSAHPoolDb (installOpfsSAHPoolVfs())", "OpfsSAHPoolDatabase", true);
-entries.push({ pkg: "sql.js (@types/sql.js 1.4.11)", shape: "Database", type: "SqlJs.Database", accepts: [], note: "run() refuses it (its errors carry no code, and it binds a BigInt as text), so every dialect should reject it" });
+sq("sql.js (@types/sql.js 1.4.11)", "Database", "SqlJs.Database", true);
 
 // ---------------------------------------------------------------------------------------------
 // Generate cases.ts
