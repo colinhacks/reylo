@@ -572,7 +572,7 @@ pub fn escapes_shadow(statement: &Statement, dialect: Dialect) -> Option<String>
                 if name(t.get(at)) && t.get(at + 1).is_some_and(|d| d.text == ".") && name(t.get(at + 2)) {
                     return Some(format!("it names the database {}: in a shadow it would reach that database itself, so leave names unqualified", t[at].text));
                 }
-                if let Some(database) = t.get(at).and_then(qualified_by_digits) {
+                if let Some(database) = qualified_at(t, at) {
                     return Some(format!("it names the database {database}: in a shadow it would reach that database itself, so leave names unqualified"));
                 }
             }
@@ -618,17 +618,33 @@ fn mysql_grant_reach(words: &[String], statement: &Statement) -> Option<String> 
     if t.get(at + 1).is_some_and(|d| d.text == ".") {
         return Some(format!("it names the database {}: in a shadow it would reach that database itself, so leave names unqualified", t[at].text));
     }
-    if let Some(database) = t.get(at).and_then(qualified_by_digits) {
+    if let Some(database) = qualified_at(t, at) {
         return Some(format!("it names the database {database}: in a shadow it would reach that database itself, so leave names unqualified"));
     }
     None
 }
 
-/// The database a qualified name starting with a digit names (`123app.users`, `123app.*`), which
-/// the lexer reads as one number: MySQL takes a name of digits and letters as a name.
-fn qualified_by_digits(t: &Token) -> Option<&str> {
-    let (database, _) = t.text.split_once('.').filter(|_| t.kind == TokenKind::Number)?;
-    database.bytes().any(|b| b.is_ascii_alphabetic() || b == b'_' || b == b'$').then_some(database)
+/// The database the name written from token `at` names, where it is qualified: the name is the
+/// tokens side by side from there, since one MySQL reads as a name may lex as several (`123app`
+/// as a number, `123é` as a number and a word), and a dot between them outside backticks
+/// qualifies it.
+fn qualified_at(t: &[Token], at: usize) -> Option<String> {
+    let mut text = String::new();
+    for k in at..t.len() {
+        if (k > at && t[k - 1].end != t[k].start) || matches!(t[k].text.as_str(), "(" | ")" | "," | ";") {
+            break;
+        }
+        text.push_str(&t[k].text);
+    }
+    let mut quoted = false;
+    for (i, c) in text.char_indices() {
+        match c {
+            '`' => quoted = !quoted,
+            '.' if !quoted && i > 0 => return Some(text[..i].to_string()),
+            _ => {}
+        }
+    }
+    None
 }
 
 re!(DATA, r"^(INSERT|UPDATE|DELETE|MERGE|COPY|CALL|DO|SELECT|WITH|TRUNCATE|REPLACE|LOAD)\b");
@@ -792,7 +808,10 @@ mod tests {
         assert!(shadow_problem("grant insert on 123app.users to 'reader'@'%'", Dialect::Mysql).unwrap().contains("names the database 123app"));
         assert!(shadow_problem("revoke select on 123app.* from 'reader'@'%'", Dialect::Mysql).is_some());
         assert!(shadow_problem("create table 123app.users (id int)", Dialect::Mysql).unwrap().contains("names the database 123app"));
-        assert_eq!(shadow_problem("grant select on 123users to 'reader'@'%'; select 1.5e3, 2.5 from t", Dialect::Mysql), None);
+        assert!(shadow_problem("grant insert on 123é.users to 'reader'@'%'", Dialect::Mysql).unwrap().contains("names the database 123é"));
+        assert!(shadow_problem("grant insert on `app`.`users` to 'reader'@'%'", Dialect::Mysql).is_some());
+        assert!(shadow_problem("insert into 123é.t values (1)", Dialect::Mysql).is_some());
+        assert_eq!(shadow_problem("grant select on 123users to 'reader'@'%'; grant select on `a.b` to 'reader'@'%'; select 1.5e3, 2.5 from t; insert into t(a) values (1.5); call p(1.5)", Dialect::Mysql), None);
         assert_eq!(shadow_problem("grant select, update (email) on users to 'reader'@'%' with grant option; grant execute on procedure p to reader; revoke select on table `users` from 'reader'@'%'", Dialect::Mysql), None);
         assert!(grants_on_objects("create table t (id int); grant select on t to 'reader'@'%'"));
         assert!(!grants_on_objects("create table grants (id int); insert into grants values (1)"));

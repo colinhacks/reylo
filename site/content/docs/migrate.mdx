@@ -279,7 +279,7 @@ drop policy docs_read on docs;
 create policy docs_read on docs for select to reader, writer using (owner_name = current_user or body is null);
 ```
 
-Text search configurations, security labels and a few other kinds are compared by name only, or not at all: write their changes by hand.
+Text search configurations, security labels and a few other kinds are compared by name only, or not at all: write them, and their changes, by hand. On MySQL, so is a routine, trigger or event made under another `sql_mode` than the server's.
 
 ## Schemaless mode
 

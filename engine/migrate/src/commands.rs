@@ -3863,7 +3863,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
         }
         shadows.taint(c);
         let unread = crate::catalog::unmodeled(shadows.db(a), true).await?;
-        unmodeled_note("Reylo doesn't fully compare these in schema.sql, so a migration can leave a change to them out: check them by hand", &unread, log);
+        unmodeled_note("Reylo doesn't fully compare these in schema.sql, so a migration can leave them, or a change to them, out: check them by hand", &unread, log);
         let mut target = match crate::diff::read(shadows.db(a)).await {
             Ok(schema) => schema,
             Err(e) => {
@@ -4374,8 +4374,8 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 let row = db.rows(&format!("show create trigger `{}`", r.text("n"))).await?;
                 out.push(format!("{};", DEFINER.replace(row.first().map(|x| x.text("SQL Original Statement")).unwrap_or_default(), "")));
             }
-            // Every event, a one-time event until it fires.
-            for r in db.rows("select event_name as n from information_schema.events where event_schema = database()").await? {
+            // Recurring events, as the catalog reads them: a one-time event is gone once it fires.
+            for r in db.rows("select event_name as n from information_schema.events where event_schema = database() and event_type <> 'ONE TIME'").await? {
                 let row = db.rows(&format!("show create event `{}`", r.text("n"))).await?;
                 out.push(format!("{};", DEFINER.replace(row.first().map(|x| x.text("Create Event")).unwrap_or_default(), "")));
             }
@@ -5547,7 +5547,7 @@ async fn db_push_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Optio
     }
     let wanted = catalog(shadows.db(s_lane)).await?;
     let now = crate::catalog::without_extra_children(&catalog(db).await?, &wanted);
-    unmodeled_note("Reylo doesn't fully compare these in schema.sql, so a push can leave a change to them out: check them by hand", &crate::catalog::unmodeled(shadows.db(s_lane), true).await?, log);
+    unmodeled_note("Reylo doesn't fully compare these in schema.sql, so a push can leave them, or a change to them, out: check them by hand", &crate::catalog::unmodeled(shadows.db(s_lane), true).await?, log);
     if now != wanted {
         let target = read_target(shadows.db(s_lane), Some(schema_sql)).await?;
         let counts = table_rows(db).await?;

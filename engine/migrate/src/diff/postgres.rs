@@ -301,7 +301,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         let owner = s.objects.contains_key(&ext).then_some(ext);
         let parts: Vec<serde_json::Value> = serde_json::from_str(r.text("privileges")).unwrap_or_default();
         let privileges = serde_json::json!([parts.first(), parts.get(1), null, null, "current_user"]).to_string();
+        let before: BTreeSet<String> = s.objects.keys().cloned().collect();
         grants_of(&mut s, &privileges, r.text("identity"), owner.as_deref(), crate::catalog::privilege_target(r.text("type")));
+        for o in s.objects.values_mut().filter(|o| !before.contains(&o.id)) {
+            o.extra.push(super::ENVIRONMENTS.to_string());
+        }
     }
 
     // A trusted language's comment (plpgsql's, sql's), which every database has from its making.
@@ -701,6 +705,9 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                   and (sc.relnamespace <> c.relnamespace or sc.relname <> left(c.relname || '_' || a.attname || '_seq', 63))) as identity_name,
               case when a.attcollation <> t.typcollation then (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = a.attcollation) end as collation,
               col_description(a.attrelid, a.attnum) as comment, {} as nn_valid, {} as acl,
+              (select format('%I.%I', sn.nspname, sc.relname) || chr(31) || case when sc.relpersistence <> c.relpersistence then sc.relpersistence::text else '' end || chr(31) || coalesce(obj_description(sc.oid, 'pg_class'), '')
+                from pg_depend sd join pg_class sc on sc.oid = sd.objid join pg_namespace sn on sn.oid = sc.relnamespace
+                where sd.classid = 'pg_class'::regclass and sd.refclassid = 'pg_class'::regclass and sd.refobjid = a.attrelid and sd.refobjsubid = a.attnum and sd.deptype = 'i' and a.attidentity <> '') as identity_sequence,
               case when a.attstorage <> t.typstorage then case a.attstorage when 'p' then 'plain' when 'e' then 'external' when 'm' then 'main' else 'extended' end end as storage,
               case t.typstorage when 'p' then 'plain' when 'e' then 'external' when 'm' then 'main' else 'extended' end as type_storage,
               case a.attcompression when 'p' then 'pglz' when 'l' then 'lz4' end as compression,
@@ -919,7 +926,16 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             // A default beside an identity (a child's, of its parent's sequence), which the column's
             // statements can't write: dropped where the target has none.
             let beside = !c.text("identity").is_empty() && c.get("def").is_some();
-            let def = format!("{}{}", if unvalidated { format!("{full} not valid") } else { full.clone() }, if beside { format!("{CALLS}(a default beside its identity)") } else { String::new() });
+            // A not null of its own named otherwise than Postgres would name it (`constraint
+            // a_required not null`): the name is no part of the definition the column is made from,
+            // but a change of it is one.
+            let named = c.get("nn_name").filter(|n| matches!(kind, "r" | "p") && !c.flag("inherited") && !generated_not_null(n, &name, c.text("name")));
+            let def = format!(
+                "{}{}{}",
+                if unvalidated { format!("{full} not valid") } else { full.clone() },
+                if beside { format!("{CALLS}(a default beside its identity)") } else { String::new() },
+                named.map(|n| format!("{NOT_NULL_NAMED}{n})")).unwrap_or_default()
+            );
             if c.flag("local") {
                 let caution = (c.flag("notnull") && c.get("def").is_none() && c.text("identity").is_empty() && kind != "c")
                     .then(|| format!("{} is not null with no default, so adding it fails on a table that has rows: give it a default, or add it nullable, fill it, then set not null", c.text("name")));
@@ -968,6 +984,36 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     change: Change::Alter { blocks: true },
                     ..Object::default()
                 });
+                // Its identity's sequence, logged otherwise than its table or commented, which the
+                // identity makes as its table is: set on it after.
+                if let Some((sequence, rest)) = c.get("identity_sequence").and_then(|v| v.split_once('\u{1f}')) {
+                    let (persistence, comment) = rest.split_once('\u{1f}').unwrap_or((rest, ""));
+                    let owner = format!("column {name}.{}", c.text("name"));
+                    if !persistence.is_empty() {
+                        let (now, back) = if persistence == "u" { ("unlogged", "logged") } else { ("logged", "unlogged") };
+                        s.add(Object {
+                            id: format!("persistence identity {owner}"),
+                            kind: Some(Kind::ColumnSetting),
+                            owner: Some(owner.clone()),
+                            def: now.into(),
+                            create: vec![format!("alter sequence {sequence} set {now}")],
+                            drop: vec![format!("alter sequence {sequence} set {back}")],
+                            ..Object::default()
+                        });
+                    }
+                    if !comment.is_empty() {
+                        s.add(Object {
+                            id: format!("comment identity {owner}"),
+                            kind: Some(Kind::Comment),
+                            owner: Some(owner.clone()),
+                            def: comment.to_string(),
+                            create: vec![format!("comment on sequence {sequence} is {}", literal(comment))],
+                            drop: vec![format!("comment on sequence {sequence} is null")],
+                            change: Change::Alter { blocks: false },
+                            ..Object::default()
+                        });
+                    }
+                }
             } else if r.get("parent").is_some() && !partition {
                 // A column a table only inherits is its parents', made, changed and dropped with
                 // them: an object with no statement of its own, so that a table that starts or stops
@@ -3048,6 +3094,14 @@ fn names_in(list: &str) -> Vec<String> {
     out.into_iter().filter(|n| !n.is_empty()).collect()
 }
 
+/// Whether `name` is one Postgres gives a not null it makes on `table`'s `column`: its name for it,
+/// or with a number after where another constraint of the schema held that name.
+fn generated_not_null(name: &str, table: &str, column: &str) -> bool {
+    let name = unquoted(name);
+    let made = default_not_null(table, column);
+    name.strip_prefix(made.as_str()).is_some_and(|rest| rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// The name Postgres gives a not null it makes on a table's column, as it holds it.
 fn default_not_null(table: &str, column: &str) -> String {
     let name = format!("{}_{}_not_null", unquoted(split_last(table).1), unquoted(column));
@@ -3327,6 +3381,9 @@ fn around(from: &Object, to: &Object) -> (Vec<String>, Vec<String>) {
 
 /// What follows an object's definition to name the functions it calls.
 const CALLS: &str = "\n-- calls ";
+/// How a column's definition says the name of a not null of its own named otherwise than Postgres
+/// would name it, past what `bare` reads.
+const NOT_NULL_NAMED: &str = "\n-- calls (its not null named ";
 
 /// A definition without the functions it calls.
 pub(super) fn bare(def: &str) -> &str {
@@ -4366,12 +4423,21 @@ impl Alterer for PostgresAlterer {
                     out.push(format!("alter table {table} add constraint {nn} not null {name} not valid"));
                 } else if b.not_null && (!a.not_null || a.no_inherit != b.no_inherit || (a.not_valid && !b.not_valid)) && !not_null_done {
                     // A not null the target names otherwise than Postgres would is added under its name.
-                    let named = to.extra.iter().find_map(|l| l.strip_prefix("not null name ")).filter(|n| !a.not_null && unquoted(n) != default_not_null(&table, &name));
+                    let named = to.extra.iter().find_map(|l| l.strip_prefix("not null name ")).filter(|n| !a.not_null && !generated_not_null(n, &table, &name));
                     out.push(match named {
                         _ if b.no_inherit => format!("alter table {table} add not null {name} no inherit"),
                         Some(n) => format!("alter table {table} add constraint {n} not null {name}"),
                         None => format!("{at} set not null"),
                     });
+                } else if a.not_null && b.not_null && [from, to].iter().any(|o| o.def.contains(NOT_NULL_NAMED)) {
+                    // One kept under another name, which either names itself (a column's rename and a
+                    // table's joining rename theirs).
+                    let named = |o: &Object| o.extra.iter().find_map(|l| l.strip_prefix("not null name ")).map(String::from);
+                    if let (Some(was), Some(now)) = (named(from), named(to)) {
+                        if was != now {
+                            out.push(format!("alter table {table} rename constraint {was} to {now}"));
+                        }
+                    }
                 }
                 Some(out)
             }

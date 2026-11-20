@@ -70,6 +70,10 @@ pub enum Kind {
     Comment,
 }
 
+/// An `extra` line of an object a live database may have from its environment, which a plan from
+/// it leaves where the target doesn't name it.
+pub const ENVIRONMENTS: &str = "may be the environment's";
+
 /// One object of a schema.
 #[derive(Clone, Debug, Default)]
 pub struct Object {
@@ -772,6 +776,10 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     // A default privilege of the live database the target doesn't name is its environment's (a
     // platform sets its own as it makes a database): left as it is.
     left.extend(from.objects.values().filter(|o| from.live && o.id.starts_with("default privileges ") && !to.objects.contains_key(&o.id)).map(|o| o.id.clone()));
+    // So is a privilege on what an extension made that the target doesn't name: an extension the
+    // environment provides is copied into a shadow as it is made, with none of the privileges the
+    // environment has granted or revoked on it since.
+    left.extend(from.objects.values().filter(|o| from.live && o.extra.iter().any(|l| l == ENVIRONMENTS) && !to.objects.contains_key(&o.id)).map(|o| o.id.clone()));
     // So is an extension of the live database the target doesn't have (one a platform installs, as
     // Supabase's `pgcrypto`), with the schema it is in where the target lacks that too: a plan from a
     // live database never drops one. A migration that means to says so itself.

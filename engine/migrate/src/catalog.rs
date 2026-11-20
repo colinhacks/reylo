@@ -108,6 +108,9 @@ pub fn without_extra_children(live: &[String], reference: &[String]) -> Vec<Stri
     // as it makes a database), as Reylo copies it into every shadow: only one a migration made and
     // the live database lacks is a difference.
     let live: Vec<String> = live.iter().filter(|l| !l.starts_with(DEFAULT_PRIVILEGES) || reference.contains(l)).cloned().collect();
+    // So are the privileges on what an extension made that the reference doesn't have: an
+    // extension the environment provides is copied into a shadow as it is made, without them.
+    let live: Vec<String> = live.into_iter().filter(|l| !l.starts_with(EXTENSION_GRANT) || reference.contains(l)).collect();
     // So is an SQLite file's `user_version` or `application_id` the reference doesn't set: an app
     // may keep its own there.
     let pragma = |l: &str| l.strip_prefix("pragma ").and_then(|r| r.split(' ').next()).map(String::from);
@@ -139,14 +142,17 @@ pub fn without_extra_children(live: &[String], reference: &[String]) -> Vec<Stri
 
 /// `lines` without any partition or inheriting child, which the fingerprint leaves out: one may have
 /// been made at run time, as data, and only a replay can tell. Default privileges are left out of
-/// it too: one may be the environment's, which only a replay against the migrations can tell.
+/// it too, and so are the privileges on what an extension made: one may be the environment's,
+/// which only a replay against the migrations can tell.
 pub fn without_children(lines: &[String]) -> Vec<String> {
     let kids: Vec<String> = children(lines).into_iter().map(|(name, _)| name).collect();
-    lines.iter().filter(|l| !l.starts_with(DEFAULT_PRIVILEGES) && !kids.iter().any(|name| of_table(l, name))).cloned().collect()
+    lines.iter().filter(|l| !l.starts_with(DEFAULT_PRIVILEGES) && !l.starts_with(EXTENSION_GRANT) && !kids.iter().any(|name| of_table(l, name))).cloned().collect()
 }
 
 /// How a default privilege's line begins: the statement that makes it, without its `alter`.
 pub(crate) const DEFAULT_PRIVILEGES: &str = "default privileges ";
+/// How a line of the privileges on what an extension made begins.
+pub(crate) const EXTENSION_GRANT: &str = "extension grant ";
 
 /// `lines` without comments. A migration writes a comment, and two replays compare theirs, but a
 /// live database's is never compared: one added in a dashboard changes nothing the app runs on, so
@@ -650,6 +656,9 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
                 case when coalesce(a.attstattarget, -1) >= 0 then 'statistics=' || a.attstattarget end, 'options=' || (select string_agg(o, ',' order by o) from unnest(a.attoptions) o where left(o, 10) = 'n_distinct')) as settings,
               exists (select 1 from pg_constraint nn where nn.conrelid = c.oid and nn.contype = 'n' and nn.connoinherit and nn.conkey = array[a.attnum]) as noinherit,
               exists (select 1 from pg_constraint nn where nn.conrelid = c.oid and nn.contype = 'n' and not nn.convalidated and nn.conkey = array[a.attnum]) as nn_invalid,
+              (select nn.conname from pg_constraint nn where nn.conrelid = c.oid and nn.contype = 'n' and nn.conislocal and nn.coninhcount = 0 and nn.conkey = array[a.attnum]
+                and not (left(nn.conname, length(left(c.relname || '_' || a.attname || '_not_null', 63))) = left(c.relname || '_' || a.attname || '_not_null', 63)
+                  and substr(nn.conname, length(left(c.relname || '_' || a.attname || '_not_null', 63)) + 1) ~ '^[0-9]*$')) as nn_named,
               (select string_agg(distinct format('%s:%s%s', case when x.grantee = 0 then 'PUBLIC' else pg_get_userbyid(x.grantee) end, x.privilege_type, case when x.is_grantable then '*' else '' end), ',')
                  from aclexplode(a.attacl) x where x.grantee <> c.relowner) as acl
             from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace join pg_type t on t.oid = a.atttypid
@@ -666,9 +675,13 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         let mut parts = vec![format!("column {column} {}", r.text("type"))];
         if r.flag("notnull") {
             parts.push(if r.flag("noinherit") { "not null no inherit".into() } else { "not null".into() });
-            // Postgres 18's not null left unvalidated against the rows.
+            // Postgres 18's not null left unvalidated against the rows, and one named otherwise than
+            // Postgres would name it.
             if r.flag("nn_invalid") {
                 parts.push("not valid".into());
+            }
+            if let Some(n) = r.get("nn_named") {
+                parts.push(format!("named {n}"));
             }
         }
         let options = r.get("identity_options").map(|o| format!(" ({o})")).unwrap_or_default();
@@ -1101,7 +1114,10 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             union all select 'wrapper options ' || format('%I.%I.%I', n.nspname, c.relname, a.attname) || ' ' || array_to_string(a.attfdwoptions, ',') from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace
               where c.relkind = 'f' and a.attnum > 0 and a.attfdwoptions is not null and {ns}
             union all select 'depends ' || o.type || ' ' || o.identity || ' on extension ' || format('%I', x.extname) from pg_depend d join pg_extension x on x.oid = d.refobjid, lateral pg_identify_object(d.classid, d.objid, 0) o
-              where d.deptype = 'x' and d.refclassid = 'pg_extension'::regclass"
+              where d.deptype = 'x' and d.refclassid = 'pg_extension'::regclass
+            union all select 'identity sequence ' || format('%I.%I.%I', n.nspname, tc.relname, a.attname) || ' ' || case sc.relpersistence when 'u' then 'unlogged' else 'logged' end
+            from pg_depend sd join pg_class sc on sc.oid = sd.objid join pg_class tc on tc.oid = sd.refobjid join pg_namespace n on n.oid = tc.relnamespace join pg_attribute a on a.attrelid = tc.oid and a.attnum = sd.refobjsubid
+              where sd.classid = 'pg_class'::regclass and sd.refclassid = 'pg_class'::regclass and sd.deptype = 'i' and sc.relkind = 'S' and sc.relpersistence <> tc.relpersistence and {ns}"
         ))
         .await?
     {
@@ -1109,7 +1125,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     }
     // Privileges granted or revoked on what an extension made, since it made it.
     for r in db.rows(&extension_member_privileges()).await? {
-        lines.push(format!("grant {} {} {}", privilege_target(r.text("type")), r.text("identity"), r.text("privileges")));
+        lines.push(format!("{EXTENSION_GRANT}{} {} {}", privilege_target(r.text("type")), r.text("identity"), r.text("privileges")));
     }
     Ok(lines)
 }
@@ -1242,12 +1258,13 @@ pub async fn unmodeled(db: &mut Db, writes: bool) -> Result<Vec<String>, Error> 
 }
 
 /// What a MySQL database holds that no migration Reylo writes keeps: a routine, trigger or event
-/// made under another sql_mode than the session's, which it runs under (a migration file holds one
-/// statement that commits, so it can't set the mode for it), and an index whose keys are disabled.
+/// made under another sql_mode than the server's (a session's own, as a dump sets one before
+/// each), which it runs under (a migration file holds one statement that commits, so it can't set
+/// the mode for it), and an index whose keys are disabled.
 async fn mysql_unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
-    let sql = "select lower(routine_type) as kind, routine_name as name, sql_mode as mode from information_schema.routines where routine_schema = database() and sql_mode <> @@session.sql_mode
-        union all select 'trigger', trigger_name, sql_mode from information_schema.triggers where trigger_schema = database() and sql_mode <> @@session.sql_mode
-        union all select 'event', event_name, sql_mode from information_schema.events where event_schema = database() and sql_mode <> @@session.sql_mode
+    let sql = "select lower(routine_type) as kind, routine_name as name, sql_mode as mode from information_schema.routines where routine_schema = database() and sql_mode <> @@global.sql_mode
+        union all select 'trigger', trigger_name, sql_mode from information_schema.triggers where trigger_schema = database() and sql_mode <> @@global.sql_mode
+        union all select 'event', event_name, sql_mode from information_schema.events where event_schema = database() and sql_mode <> @@global.sql_mode
         order by 1, 2";
     let mut out: Vec<String> = db.rows(sql).await?.iter().map(|r| format!("{} {}: made under sql_mode '{}', which a migration doesn't set", r.text("kind"), r.text("name"), r.text("mode"))).collect();
     let disabled = "select distinct table_name as t, index_name as i from information_schema.statistics where table_schema = database() and comment = 'disabled' order by 1, 2";
@@ -1470,17 +1487,18 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
         lines.push(format!("trigger {} {} {} on {} order={} {}", r.text("n"), r.text("timing"), r.text("ev"), r.text("t"), r.text("ord"), strip(r.text("body"))));
     }
 
-    // Events, a recurring one without the start the server fills in as each is made, which no two
-    // databases share. A one-time event is there until it fires, when the server drops it, or
-    // disables it, as it was told to: one made after its time is dropped or disabled as it is made.
+    // Recurring events, without the start the server fills in as each is made, which no two
+    // databases share. A one-time event is left out: once it fires, the server drops it, or
+    // disables it, as it was told to, and its time, resolved as it is made, differs between two
+    // replays of one `at current_timestamp + interval 1 day`.
     for r in db
         .rows(
-            "select event_name as n, event_type as type, execute_at as at, interval_value as every, interval_field as unit, ends as ends, on_completion as completion, status as status, event_definition as body, event_comment as comment
-            from information_schema.events where event_schema = database()",
+            "select event_name as n, event_type as type, interval_value as every, interval_field as unit, ends as ends, on_completion as completion, status as status, event_definition as body, event_comment as comment
+            from information_schema.events where event_schema = database() and event_type <> 'ONE TIME'",
         )
         .await?
     {
-        let every = r.get("every").map(|v| format!(" every {v} {}", r.text("unit"))).or_else(|| r.get("at").map(|at| format!(" at {at}"))).unwrap_or_default();
+        let every = r.get("every").map(|v| format!(" every {v} {}", r.text("unit"))).unwrap_or_default();
         let ends = r.get("ends").map(|e| format!(" ends {e}")).unwrap_or_default();
         lines.push(format!("event {} {}{every}{ends} on completion {} {} do {}", r.text("n"), r.text("type").to_lowercase(), r.text("completion").to_lowercase(), r.text("status").to_lowercase(), strip(r.text("body"))));
         if !r.text("comment").is_empty() {
