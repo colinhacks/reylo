@@ -135,7 +135,7 @@ let user = get_user::Query { id: 1 }.run(&db).await?;
 ```
 </Rust>
 
-Each runs a transaction its own way: on a client checked out of the pool with `pg`,<NoRust> and</NoRust> in `db.begin()` with postgres.js ([Drivers](/postgres#drivers))<Rust>, and in `db.begin()` with sqlx ([Rust](/rust#run))</Rust>.
+Each runs a transaction its own way: on a client checked out of the pool with `pg`,<NoRust> and</NoRust> in `db.begin()` with postgres.js ([Drivers](/postgres#drivers))<Rust>, and in `db.begin()` with sqlx ([Rust](/rust#transactions))</Rust>.
 
 ## Branches
 

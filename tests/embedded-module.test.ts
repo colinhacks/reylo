@@ -75,7 +75,7 @@ test("a file that isn't a migration, or a schema.sql the lock's checksum isn't o
   writeFileSync(schema, `-- the users\n${text.replace(/ /g, "  ")}`);
   assert.deepEqual(await names(root), [users]);
   writeFileSync(schema, text.replace("name text not null", "name text not null, bio text"));
-  assert.match((await projectMigrations(root)).error ?? "", /^Changes in reylo\/schema\.sql since the lock was written: if the schema changed, write its migration and run it/);
+  assert.match((await projectMigrations(root)).error ?? "", /^The schema changed since the lock was written, in reylo\/schema\.sql: if the schema changed, write its migration and run it/);
   writeFileSync(schema, text);
   writeFileSync(join(root, "reylo", "migrations", "notes.sql"), "select 1;\n");
   const stray = "Not a migration: notes.sql, in reylo/migrations, where a file is init.sql or <YYYYMMDDHHMMSS>_<name>.sql, the name in a-z, 0-9 and _";
@@ -95,8 +95,8 @@ test("a lock with git's conflict markers, or one that lists a file the folder la
   const lock = join(root, "reylo", "reylo.lock");
   const text = readFileSync(lock, "utf8");
   writeFileSync(lock, text.replace(/^migrations:\n/m, "migrations:\n<<<<<<< HEAD\n  - 20261110000000_a.sql 0123abcd\n=======\n  - 20261110000000_b.sql 4567cdef\n>>>>>>> branch\n"));
-  assert.match((await projectMigrations(root)).error ?? "", /^Merge conflict markers in reylo\/reylo\.lock: keep main's lines, then run reylo migrate dev/);
-  assert.match((await embeddedModule(root)).code, /^export const embedded = \{"error":"Merge conflict markers in reylo\/reylo\.lock/);
+  assert.match((await projectMigrations(root)).error ?? "", /^The lock has a merge conflict, in reylo\/reylo\.lock: keep main's lines, then run reylo migrate dev/);
+  assert.match((await embeddedModule(root)).code, /^export const embedded = \{"error":"The lock has a merge conflict, in reylo\/reylo\.lock/);
   writeFileSync(lock, text);
   renameSync(join(root, "reylo", "migrations", users!), join(root, "aside.sql"));
   assert.match((await projectMigrations(root)).error ?? "", new RegExp(`^The lock lists ${users!.replace(".", "\\.")}, which reylo/migrations doesn't have: write it back from a database that ran it, with reylo migrate history pull`));
