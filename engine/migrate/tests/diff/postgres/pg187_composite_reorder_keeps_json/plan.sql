@@ -5,5 +5,5 @@ alter type item drop attribute a;
 alter type item add attribute doc json;
 alter type item add attribute a integer;
 alter type item add attribute b text;
-alter table t alter column v type item using case when v is null then null else row((v).doc::json, (v).a::integer, null::text)::item end;
+alter table t alter column v type item using case when num_nulls(v) = 1 then null else row((v).doc::json, (v).a::integer, null::text)::item end;
 drop type item__old;

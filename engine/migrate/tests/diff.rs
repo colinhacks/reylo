@@ -66,7 +66,16 @@ async fn values(db: &mut Db, before: Option<&[Rows]>, renamed: &std::collections
         if columns.is_empty() {
             continue;
         }
-        let select = columns.iter().enumerate().map(|(k, ((_, ty), now))| format!("({now}::{ty})::text as v{k}")).collect::<Vec<_>>().join(", ");
+        // A value the plan made an array holds it as its one element, and a null stays null.
+        let select = columns
+            .iter()
+            .enumerate()
+            .map(|(k, ((_, ty), now))| match here.iter().find(|(n, _)| n == now) {
+                Some((_, is)) if is.ends_with("[]") && !ty.ends_with("[]") => format!("case when {now} is null then null when array_length({now}, 1) = 1 and {now}[1] is not null then ({now}[1]::{ty})::text else 'array ' || {now}::text end as v{k}"),
+                _ => format!("({now}::{ty})::text as v{k}"),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         // A column whose type has no cast back to the one it had (an enum made another) is read as text.
         let as_text = columns.iter().enumerate().map(|(k, (_, now))| format!("{now}::text as v{k}")).collect::<Vec<_>>().join(", ");
         let read = match db.rows(&format!("select {select} from only {table}")).await {

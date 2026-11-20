@@ -2915,7 +2915,7 @@ mod on_mysql {
     use super::*;
     on!(Mysql, a_comment_made_by_hand_stops_nothing, a_comment_in_schema_sql_is_written, a_role_that_cannot_create_databases_is_told_of_shadow_url);
 }
-on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, libsqls_own_sql_migrates, a_libsql_history_replays_on_a_branch_without_it);
+on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, libsqls_own_sql_migrates, a_libsql_history_replays_on_a_branch_without_it, a_table_renamed_keeps_its_rows_key_and_counter);
 mod on_turso {
     use super::*;
     on!(Turso, a_virtual_tables_own_tables_are_not_in_the_dump, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other, a_vector_indexs_own_tables_are_libsqls, libsqls_own_sql_migrates, a_libsql_history_replays_on_a_branch_without_it);
@@ -2932,6 +2932,7 @@ on!(
     a_rename_to_a_name_that_needs_quotes,
     an_index_left_invalid_by_a_cut_off_build_is_dropped_and_built_again,
     a_renamed_tables_sequence_keeps_counting,
+    a_table_renamed_as_it_gains_a_column_keeps_its_rows_and_index,
     an_enum_label_a_partition_uses_is_committed_first,
     a_foreign_table_is_renamed_as_stated,
     a_partitioned_table_is_renamed_with_its_partitions,
@@ -4132,6 +4133,33 @@ mod adversarial {
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
 
+    pub async fn a_table_renamed_as_it_gains_a_column_keeps_its_rows_and_index(mut p: P) {
+        let schema = "create table employee (id int primary key, name text, title text); create index on employee (name);";
+        p.schema(schema);
+        p.file("20261027100000_employee.sql", schema);
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into employee values (1, 'a', 'x')").await;
+        // Most of its columns by name: taken for the same table, but with a column added, the person
+        // says which it is.
+        p.schema("create table staff (id int primary key, name text, title text, status text default 'active'); create index on staff (name);");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "staff", &Default::default(), log).await).await, 1, "{}", p.peek());
+        assert!(p.output().contains("--rename employee=staff"));
+        // Renamed, with its unnamed index, then the new column added.
+        let choices = reylo_migrate::Choices { drop: vec![], rename: vec![("employee".into(), "staff".into())], ..Default::default() };
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "staff", &choices, log).await).await, 0, "{}", p.peek());
+        let made = p.files().into_iter().find(|f| f.ends_with("_staff.sql")).unwrap();
+        let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
+        for part in ["alter table employee rename to staff", "alter index employee_name_idx rename to staff_name_idx", "add column status"] {
+            assert!(sql.contains(part), "{part} in:\n{sql}");
+        }
+        assert!(!sql.lines().any(|l| !l.starts_with("--") && l.contains("drop table")), "{sql}");
+        p.output();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select name from staff where id = 1").await[0].text("name"), "a");
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
     pub async fn a_foreign_table_is_renamed_as_stated(mut p: P) {
         let server = "create foreign data wrapper madv_w; create server madv_s foreign data wrapper madv_w;";
         p.file("20261027100000_users.sql", &format!("{server} create foreign table users (id int, email text) server madv_s;"));
@@ -4204,12 +4232,12 @@ mod adversarial {
     }
 
     pub async fn partitions_made_at_run_time_are_data(mut p: P) {
-        let schema = "create table events (id int, at date) partition by range (at); create table events_2024 partition of events for values from ('2024-01-01') to ('2025-01-01'); create table metrics (id int, v int);";
+        let schema = "create table events (id int, at date) partition by range (at); create table events_2024 partition of events for values from ('2024-01-01') to ('2025-01-01'); create table metrics (id int, v int); create table tagged (tag text);";
         p.schema(schema);
         p.file("20261027100000_events.sql", schema);
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         // pg_partman makes next year's partition, and TimescaleDB-like children inherit a table.
-        p.exec("create table events_2025 partition of events for values from ('2025-01-01') to ('2026-01-01'); insert into events values (1, '2025-03-01'); create table metrics_c1 () inherits (metrics); insert into metrics_c1 values (1, 2)").await;
+        p.exec("create table events_2025 partition of events for values from ('2025-01-01') to ('2026-01-01'); insert into events values (1, '2025-03-01'); create table metrics_c1 () inherits (metrics); insert into metrics_c1 values (1, 2); create table metrics_c2 () inherits (metrics, tagged); insert into metrics_c2 values (1, 2, 'x')").await;
         p.output();
         // The fingerprint leaves children out, so nothing has changed for deploy, or for check.
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
@@ -4219,9 +4247,10 @@ mod adversarial {
         // Development keeps them too, with their rows.
         assert_eq!(p.dev_then_push().await, 0, "{}", p.peek());
         let out = p.output();
-        assert!(!out.contains("events_2025") && !out.contains("metrics_c1"), "{out}");
+        assert!(!out.contains("events_2025") && !out.contains("metrics_c1") && !out.contains("metrics_c2"), "{out}");
         assert_eq!(p.rows("select * from events_2025").await.len(), 1);
         assert_eq!(p.rows("select * from metrics_c1").await.len(), 1);
+        assert_eq!(p.rows("select * from metrics_c2").await.len(), 1);
         // A partition a migration made, dropped at run time (a retention job's), is data too.
         p.exec("drop table events_2024").await;
         p.output();
@@ -4378,6 +4407,25 @@ mod adversarial {
         p.output();
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_eq!(p.rows("select * from `order`").await.len(), 0);
+    }
+
+    pub async fn a_table_renamed_keeps_its_rows_key_and_counter(mut p: P) {
+        let tables = |name: &str| format!("create table profiles (id integer primary key autoincrement not null); create table `{name}` (id integer primary key autoincrement not null, profile_id integer, foreign key (id) references profiles (id));");
+        p.schema(&tables("table"));
+        p.file("20261027100000_t.sql", &tables("table"));
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into profiles default values; insert into profiles default values; insert into `table` (id, profile_id) values (1, 1), (2, 2)").await;
+        // The same table under another name: renamed, its rows, key and counter kept.
+        p.schema(&tables("table1"));
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "table1", &Default::default(), log).await).await, 0, "{}", p.peek());
+        let made = p.files().into_iter().find(|f| f.ends_with("_table1.sql")).unwrap();
+        let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
+        assert!(sql.contains("rename to") && !sql.lines().any(|l| !l.starts_with("--") && l.contains("drop table")), "{sql}");
+        p.output();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select count(*) as n from table1").await[0].text("n"), "2");
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
 
     pub async fn a_rebuild_keeps_every_row_where_foreign_keys_are_on(mut p: P) {

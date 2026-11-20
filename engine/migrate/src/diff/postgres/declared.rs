@@ -476,7 +476,15 @@ impl Reader<'_> {
                                 self.column(&table, &relname, d);
                             }
                         }
-                        Ok(At::AtColumnDefault) => self.expression(format!("default {column}"), def),
+                        Ok(At::AtColumnDefault) => {
+                            // Set on a table and the tables that inherit it (no `only`), it reaches
+                            // their columns of the name too, over the text they declared.
+                            if a.relation.as_ref().is_some_and(|r| r.inh) {
+                                let suffix = format!(".{}", quote_ident(&cmd.name));
+                                self.out.expressions.retain(|k, _| !(k.starts_with("default column ") && k.ends_with(&suffix) && *k != format!("default {column}")));
+                            }
+                            self.expression(format!("default {column}"), def)
+                        }
                         Ok(At::AtSetExpression) => self.expression(format!("generated {column}"), def),
                         Ok(At::AtDropExpression) => self.expression(format!("generated {column}"), None),
                         Ok(At::AtAddConstraint) => {

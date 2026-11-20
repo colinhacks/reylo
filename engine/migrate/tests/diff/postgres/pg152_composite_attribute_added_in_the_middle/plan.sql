@@ -4,7 +4,7 @@ alter table t alter column x type p__old using x::text::p__old;
 alter type p drop attribute c;
 alter type p add attribute b integer;
 alter type p add attribute c text;
-alter table t alter column x type p using case when x is null then null else row((x).a::integer, null::integer, (x).c::text)::p end;
+alter table t alter column x type p using case when num_nulls(x) = 1 then null else row((x).a::integer, null::integer, (x).c::text)::p end;
 alter table t alter column x set default row(1, null::integer, 'z'::text)::p;
 drop type p__old;
 alter type q drop attribute c;
