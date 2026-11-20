@@ -4720,7 +4720,7 @@ create trigger kids_note after insert on kids begin update parents set name = na
     /// its row.
     async fn turso_tables(p: &P) -> Vec<String> {
         let mut out = Vec::new();
-        for r in p.rows(r"select name from sqlite_schema where name like '\_\_turso\_internal\_%' escape '\' order by name").await {
+        for r in p.rows(r"select name from sqlite_schema where name like '\_\_turso\_internal\_%' escape '\' and name not like '%stray' order by name").await {
             let name = r.text("name").to_string();
             let row = p.rows(&format!("select value || ' ' || is_called as v from \"{name}\"")).await.iter().map(|r| r.text("v").to_string()).collect::<Vec<_>>().join(", ");
             out.push(format!("{} {row}", name.trim_start_matches("__turso_internal_seq___turso_internal_autoincrement_")));
@@ -4744,6 +4744,9 @@ create trigger kids_note after insert on kids begin update parents set name = na
         assert_eq!(p.dev().await, 0, "{}", p.peek());
         // The file as the engine leaves it when it made the tables and wrote rows.
         p.exec(&format!("{} {} insert into posts (body) values ('a'), ('b');", sequence("posts"), sequence("notes"))).await;
+        // A table of that name that the engine didn't define is never dropped or emptied.
+        let stray = "__turso_internal_seq___turso_internal_autoincrement_stray";
+        p.exec(&format!("create table {stray} (note text); insert into {stray} values ('kept');")).await;
         let sql = reylo_migrate::db_introspect(&p.opts(), &[]).await.unwrap();
         assert!(sql.contains("create table posts") && !sql.contains("__turso"), "{sql}");
         let mut db = Db::connect(&p.url, &p.dir).await.unwrap();
@@ -4761,6 +4764,11 @@ create trigger kids_note after insert on kids begin update parents set name = na
         assert!(sql.contains("drop table notes") && !sql.contains("__turso"), "{sql}");
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_eq!(turso_tables(&p).await, ["events 1 0", "posts 1 0", "tags 1 0"]);
+        // A run that fails partway still leaves each table it made with a sequence.
+        let code = p.run(async |o, log| reylo_migrate::run_sql(o, &[("make".into(), "create table drafts (id integer primary key autoincrement); select * from missing;".into())], log).await).await;
+        assert_eq!(code, 1, "{}", p.peek());
+        assert_eq!(turso_tables(&p).await, ["drafts 1 0", "events 1 0", "posts 1 0", "tags 1 0"]);
+        p.exec("drop table drafts").await;
         p.exec("insert into posts (body) values ('c')").await;
         assert_eq!(p.rows("select max(id) as n from posts").await[0].text("n"), "3");
         // Renamed, `posts` takes its counter, which is `sqlite_sequence`'s, and its sequence is renamed.
@@ -4778,6 +4786,7 @@ create trigger kids_note after insert on kids begin update parents set name = na
         assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 0, "{}", p.peek());
         assert_eq!(turso_tables(&p).await, ["articles 1 0", "events 1 0", "tags 1 0"]);
         assert_eq!(p.rows("pragma integrity_check").await[0].text("integrity_check"), "ok");
+        assert_eq!(p.rows(&format!("select note from {stray}")).await[0].text("note"), "kept");
         p.output();
         assert_eq!(p.status().await, 0, "{}", p.peek());
     }

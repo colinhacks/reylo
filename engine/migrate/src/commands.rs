@@ -5734,9 +5734,13 @@ pub async fn run_sql(opts: &Options, items: &[(String, String)], log: Log<'_>) -
             }
         }
     }
-    let kept = if code == 0 { crate::catalog::keep_turso_sequences(&mut db).await } else { Ok(()) };
+    // What ran before a statement that failed may have committed, so the sequences follow it either
+    // way; a failure of their own is reported where the SQL itself ran.
+    let kept = crate::catalog::keep_turso_sequences(&mut db).await;
     db.close().await;
-    kept?;
+    if code == 0 {
+        kept?;
+    }
     Ok(code)
 }
 

@@ -41,7 +41,8 @@ const TURSO_SEQUENCE: &str = "__turso_internal_seq___turso_internal_autoincremen
 /// engine drops and renames the sequence with its table, while SQLite, which Reylo changes the file
 /// with, leaves it under the old name. So a sequence whose table is gone, dropped or renamed, is
 /// dropped, and a table without one, renamed or made by Reylo, is given one as the engine makes it,
-/// unadvanced. The counter itself is `sqlite_sequence`'s, which SQLite keeps as the engine does: the
+/// unadvanced. Only a table defined exactly as the engine defines a sequence is one: another of
+/// that name is never dropped or emptied. The counter itself is `sqlite_sequence`'s, which SQLite keeps as the engine does: the
 /// engine reads it there, and copies it into each sequence when the file moves to its MVCC journal,
 /// which refuses an insert into a table with no sequence. With `restart`, every sequence is also put
 /// back to its first value, as a wipe empties `sqlite_sequence`. Only for a file the engine has
@@ -59,19 +60,27 @@ pub async fn turso_sequences(db: &mut Db, turso: bool, restart: bool) -> Result<
         .map(|r| format!("{TURSO_SEQUENCE}{}", r.text("name").to_ascii_lowercase()))
         .collect();
     let quoted = |name: &str| format!("\"{}\"", name.replace('"', "\"\""));
+    // As the engine writes it, so that its own `sqlite_schema` row reads the same, and the one table
+    // so named that is the engine's: any other is left alone.
+    let definition = |name: &str| format!("CREATE TABLE {}(value INTEGER PRIMARY KEY,is_called INTEGER,start INTEGER,inc INTEGER,min INTEGER,max INTEGER,cycle INTEGER)", quoted(name));
     let first = |name: &str| format!("insert into {} values (1, 0, 1, 1, 1, 9223372036854775807, 0);", quoted(name));
     let mut sql = String::new();
-    let mut kept = BTreeSet::new();
-    for name in tables.iter().map(|r| r.text("name")).filter(|n| starts(n, TURSO_SEQUENCE)) {
-        if !owned.contains(&name.to_ascii_lowercase()) {
+    let mut taken = BTreeSet::new();
+    for r in tables.iter().filter(|r| starts(r.text("name"), TURSO_SEQUENCE)) {
+        let name = r.text("name");
+        let owner = owned.contains(&name.to_ascii_lowercase());
+        taken.insert(name.to_ascii_lowercase());
+        if r.text("sql") != definition(name) {
+            continue;
+        }
+        if !owner {
             sql.push_str(&format!("drop table {};", quoted(name)));
-        } else if kept.insert(name.to_ascii_lowercase()) && restart {
+        } else if restart {
             sql.push_str(&format!("delete from {};{}", quoted(name), first(name)));
         }
     }
-    for name in owned.difference(&kept) {
-        // As the engine writes it, so that its own `sqlite_schema` row reads the same.
-        sql.push_str(&format!("CREATE TABLE {}(value INTEGER PRIMARY KEY,is_called INTEGER,start INTEGER,inc INTEGER,min INTEGER,max INTEGER,cycle INTEGER);{}", quoted(name), first(name)));
+    for name in owned.difference(&taken) {
+        sql.push_str(&format!("{};{}", definition(name), first(name)));
     }
     Ok(sql)
 }
