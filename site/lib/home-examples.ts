@@ -14,15 +14,14 @@ import { formatType, resultType } from '../../src/type-format.ts';
  * page ships highlighted text and no highlighter. `virtual:home-examples` is all three.
  */
 
-/** A line of code: its tokens, each its text and its colour by day and by night, as the docs' code has them (Shiki's github-light and github-dark). */
-export type Line = [text: string, light: string, dark: string][];
-/** A statement's parameters and result, as the docs' inference cards show them: `params` is undefined for none, `returns` is `void` for no rows. */
-export type HomeVariant = { file: string; schema?: Line[]; sql: Line[]; params?: Line[]; returns: Line[] };
+/** A line of code: its tokens, each its text and its colour by day and by night, as the docs' code has them (Shiki's github-light and github-dark), and for a table's name, the table, whose declaration a hover shows. */
+export type Line = [text: string, light: string, dark: string, table?: string][];
+/** A statement's parameters and result, as the docs' inference cards show them: `params` is undefined for none, `returns` is `void` for no rows. `tables` holds the declaration of each table it names. */
+export type HomeVariant = { file: string; sql: Line[]; tables: Record<string, Line[]>; params?: Line[]; returns: Line[] };
 export type HomeExample = { id: string; title: string; lede: string; variants: Partial<Record<Dialect, HomeVariant>> };
 export type HomeData = {
   examples: HomeExample[];
-  schemas: Partial<Record<Dialect, Line[]>>;
-  intro: { sql: Line[]; ts: Line[]; type: Line[] };
+  intro: { sql: Line[]; tables: Record<string, Line[]>; ts: Line[]; type: Line[] };
 };
 
 const VIRTUAL = 'virtual:home-examples';
@@ -45,6 +44,75 @@ const slug = (s: string) => s.toLowerCase().replace(/`/g, '').replace(/[^a-z0-9]
 
 /** A paragraph's first sentence, without the colon that hands off to its example. */
 const firstSentence = (text: string) => (/^(.*?[.:])(\s|$)/.exec(text)?.[1] ?? text).replace(/:$/, '.');
+
+/** Each `create table` of a schema, by the table's name, with the comment lines above it. */
+function declarations(schema: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const statement of statements(schema)) {
+    const name = /^(?:\s*--[^\n]*\n)*\s*create\s+(?:temporary\s+)?table\s+(?:if\s+not\s+exists\s+)?[`"]?(\w+)/i.exec(statement)?.[1];
+    if (name) out.set(name.toLowerCase(), `${statement.trim()};`);
+  }
+  return out;
+}
+
+/** A script's statements, split at each semicolon outside a string. */
+function statements(script: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  for (let i = 0; i < script.length; i++) {
+    const c = script[i];
+    if (c === "'") i = script.indexOf("'", i + 1) < 0 ? script.length : script.indexOf("'", i + 1);
+    else if (c === '-' && script[i + 1] === '-') i = script.indexOf('\n', i) < 0 ? script.length : script.indexOf('\n', i);
+    else if (c === ';') {
+      out.push(script.slice(start, i));
+      start = i + 1;
+    }
+  }
+  if (script.slice(start).trim()) out.push(script.slice(start));
+  return out;
+}
+
+/** Where a statement names one of the tables, as [start, end, table]: an identifier outside strings and comments, not after a dot. */
+function tableNames(sql: string, tables: Map<string, string>): [number, number, string][] {
+  const out: [number, number, string][] = [];
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i];
+    if (c === "'") i = sql.indexOf("'", i + 1) < 0 ? sql.length : sql.indexOf("'", i + 1);
+    else if (c === '-' && sql[i + 1] === '-') i = sql.indexOf('\n', i) < 0 ? sql.length : sql.indexOf('\n', i);
+    else if (/[A-Za-z_]/.test(c)) {
+      let end = i;
+      while (end < sql.length && /\w/.test(sql[end])) end++;
+      const word = sql.slice(i, end).toLowerCase();
+      if (tables.has(word) && !/\.\s*$/.test(sql.slice(0, i)) && sql[i - 1] !== ':') out.push([i, end, word]);
+      i = end - 1;
+    }
+  }
+  return out;
+}
+
+/** Highlighted lines with each table's name a token of its own, marked with the table. */
+function markTables(code: string, highlighted: Line[], tables: Map<string, string>): Line[] {
+  const spans = tableNames(code, tables);
+  if (!spans.length) return highlighted;
+  let offset = 0;
+  return highlighted.map((line) => {
+    const out: Line = [];
+    for (const [text, light, dark] of line) {
+      const start = offset;
+      offset += text.length;
+      let at = start;
+      for (const [s, e, table] of spans) {
+        if (e <= at || s >= offset) continue;
+        if (s > at) out.push([text.slice(at - start, s - start), light, dark]);
+        out.push([text.slice(Math.max(s, at) - start, Math.min(e, offset) - start), light, dark, table]);
+        at = Math.min(e, offset);
+      }
+      if (at < offset) out.push([text.slice(at - start), light, dark]);
+    }
+    offset += 1;
+    return out;
+  });
+}
 
 export async function buildHomeData(site = process.cwd(), modules: Modules = readModules(site)): Promise<HomeData> {
   const highlighter = await createHighlighter({ themes: Object.values(THEMES), langs: ['sql', 'ts'] });
@@ -75,6 +143,21 @@ export async function buildHomeData(site = process.cwd(), modules: Modules = rea
   };
   walk(tree);
   const blocks = collect(tree);
+
+  // The schema every card without its own is analyzed against: the main page's, per dialect.
+  const page = collectFiles(pageFiles(site), site);
+  const pageTables: Partial<Record<Dialect, Map<string, string>>> = {};
+  for (const dialect of Object.keys(DIALECT_NAME) as Dialect[]) {
+    const parts = page.filter((b) => b.name === SCHEMA_FILE && b.dialect === dialect).map((b) => b.node.value.replace(/\n$/, ''));
+    if (parts.length) pageTables[dialect] = declarations(parts.join('\n\n'));
+  }
+  /** A statement highlighted, its tables marked, and the declarations of those it names. */
+  const statement = (sql: string, tables: Map<string, string>) => {
+    const marked = markTables(sql.replace(/\n$/, ''), lines(sql, 'sql'), tables);
+    const named = new Set(marked.flat().flatMap((t) => (t[3] ? [t[3]] : [])));
+    return { sql: marked, tables: Object.fromEntries([...named].map((t) => [t, lines(tables.get(t)!, 'sql')])) };
+  };
+
   const examples: HomeExample[] = [];
   for (const { card, title, id, lede } of cards) {
     const statements = blocks.filter((b) => b.parent === card && isStatement(b));
@@ -88,22 +171,14 @@ export async function buildHomeData(site = process.cwd(), modules: Modules = rea
         ...(params && { params: lines(formatType(params, width), 'ts') }),
         returns: lines(formatType(resultType(row, cardinality), width), 'ts'),
       });
+      const tables = block.schema !== undefined ? declarations(block.schema) : (pageTables[dialect] ?? new Map<string, string>());
       variants[dialect] = {
         file: block.name!.replace(/^inferred_/, ''),
-        ...(block.schema !== undefined && { schema: lines(block.schema, 'sql') }),
-        sql: lines(block.node.value, 'sql'),
+        ...statement(block.node.value, tables),
         ...types(WIDTH),
       };
     }
     if (Object.keys(variants).length) examples.push({ id, title, lede, variants });
-  }
-
-  // The schema every card without its own is analyzed against: the main page's, per dialect.
-  const page = collectFiles(pageFiles(site), site);
-  const schemas: HomeData['schemas'] = {};
-  for (const dialect of Object.keys(DIALECT_NAME) as Dialect[]) {
-    const parts = page.filter((b) => b.name === SCHEMA_FILE && b.dialect === dialect).map((b) => b.node.value.replace(/\n$/, ''));
-    if (parts.length) schemas[dialect] = lines(parts.join('\n\n'), 'sql');
   }
 
   // The intro's statement, and the type of what its import's `.run()` resolves to.
@@ -117,8 +192,7 @@ export async function buildHomeData(site = process.cwd(), modules: Modules = rea
   const ts = main.split('\n').filter((l) => !l.startsWith('// @')).join('\n').replace(/\n+author\?\.[\s\S]*$/, '');
   const data: HomeData = {
     examples,
-    schemas,
-    intro: { sql: lines(intro.node.value, 'sql'), ts: lines(ts, 'ts'), type: lines(`const author: ${formatType(resultType(row, cardinality), 44)}`, 'ts') },
+    intro: { ...statement(intro.node.value, pageTables.postgres ?? new Map()), ts: lines(ts, 'ts'), type: lines(`const author: ${formatType(resultType(row, cardinality), 44)}`, 'ts') },
   };
   highlighter.dispose();
   return data;
