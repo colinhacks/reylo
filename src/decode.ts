@@ -411,6 +411,32 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
   return await rawRows(raw, columns, c, load, row, transformed);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Drizzle's Postgres driver (`drizzle-orm/postgres/client`): a query in its `buffer` mode hands over each value as the bytes of the server's text, past every decoder
+// the app set up (`types`, `int8`, `temporal`, `jsonBigints`), and `debug` names each column's type.
+
+/** Whether `c` is an instance of one of the driver's classes, each of which carries a global symbol, so a method another driver's client happens to have never matches. */
+const isDrizzleClass = (c: AnyClient, ...classes: string[]) => classes.some((name) => (c as Record<symbol, unknown>)[Symbol.for(`@drizzle/postgres:${name}`)] === true);
+
+/** Drizzle's Pool and its Connection, on every runtime it connects from: a transaction's and an acquired connection are Connections too. */
+const isDrizzlePostgres = (c: AnyClient) => isDrizzleClass(c, "Pool", "Connection");
+
+/** Drizzle's HTTP clients, and an Aurora transaction, which inherits from its client. Their results name no column's type. */
+const isDrizzleHttp = (c: AnyClient) => isDrizzleClass(c, "NeonHttpClient", "HttpClient", "AuroraClient");
+
+const refuseDrizzleHttp = () =>
+  new TypeError("Reylo cannot read the results of Drizzle's HTTP clients (neon-http, http and aurora), which name no column's type. Pass Drizzle's Pool or a Connection, from neon-ws for Neon.");
+
+async function drizzlePostgres(c: AnyClient, text: string, params: unknown[], columns: Columns | undefined, row?: RowBuilder): Promise<unknown[]> {
+  // Unnamed, so the server sends every column as text: only a statement the app named takes binary columns on its later runs.
+  const result = await c.query(text, params, { mode: "buffer", debug: true });
+  const described: { name: string; oid: number }[] | undefined = result?.debug?.columns;
+  if (!Array.isArray(result?.rows) || !Array.isArray(described)) throw new TypeError("Reylo cannot read this client's results: its query() in buffer mode named no column's type.");
+  const raw = Object.assign(result.rows as unknown[], { columns: described.map((f) => ({ name: f.name, type: f.oid })) });
+  const load: Load = async (sql) => ((await c.query(sql, [], { mode: "buffer" })).rows as (BufferLike | null)[][]).map((r) => r.map((v) => (v === null ? null : textOf(v))));
+  return await rawRows(raw, columns, c, load, row, "Reylo cannot read this client's rows: its query() in buffer mode handed over no array of each value's bytes.");
+}
+
 /**
  * Rows from a `.raw()` result, an array of each value's bytes per row with the result's columns
  * (postgres.js's, and Bun.sql's from 1.4.4): each value by its column's decoder, the text the server
@@ -930,6 +956,9 @@ async function runPostgres(c: Client, query: QueryModule<"postgres">, { text, va
   const json = () => bound.map((v, i) => (isJsonParam(v, i) ? jsonText(v) : v));
   // Slonik before every other query(): its query() takes only its sql tag's queries.
   if (isSlonik(c)) return await slonik(c, text, marks, json().map(slonikParam), query.columns);
+  // Drizzle's driver writes an array as its literal and binds a Uint8Array as bytea, as pg does.
+  if (isDrizzlePostgres(c)) return await drizzlePostgres(c, text, json(), query.columns, query.row);
+  if (isDrizzleHttp(c)) throw refuseDrizzleHttp();
   // query() before unsafe(): Neon's neon() has both, and its unsafe() builds a fragment
   // for a template instead of running anything. Reylo decodes every value itself, so a client
   // that is none of the drivers' is refused before it runs anything (`takesQuery`).

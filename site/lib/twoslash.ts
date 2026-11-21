@@ -25,6 +25,9 @@ export function reyloTwoslash(): DocsTwoslashOptions {
       // The drivers' declarations are not the page's to check: Bun's and Cloudflare's globals
       // overlap Node's and the DOM's.
       skipLibCheck: true,
+      // The examples of a Drizzle database are checked on its latest release. Its own Postgres
+      // driver is only in the 1.0 release candidates, installed beside it as `drizzle-orm-1`.
+      paths: { 'drizzle-orm/postgres/client': [path.join(process.cwd(), 'node_modules/drizzle-orm-1/postgres/client/dist/index.d.ts')] },
     },
     // `Query<…the whole query type…>.run(…)` reads as `run(…)`: the query's own hover shows the
     // type, and repeating it made the popup of every call scroll.

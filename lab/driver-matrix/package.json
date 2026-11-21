@@ -21,6 +21,7 @@
     "@types/pg-8": "npm:@types/pg@8.23.1",
     "@types/sql.js": "1.4.11",
     "drizzle-orm": "0.45.4",
+    "drizzle-orm-1": "npm:drizzle-orm@1.0.0-rc.6",
     "libsql-014": "npm:@libsql/client@0.14.0",
     "libsql-015": "npm:@libsql/client@0.15.15",
     "libsql-017": "npm:@libsql/client@0.17.4",
