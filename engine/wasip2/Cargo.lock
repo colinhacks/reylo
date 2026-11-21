@@ -1514,7 +1514,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reylo-engine"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "mysql_async",
  "reylo-engine-build",
@@ -1535,11 +1535,11 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-build"
-version = "0.8.0"
+version = "0.8.1"
 
 [[package]]
 name = "reylo-engine-core"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "libc",
  "reylo-engine-build",
@@ -1550,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-mysql"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "reylo-engine-build",
  "reylo-engine-core",
@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-postgres"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "bindgen 0.72.1",
  "cc",
@@ -1575,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "reylo-engine-sqlite"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "cc",
  "reylo-engine-build",
@@ -2199,13 +2199,12 @@ dependencies = [
 
 [[package]]
 name = "tokio-postgres-rustls"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27d684bad428a0f2481f42241f821db42c54e2dc81d8c00db8536c506b0a0144"
+checksum = "4c2ad44aa0ae96db89c4742212ed41645b2f597311ff6e1945542a4d9fadc2fb"
 dependencies = [
- "const-oid 0.9.6",
- "ring",
  "rustls",
+ "sha2 0.11.1",
  "tokio",
  "tokio-postgres",
  "tokio-rustls",
