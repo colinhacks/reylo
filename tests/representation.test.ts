@@ -151,6 +151,40 @@ test("Postgres: one row on every driver, however the app set its driver up; the 
     const rowTransform = postgres(url.href, { transform: { row: (r: unknown) => ({ wrapped: r }) }, onnotice: () => {} });
     await assert.rejects(q.run(rowTransform), /transform\.row rewrites every row/);
     await rowTransform.end();
+    // Drizzle's driver with int8 as its digits, dates and times as Postgres's text and an app decoder on
+    // uuid: its Pool, a transaction's and an acquired connection, a Connection, and a Drizzle database
+    // and its transaction over the pool.
+    const drizzlePg = driver("drizzle-orm/postgres/client");
+    const { drizzle } = driver("drizzle-orm/postgres");
+    const dpool = drizzlePg.createPool({ url: url.href, max: 2, int8: "string", temporal: "string", types: { 2950: (b: Uint8Array) => `app:${new TextDecoder().decode(b)}` } });
+    try {
+      assert.deepEqual(plain(await q.run(dpool)), PG_ROWS, "Drizzle's Pool");
+      assert.deepEqual(plain(await q.run(dpool)), PG_ROWS, "Drizzle's Pool, a later run");
+      assert.deepEqual(plain(await byHand.run(dpool)), PG_ROWS, "Drizzle's Pool, a query defined by hand");
+      assert.deepEqual(plain(await dpool.transaction((t: unknown) => q.run(t))), PG_ROWS, "Drizzle's transaction");
+      const acquired = await dpool.acquire();
+      try {
+        assert.deepEqual(plain(await q.run(acquired)), PG_ROWS, "Drizzle's acquired connection");
+      } finally {
+        dpool.release(acquired);
+      }
+      const orm = drizzle({ client: dpool });
+      assert.deepEqual(plain(await q.run(orm)), PG_ROWS, "a Drizzle database over Drizzle's Pool");
+      assert.deepEqual(plain(await orm.transaction((t: unknown) => q.run(t))), PG_ROWS, "a Drizzle transaction over Drizzle's Pool");
+      const own = (await dpool.query("select created_by, u from t where id = 1", [], { mode: "object" })).rows[0];
+      assert.deepEqual({ ...own }, { created_by: "9007199254740993", u: "app:a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11" }, "the control: the app's own query");
+    } finally {
+      await dpool.end();
+    }
+    const dconn = await drizzlePg.connect(url.href);
+    try {
+      assert.deepEqual(plain(await q.run(dconn)), PG_ROWS, "Drizzle's Connection");
+    } finally {
+      await dconn.end();
+    }
+    // Its HTTP clients name no column's type: refused before they send anything.
+    const neonHttp = driver("drizzle-orm/postgres/client/neon-http");
+    await assert.rejects(q.run(neonHttp.createPool(url.href)), /Drizzle's HTTP clients/);
     // PGlite, with the same schema and the app's own parsers on the instance.
     const lite = await PGlite.create({ parsers: { 20: (x: string) => Number(x), 1184: (x: string) => new Date(x) } });
     await lite.exec(PG_SCHEMA);

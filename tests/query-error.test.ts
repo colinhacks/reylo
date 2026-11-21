@@ -63,6 +63,11 @@ test("Postgres: the error each driver throws reads as one, with the server's fie
       { ...PG_NONE, message: `null value in column "email" of relation "t" violates not-null constraint`, code: "23502", condition: "not_null_violation", schema: "rs_probe", table: "t", column: "email" },
     ],
     [
+      "Drizzle's driver, which names the fields as pg does, on a domain",
+      thrown(`value for domain rs_probe.positive violates check constraint "positive_check"`, { name: "PgError", severityLocal: "ERROR", severity: "ERROR", code: "23514", schema: "rs_probe", dataType: "positive", constraint: "positive_check", file: "execExprInterp.c", line: "4209", routine: "ExecEvalConstraintCheck" }),
+      { ...PG_NONE, message: `value for domain rs_probe.positive violates check constraint "positive_check"`, code: "23514", condition: "check_violation", schema: "rs_probe", dataType: "positive", constraint: "positive_check" },
+    ],
+    [
       "a syntax error, its position a number",
       thrown(`syntax error at or near "selec"`, { name: "error", severity: "ERROR", code: "42601", position: "1" }),
       { ...PG_NONE, message: `syntax error at or near "selec"`, code: "42601", condition: "syntax_error", position: 1 },

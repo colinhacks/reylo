@@ -163,7 +163,7 @@ Each has examples in [Inference](https://reylo.dev/#inference).
 
 Reylo is bring-your-own-driver. Pass `.run()` a client from any of these, or a Drizzle database or Knex instance over one:
 
-- **Postgres** — `pg`, postgres.js, `Bun.sql`, PGlite, Neon, `pg-promise`, `slonik`, `@vercel/postgres`
+- **Postgres** — `pg`, postgres.js, `Bun.sql`, PGlite, Neon, `pg-promise`, `slonik`, `@vercel/postgres`, Drizzle's driver
 - **MySQL** — `mysql2`, `mariadb`, PlanetScale, `Bun.sql`
 - **SQLite** — `better-sqlite3`, `node:sqlite`, `Bun.sql`, libSQL, Turso, SQLite Wasm, sql.js, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite`
 
