@@ -181,7 +181,22 @@ pub fn parse_tree(text: &str) -> Tree<'_> {
         parsed.tree.errors.retain(|o| o.start != e.start);
         parsed.tree.errors.push(e);
     }
+    if parsed.tree.errors.is_empty() {
+        parsed.tree.errors.extend(refusal(text));
+    }
     parsed.tree
+}
+
+/// What a grammar action refuses of text the grammar's rules take, such as `FETCH FIRST ROW WITH TIES` with no ORDER BY.
+fn refusal(text: &str) -> Option<SyntaxError> {
+    let (read, tail) = scan::read(text).ok()?;
+    let lexemes: Vec<Lexeme> = read.iter().map(|r| Lexeme { sym: r.lexeme.0, lead: r.lexeme.1, start: r.lexeme.2, end: r.lexeme.3 }).collect();
+    helpers::reset_extra();
+    let parsed = lalr::parse(tables(), text, &lexemes, tail, tok_semicolon(), statement_list(), &mut TreeActions { text, read: &read });
+    helpers::reset_extra();
+    let message = parsed.refused?;
+    let (start, end) = parsed.refused_at.unwrap_or((0, text.len() as u32));
+    Some(SyntaxError { message, start, end })
 }
 
 fn tok_semicolon() -> u16 {

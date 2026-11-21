@@ -85,3 +85,25 @@ pub fn kind_name(dialect: Dialect, kind: u16) -> &'static str {
 /// The hash of this crate's sources (`build.rs`), which an engine's fingerprint combines with its own.
 #[doc(hidden)]
 pub const SOURCE_HASH: &str = env!("REYLO_ENGINE_SYNTAX_HASH");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spans(dialect: Dialect, text: &str) -> Vec<&str> {
+        statements(dialect, &parse(dialect, text)).into_iter().map(|(a, b)| &text[a as usize..b as usize]).collect()
+    }
+
+    #[test]
+    fn a_statement_keeps_the_close_of_a_conditional_comment() {
+        assert_eq!(spans(Dialect::Mysql, "SELECT 1 /*! + 2 */; select 3"), ["SELECT 1 /*! + 2 */", "select 3"]);
+    }
+
+    #[test]
+    fn what_a_postgres_action_refuses_is_an_error_of_the_tree() {
+        let text = "select 1 fetch first row with ties";
+        let tree = parse(Dialect::Postgres, text);
+        assert_eq!(tree.print(), text);
+        assert_eq!(tree.errors[0].message, "WITH TIES cannot be specified without ORDER BY clause");
+    }
+}

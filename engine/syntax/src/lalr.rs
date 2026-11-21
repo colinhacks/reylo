@@ -127,6 +127,8 @@ pub struct Parsed<'s, V> {
     pub value: Option<V>,
     /// Where an action refused the text, with why.
     pub refused: Option<String>,
+    /// The token that refusal points at.
+    pub refused_at: Option<(u32, u32)>,
     /// Whether the parse ended by asking for the token the scanner could not get past.
     pub scan_stopped: bool,
 }
@@ -147,6 +149,7 @@ pub fn parse<'s, A: Actions>(tables: &Tables, text: &'s str, tokens: &[Lexeme], 
     let mut p = 0usize;
     let mut value = None;
     let mut refused = None;
+    let mut refused_at = None;
     let mut acting = true;
     let mut scan_stopped = false;
     // Whether the token at `p` has been asked for yet.
@@ -221,6 +224,7 @@ pub fn parse<'s, A: Actions>(tables: &Tables, text: &'s str, tokens: &[Lexeme], 
                         }
                         Err(message) => {
                             refused = Some(message);
+                            refused_at = last_read.and_then(|i| tokens.get(i)).map(|l| (l.start, l.end));
                             acting = false;
                             values.clear();
                             locations.clear();
@@ -277,5 +281,5 @@ pub fn parse<'s, A: Actions>(tables: &Tables, text: &'s str, tokens: &[Lexeme], 
     let (start, end) = span(&nodes, &finished, tail);
     nodes.push(Node { kind: 0, start, end, lead: first, children: finished.len() as u32, leaf: false });
     let root = nodes.len() as NodeId - 1;
-    Parsed { tree: Tree { text, nodes, child_ids, root, tail, errors }, value, refused, scan_stopped }
+    Parsed { tree: Tree { text, nodes, child_ids, root, tail, errors }, value, refused, refused_at, scan_stopped }
 }

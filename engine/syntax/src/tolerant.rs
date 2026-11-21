@@ -21,8 +21,10 @@ pub const DOT: u16 = 14;
 pub const SEMI: u16 = 15;
 pub const ILLEGAL: u16 = 16;
 const SPACE: u16 = 17;
+/// `/*!50003` or the `*/` that closes it: MySQL runs the text between them as SQL.
+pub const CONDITIONAL: u16 = 18;
 
-static NAMES: [&str; 17] = ["root", "statement", "clause", "group", "word", "keyword", "quoted identifier", "string", "number", "variable", "operator", "(", ")", ",", ".", ";", "illegal"];
+static NAMES: [&str; 19] = ["root", "statement", "clause", "group", "word", "keyword", "quoted identifier", "string", "number", "variable", "operator", "(", ")", ",", ".", ";", "illegal", "space", "conditional comment"];
 
 /// The name of a node's kind.
 pub fn kind_name(kind: u16) -> &'static str {
@@ -385,15 +387,20 @@ fn lexemes(flavor: Flavor, text: &str) -> (Vec<Lexeme>, u32) {
         if matches!(flavor, Flavor::Mysql { .. }) {
             if conditional && z[at..].starts_with(b"*/") {
                 conditional = false;
+                out.push(Lexeme { kind: CONDITIONAL, lead: lead as u32, start: at as u32, end: at as u32 + 2 });
                 at += 2;
+                lead = at;
                 continue;
             }
             if !conditional && z[at..].starts_with(b"/*!") && z[at..].windows(2).any(|w| w == b"*/") {
                 conditional = true;
+                let start = at;
                 at += 3;
                 while z.get(at).is_some_and(u8::is_ascii_digit) {
                     at += 1;
                 }
+                out.push(Lexeme { kind: CONDITIONAL, lead: lead as u32, start: start as u32, end: at as u32 });
+                lead = at;
                 continue;
             }
         }
@@ -440,6 +447,10 @@ fn go_length(z: &[u8], at: usize, n: usize) -> Option<usize> {
     let mut end = at + 2;
     let mut i = end;
     while let Some(&c) = z.get(i).filter(|c| **c != b'\n') {
+        // A comment may follow it on its line.
+        if z[i..].starts_with(b"--") {
+            break;
+        }
         if c.is_ascii_digit() {
             end = i + 1;
         } else if !is_space(c) {
@@ -525,7 +536,7 @@ pub fn parse(flavor: Flavor, text: &str) -> Tree<'_> {
         b.nodes.push(Node { kind: l.kind, start: l.start, end: l.end, lead: l.lead, children: 0, leaf: true });
         let leaf = b.nodes.len() as NodeId - 1;
         let upper = matches!(l.kind, WORD | KEYWORD).then(|| text[l.start as usize..l.end as usize].to_ascii_uppercase());
-        if first_word.is_none() {
+        if first_word.is_none() && l.kind != CONDITIONAL {
             first_word = Some(upper.clone().unwrap_or_default());
         }
         if let Some(word) = upper.as_deref() {
@@ -641,6 +652,7 @@ mod tests {
         assert_eq!(statements(Flavor::SqlServer, "begin select 1; select 2; end; select 3"), 2);
         assert_eq!(statements(Flavor::SqlServer, "begin tran; select 1; commit"), 3);
         assert_eq!(statements(Flavor::SqlServer, "select 1\nGO\nselect 2\ngo 5\nselect 3"), 3);
+        assert_eq!(statements(Flavor::SqlServer, "select 1\nGO -- next batch\nselect 2"), 2);
         assert_eq!(statements(Flavor::ClickHouse, "select $x$;$x$; select {a:Array(UInt8)}"), 2);
     }
 
