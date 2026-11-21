@@ -89,7 +89,9 @@ pub fn transaction_pooler(url: &str) -> Option<String> {
     config.get_hosts().iter().enumerate().find_map(|(i, host)| {
         let tokio_postgres::config::Host::Tcp(name) = host else { return None };
         let port = ports.get(i).or(ports.first()).copied().unwrap_or(5432);
-        (port == 6543 && name.to_ascii_lowercase().ends_with(".pooler.supabase.com")).then(|| {
+        // A name may end in the root's dot, as the same host's absolute form.
+        let lower = name.to_ascii_lowercase();
+        (port == 6543 && lower.strip_suffix('.').unwrap_or(&lower).ends_with(".pooler.supabase.com")).then(|| {
             format!("{name}:6543 is Supabase's transaction pooler, which shares server sessions between clients, and the statements the type check prepares on one collide with other clients' there: point direct_url in .reylo.yaml at its session pooler, port 5432 on the same host, or at the direct connection")
         })
     })
@@ -617,10 +619,12 @@ mod tests {
         let refusal = transaction_pooler("postgresql://postgres.abc:p%40ss@AWS-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require").expect("the transaction pooler");
         assert!(refusal.starts_with("AWS-1-us-east-1.pooler.supabase.com:6543 is Supabase's transaction pooler"), "{refusal}");
         assert!(!refusal.contains("p@ss") && !refusal.contains("p%40ss"), "{refusal}");
+        assert!(transaction_pooler("postgresql://postgres.abc:x@aws-1-us-east-1.pooler.supabase.com.:6543/postgres").is_some(), "the host's absolute form");
         // Its session pooler, the direct connection, and another host's port 6543 take an analysis.
         for url in [
             "postgresql://postgres.abc:x@aws-1-us-east-1.pooler.supabase.com:5432/postgres",
             "postgresql://postgres:x@db.abc.supabase.co:5432/postgres",
+            "postgresql://postgres.abc:x@db.abc.supabase.co:6543/postgres",
             "postgresql://u@my-pooler.example.com:6543/app",
             "postgresql://u@pooler.supabase.com.example.com:6543/app",
             "postgresql://u@127.0.0.1:6543/app",
