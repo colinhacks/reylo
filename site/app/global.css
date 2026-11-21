@@ -1966,19 +1966,34 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   color: var(--color-fd-foreground);
 }
 
-/* Every kind is drawn in one cell and all but the chosen one hidden, so the editor holds the tallest
-   one's height and nothing below it moves as the tabs change. */
-.ml-kinds-body {
+/* Every database's migration is drawn in one cell and all but the chosen one hidden, so the window
+   holds the tallest one's height and nothing below it moves as the tabs change. */
+.ml-stack {
   display: grid;
 }
 
-.ml-kinds-body > .ml-sql {
+.ml-stack > .ml-sql {
   grid-area: 1 / 1;
   visibility: hidden;
 }
 
-.ml-kinds-body > .ml-sql[data-on] {
+.ml-stack > .ml-sql[data-on] {
   visibility: visible;
+}
+
+/* The diff row's edit: wide enough for the view's longest line, and room at its foot for the
+   migrations window that overlaps it. */
+.ml-edit {
+  width: 86%;
+}
+
+.ml-edit .ml-code {
+  padding-bottom: 2.5rem;
+}
+
+/* A gap in an edited file, the lines left out. */
+.ml-gap {
+  color: var(--ml-win-dim);
 }
 
 /* The first row's migration: SQLite's rebuild wraps rather than scrolls, and the window keeps its
