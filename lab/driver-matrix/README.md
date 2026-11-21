@@ -34,6 +34,7 @@ Each job runs in its own process: Node 26.7.0 by default, Node 24.19.0 for the s
 | @sqlite.org/sqlite-wasm | 3.54.1-build1 | SQLite file, copied into memory (in Node it opens no file) | `oo1.DB`, `oo1.DB` inside BEGIN/COMMIT (its own `db.transaction(fn)` calls the function at once, so the `db.transaction(fn)` scenarios do not apply) |
 | sql.js | 1.17.0, 1.15.2 | SQLite file, copied into memory | Database, Database inside BEGIN/COMMIT (exec); 1.15.2, which Reylo refuses (S9) |
 | Cloudflare D1 | miniflare 4.20260730.0 | local workerd | D1Database, `db.withSession()` |
+| drizzle-orm/postgres/client | 1.0.0-rc.6 | Postgres 14 (local), and Postgres 14 behind a local Neon proxy through `neon-ws` | Pool, Connection from `connect()` and from `pool.acquire()`, `pool.transaction(tx)` and the savepoint `tx.transaction(sp)` inside it, `drizzle({ client: pool })` from `drizzle-orm/postgres` and its `db.transaction(tx)`; the client of `neon-http`, which Reylo refuses |
 | drizzle-orm | 0.45.4, over pg, postgres.js, mysql2, better-sqlite3 and @libsql/client | Postgres 14 (local), MySQL 8.4, SQLite file | `drizzle(client)`, `db.transaction(tx)`, the savepoint `tx.transaction(sp)` inside it (not on better-sqlite3, whose transaction is synchronous) |
 
 The packages are installed side by side under npm aliases (`"pg-7": "npm:pg@7.18.2"`) in [package.json](package.json); nub wrote the lockfile as pnpm-lock.yaml. The three old better-sqlite3 lines live in [native-old/](native-old/package.json), a project of their own, because their source build must not block the rest.

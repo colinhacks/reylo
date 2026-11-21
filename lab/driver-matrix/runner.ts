@@ -75,6 +75,9 @@ drizzleJob("bun-sql", "Postgres 14 (local)", { bun: true });
 drizzleJob("planetscale-serverless", "MySQL 8.4 via ps-http-sim");
 drizzleJob("bun-sqlite", "SQLite file", { bun: true, sqlite: true });
 drizzleJob("d1", "D1 (Miniflare, local workerd)");
+// Drizzle's own Postgres driver, which drizzle-orm 1.0 carries as drizzle-orm/postgres/client.
+const drizzle1 = "1.0.0-rc.6";
+for (const [transport, target] of [["tcp", "Postgres 14 (local)"], ["neon-ws", "Postgres 14 via local Neon proxy"]]) add({ id: `drizzle-orm@${drizzle1}/postgres/client (${transport})`, bin: NODE26, file: "drivers/drizzle-postgres.ts", args: ["--pkg", "drizzle-orm-1", "--version", drizzle1, "--transport", transport!], meta: { pkg: `drizzle-orm/postgres/client (${transport})`, version: drizzle1, target: target!, runtime: n26 } });
 
 // SQLite
 for (const [alias, v] of [["bs3-13", "13.0.3"], ["bs3-12", "12.11.1"]]) add({ id: `better-sqlite3@${v}`, bin: NODE26, file: "drivers/sync-sqlite.ts", args: ["--lib", alias, "--version", v], sqlite: true, meta: { pkg: "better-sqlite3", version: v, target: "SQLite file", runtime: n26 } });
