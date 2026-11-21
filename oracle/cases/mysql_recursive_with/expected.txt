@@ -1,0 +1,21 @@
+aggregate_over.sql: one () -> { top: bigint?, c: bigint }
+aliased.sql: many () -> { n: bigint | int, twice: bigint }
+anchor_nullable.sql: many () -> { id: int | bigint, nickname: varchar? }
+chain.sql: many () -> { id: int | bigint, title: varchar, score: int | bigint?, depth: bigint | int }
+counter.sql: many () -> { n: bigint | int }
+distinct.sql: many () -> { n: bigint | int }
+in_derived.sql: many () -> { n: bigint }
+later_with.sql: many () -> { d: bigint }
+member_left_join.sql: many () -> { n: bigint | int, name: varchar? }
+member_nullif.sql: many () -> { n: bigint | int, m: bigint | int? }
+member_writes_null.sql: many () -> { n: bigint | int, m: bigint | int? }
+not_recursive.sql: many () -> { id: int, name: varchar(≤255) }
+null_flows_back.sql: many () -> { n: bigint | int?, m: bigint | int? }
+outer_join.sql: many () -> { id: int, n: bigint | int? }
+rollup.sql: many () -> { n: bigint?, c: bigint }
+shadowed_inside.sql: at_most_one () -> { n: bigint? }
+two_members.sql: many () -> { n: bigint | int, m: bigint | int? }
+two_recursive.sql: many () -> { m: bigint }
+unlisted.sql: many () -> { n: bigint | int }
+with_in_middle_operand.sql: many () -> { n: bigint? }
+with_in_operand.sql: many () -> { n: int | bigint? }

@@ -525,6 +525,12 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         Some(Statement::Query(q)) => crate::mysql_shape::truths(q, raw.columns.len()),
         _ => Vec::new(),
     };
+    // The labels of the ENUM and SET columns a column reads through derived tables, WITH queries
+    // and UNIONs, which the prepare does not give (`mysql_labels`).
+    let traced_labels = match &parsed {
+        Some(Statement::Query(q)) => crate::mysql_labels::columns(q, &raw, host)?,
+        _ => Vec::new(),
+    };
     // The constants each column holds, where the query writes nothing else into it.
     let literals = parsed.as_ref().and_then(crate::mysql_literals::columns).filter(|l| l.len() == raw.columns.len()).unwrap_or_default();
     let columns = raw
@@ -557,8 +563,9 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
                 },
             };
             // The prepare names an ENUM or a SET column without its labels.
-            let ty = match labelled_of(c) {
-                Some(labelled) if matches!(ty.label.as_deref(), Some("enum" | "set")) => labelled,
+            let ty = match (labelled_of(c), traced_labels.get(position).cloned().flatten()) {
+                (Some(labelled), _) if matches!(ty.label.as_deref(), Some("enum" | "set")) => labelled,
+                (_, Some(traced)) => traced,
                 _ => ty,
             };
             let ty = if bits.contains(&position) { Type::unknown() } else { ty };
@@ -932,6 +939,10 @@ fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: 
         None => pending = true,
     }
     match through_derived(q, count, views, host, dialect, depth) {
+        Some(found) => not_null.extend(found),
+        None => pending = true,
+    }
+    match through_recursive(q, count, views, host, dialect, depth) {
         Some(found) => not_null.extend(found),
         None => pending = true,
     }
@@ -1705,7 +1716,7 @@ fn outer_flags(q: &Query, host: &Host) -> Lazy<Vec<usize>> {
 /// make NULL. `count` is how many columns the query has.
 fn through_derived(q: &Query, count: Option<usize>, views: &HashSet<String>, host: &Host, dialect: &SessionDialect, depth: usize) -> Lazy<Vec<usize>> {
     use crate::mysql_derived::{each_target, filler, standalone, wrapper};
-    if depth >= MAX_DERIVED_DEPTH || !crate::mysql_derived::is_materialized(q) {
+    if depth >= MAX_DERIVED_DEPTH || !crate::mysql_derived::is_materialized(q) || crate::mysql_derived::with_outlives_operand(q) {
         return Some(Vec::new());
     }
     // A table read whole, as the copy reads each view, proves nothing of its own: it is no target
@@ -1758,6 +1769,120 @@ fn through_derived(q: &Query, count: Option<usize>, views: &HashSet<String>, hos
             }
         }
     });
+    if !changed {
+        return Some(Vec::new());
+    }
+    let mut not_null = Vec::new();
+    match host.describe(&copy.to_string()) {
+        Some(Ok(d)) if Some(d.columns.len()) == count => not_null.extend(d.columns.iter().enumerate().filter(|(_, c)| c.flags & 1 != 0).map(|(i, _)| i)),
+        Some(_) => {}
+        None => pending = true,
+    }
+    match outer_flags(&copy, host) {
+        Some(found) => not_null.extend(found),
+        None => pending = true,
+    }
+    if pending {
+        None
+    } else {
+        Some(not_null)
+    }
+}
+
+/// The positions of the columns of a materialized query ([`crate::mysql_derived::materialized`])
+/// that the server flags NOT NULL once each reference to a recursive WITH query reads the columns
+/// the engine proves never NULL written so the server sees it
+/// ([`crate::mysql_derived::read_through`]): the server flags every column of such a query
+/// nullable, whatever its members are. A column is proven by induction over the query's rows:
+/// never NULL in its anchors, and never NULL in each recursive member where the rows the member
+/// reads hold no NULL in the columns proven, which the member's own statement says by reading the
+/// anchors' rows through [`crate::mysql_derived::hypothesis`]. A column some member fails for is
+/// dropped and the members are proven again, until every one holds. `count` is how many columns
+/// the query has.
+fn through_recursive(q: &Query, count: Option<usize>, views: &HashSet<String>, host: &Host, dialect: &SessionDialect, depth: usize) -> Lazy<Vec<usize>> {
+    use crate::mysql_derived::{filler, hypothesis, members, read_through, reads_through};
+    let Some(with) = q.with.as_ref().filter(|w| w.recursive) else { return Some(Vec::new()) };
+    if depth >= MAX_DERIVED_DEPTH || !crate::mysql_derived::is_materialized(q) || crate::mysql_derived::with_outlives_operand(q) {
+        return Some(Vec::new());
+    }
+    let query_of = |text: &str| match parse(dialect, text).ok().map(|mut v| (v.pop(), v.is_empty())) {
+        Some((Some(Statement::Query(q)), true)) => Some(*q),
+        _ => None,
+    };
+    let mut pending = false;
+    let (mut copy, mut changed) = (q.clone(), false);
+    for (k, cte) in with.cte_tables.iter().enumerate() {
+        let Some((anchors, recursive)) = members(cte) else { continue };
+        // The WITH queries before it, which its members may read.
+        let earlier = (k > 0).then(|| ast::With { cte_tables: with.cte_tables[..k].to_vec(), ..with.clone() });
+        let anchored = anchors.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(" UNION ALL ");
+        let Some(anchor) = query_of(&earlier.as_ref().map_or_else(|| anchored.clone(), |w| format!("{w} {anchored}"))) else { continue };
+        let Some(proven) = prove(&anchor, None, views, host, dialect, depth + 1) else {
+            pending = true;
+            continue;
+        };
+        // The query's column names: its column list, or its first anchor's.
+        let names: Vec<String> = match cte.alias.columns.as_slice() {
+            [] => proven.columns.iter().map(|c| c.name.clone()).collect(),
+            listed => listed.iter().map(|c| c.name.value.clone()).collect(),
+        };
+        let distinct: HashSet<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
+        if names.is_empty() || names.len() != proven.columns.len() || distinct.len() != names.len() {
+            continue;
+        }
+        let fillers: Vec<Option<&str>> = proven.columns.iter().map(filler).collect();
+        let mut held: Vec<bool> = proven.never_null(&proven.columns).iter().zip(&fillers).map(|((never, _), filler)| *never && filler.is_some()).collect();
+        let columns = |held: &[bool]| -> Vec<(String, Option<&str>)> { names.iter().zip(&fillers).zip(held).map(|((n, f), h)| (n.clone(), if *h { *f } else { None })).collect() };
+        let head = earlier.as_ref().map_or_else(|| "WITH ".to_string(), |w| format!("{w}, "));
+        let mut stable = false;
+        // Each round that does not hold drops a column, so as many rounds as columns settle it.
+        for _ in 0..=names.len() {
+            if !held.contains(&true) {
+                stable = true;
+                break;
+            }
+            let assumed = hypothesis(&cte.alias.name.value, &columns(&held), &anchored);
+            let mut next = held.clone();
+            let mut failed = false;
+            for member in &recursive {
+                let Some(statement) = query_of(&format!("{head}{assumed} {member}")) else {
+                    failed = true;
+                    break;
+                };
+                match prove(&statement, None, views, host, dialect, depth + 1) {
+                    Some(p) if p.columns.len() == names.len() => {
+                        for (i, (never, _)) in p.never_null(&p.columns).into_iter().enumerate() {
+                            next[i] &= never;
+                        }
+                    }
+                    Some(_) => failed = true,
+                    None => {
+                        pending = true;
+                        failed = true;
+                    }
+                }
+                if failed {
+                    break;
+                }
+            }
+            if failed {
+                break;
+            }
+            if next == held {
+                stable = true;
+                break;
+            }
+            held = next;
+        }
+        if !stable || !held.contains(&true) {
+            continue;
+        }
+        let Some(through) = query_of(&read_through(&cte.alias.name.value, &columns(&held))) else { continue };
+        changed |= reads_through(&mut copy, k, &cte.alias.name.value, &through);
+    }
+    if pending {
+        return None;
+    }
     if !changed {
         return Some(Vec::new());
     }

@@ -1,0 +1,24 @@
+derived.sql: many () -> { r: enum('admin' | 'member') }
+derived_column_list.sql: many () -> { r: enum('admin' | 'member'), s: enum('on' | 'off')? }
+derived_expression.sql: many () -> { r: varchar? }
+derived_left_join.sql: many () -> { id: int, r: enum('admin' | 'member')? }
+derived_nested.sql: many () -> { r: enum('admin' | 'member') }
+derived_set.sql: many () -> { t: set{text('a' | 'b')}? }
+derived_swapped_names.sql: many () -> { b: enum('x' | 'y'), a: enum('p' | 'q') }
+derived_wildcard.sql: many () -> { id: int, role: enum('admin' | 'member'), tags: set{text('a' | 'b')}? }
+recursive_reads_enum.sql: many () -> { role: varchar }
+union_enum_and_set.sql: many () -> { role: varchar? }
+union_in_derived.sql: many () -> { r: enum('admin' | 'member' | 'draft' | 'published') }
+union_in_with.sql: many () -> { r: enum('admin' | 'member') }
+union_nullable_enum.sql: many () -> { status: enum('on' | 'off' | 'admin' | 'member')? }
+union_of_derived.sql: many () -> { r: enum('admin' | 'member' | 'draft' | 'published') }
+union_same.sql: many () -> { role: enum('admin' | 'member') }
+union_sets.sql: many () -> { tags: varchar? }
+union_two_enums.sql: many () -> { role: enum('admin' | 'member' | 'draft' | 'published') }
+union_with_literal.sql: many () -> { role: varchar }
+union_with_text.sql: many () -> { role: varchar }
+with_beside_table.sql: many () -> { role: enum('admin' | 'member'), one: int }
+with_chained.sql: many () -> { r: enum('admin' | 'member') }
+with_column_list.sql: many () -> { r: enum('admin' | 'member') }
+with_in_operand.sql: many () -> { v: varchar }
+with_query.sql: many () -> { r: enum('admin' | 'member') }
