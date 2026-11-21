@@ -6,7 +6,7 @@ import { markdownOf } from '@/lib/markdown';
 // sidebar's order, each as its own Markdown file holds it
 // (lib/markdown.ts), then the playground's API (/play/api.md). Written to build/client/llms.txt at
 // build time. The Rust page only while the docs show Rust (lib/languages.ts).
-const PAGES = ['', 'typescript', ...(SHOW_RUST ? ['rust'] : []), 'inference', 'migrate', 'compare', 'cli', 'faq', 'd1', 'durable-objects', 'hyperdrive', 'nextjs', 'neon', 'supabase', 'planetscale', 'turso', 'deployment', 'prisma', 'configuration', 'postgres', 'mysql', 'sqlite'];
+const PAGES = ['', 'typescript', ...(SHOW_RUST ? ['rust'] : []), 'inference', 'migrate', 'compare', 'cli', 'faq', 'd1', 'durable-objects', 'hyperdrive', 'nextjs', 'neon', 'supabase', 'planetscale', 'turso', 'deployment', 'prisma', 'configuration', 'postgres', 'mysql', 'sqlite', 'clickhouse'];
 
 export async function loader() {
   const { playData } = await import('@/lib/live/play-data');

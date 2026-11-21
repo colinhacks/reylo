@@ -63,6 +63,9 @@ importers:
       '@bytecodealliance/preview2-shim':
         specifier: 0.30.0
         version: 0.30.0
+      '@clickhouse/client':
+        specifier: 1.25.0
+        version: 1.25.0
       '@cloudflare/workers-types':
         specifier: 5.20260929.1
         version: 5.20260929.1
@@ -336,6 +339,10 @@ packages:
 
   '@bytecodealliance/preview2-shim@0.30.0':
     resolution: {integrity: sha512-Op+uxOJPCnW4jp5Jg3kJvFpB5GZGJGxBMX5PvMffksyonpTciILDDSSJQr1ficHAhm1H6X5+Qwx3q21p7Hjr1Q==}
+
+  '@clickhouse/client@1.25.0':
+    resolution: {integrity: sha512-sxoCDlA8iOEGpGrJzl9SeNvG7II6e5kSeo0JI4Mru2QhwhjydWuDEE55ryZg3vIJ0CSJ1bhn9+Xtnuvf1BZT/w==}
+    engines: {node: '>=20'}
 
   '@cloudflare/workers-types@5.20260929.1':
     resolution: {integrity: sha512-VlkFyzSqv2LeMK92eyyfnNvSTW4Nu37cR8T8OM4FF2xcNCsGy8/BxcNk9Jr4ZV0PlmKsCKvS49CfRZTVKBseUw==}
@@ -4307,6 +4314,8 @@ snapshots:
   '@bytecodealliance/preview2-shim@0.30.0':
     dependencies:
       '@bytecodealliance/jco-node-fs': 0.3.2
+
+  '@clickhouse/client@1.25.0': {}
 
   '@cloudflare/workers-types@5.20260929.1': {}
 

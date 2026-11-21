@@ -20,14 +20,17 @@
 //   message, and the number; sqlite3 and the sqlite package only the primary code. D1 and a
 //   Durable Object write both codes at the end of the message, and Turso's engine none, or the
 //   primary one's number before 0.8.
+// - ClickHouse: @clickhouse/client's ClickHouseError keeps the error's number as text in `code` and
+//   its name in `type`, both read from the server's message (`Code: 60. DB::Exception: … (UNKNOWN_TABLE)`).
 import type { Dialect } from "./execute.ts";
 import type { POSTGRES_CODES } from "./error-codes-postgres.ts";
 import type { MYSQL_CODES } from "./error-codes-mysql.ts";
+import type { CLICKHOUSE_CODES } from "./error-codes-clickhouse.ts";
 import { SQLITE_CODES } from "./error-codes-sqlite.ts";
 // `QueryError` reaches the dialects' types through an import of this file itself: TypeScript names a
 // type reached through an import as written, `PostgresQueryError`, and one declared in the same file
 // with its default filled in, `PostgresQueryError<undefined>`.
-import type { MysqlQueryError as MysqlError, PostgresQueryError as PostgresError, SqliteQueryError as SqliteError } from "./query-error.ts";
+import type { ClickhouseQueryError as ClickhouseError, MysqlQueryError as MysqlError, PostgresQueryError as PostgresError, SqliteQueryError as SqliteError } from "./query-error.ts";
 
 /** A SQLSTATE Postgres defines, as `"23505"`. */
 export type PostgresCode = keyof typeof POSTGRES_CODES;
@@ -35,6 +38,8 @@ export type PostgresCode = keyof typeof POSTGRES_CODES;
 export type PostgresCondition = (typeof POSTGRES_CODES)[PostgresCode];
 /** The name of an error MySQL sends a client, as `"ER_DUP_ENTRY"`. */
 export type MysqlCode = (typeof MYSQL_CODES)[number][1][number];
+/** The name of an error ClickHouse raises, as `"UNKNOWN_TABLE"`. */
+export type ClickhouseCode = (typeof CLICKHOUSE_CODES)[number][1][number];
 /** The name of a SQLite result code of an error, primary or extended, as `"SQLITE_CONSTRAINT_UNIQUE"`. */
 export type SqliteCode = keyof typeof SQLITE_CODES;
 
@@ -208,8 +213,24 @@ type SqliteOtherCode<N> = {
 export type SqliteQueryError<N extends SqliteNarrowing | undefined = undefined> = Omit<SqliteErrorFields, "columns"> &
   ({ [C in Extract<keyof N, SqliteCode>]: SqliteMember<C, N[C]> }[Extract<keyof N, SqliteCode>] | SqliteOtherCode<N>);
 
+/** What an error ClickHouse raised holds beside its code. */
+export interface ClickhouseErrorFields extends Error {
+  readonly name: "QueryError";
+  /** The error's name, as `"UNKNOWN_TABLE"`; undefined for a number the list does not define, as a newer server's may be. */
+  readonly code: ClickhouseCode | undefined;
+  /** The error's number, as `60`: ClickHouse's own, which its message opens with. */
+  readonly number: number;
+  /** The server's message, as `Unknown table expression identifier 'events' in scope SELECT * FROM events`. */
+  readonly message: string;
+  /** The driver's own error. */
+  readonly cause: unknown;
+}
+
+/** An error ClickHouse raised. */
+export type ClickhouseQueryError = Readonly<ClickhouseErrorFields>;
+
 /** The error a database of the dialect raised. */
-export type QueryError<D extends Dialect = Dialect> = D extends "postgres" ? PostgresError : D extends "mysql" ? MysqlError : SqliteError;
+export type QueryError<D extends Dialect = Dialect> = D extends "postgres" ? PostgresError : D extends "mysql" ? MysqlError : D extends "clickhouse" ? ClickhouseError : SqliteError;
 
 class DatabaseError extends Error {
   constructor(message: string, cause: unknown, fields: Record<string, unknown>) {
@@ -253,6 +274,23 @@ export function readSqliteError(error: unknown): SqliteQueryError | undefined {
   const read = sqliteError(error);
   if (!read) return undefined;
   return new DatabaseError(read.message, error, { code: read.code, errcode: read.errcode, ...sqliteNames(read.errcode, read.message) }) as SqliteQueryError;
+}
+
+/**
+ * The error ClickHouse raised that `error` is, or undefined where it is another: the client's
+ * ClickHouseError, or the error Reylo reads off the end of a result (src/decode-clickhouse.ts),
+ * each with the server's number, which names the error from ClickHouse's own list. The message is
+ * the server's without the code it opens with and the name and version it ends with.
+ */
+export async function readClickhouseError(error: unknown): Promise<ClickhouseQueryError | undefined> {
+  const e = record(error);
+  if (!e || typeof e.message !== "string" || typeof e.code !== "string" || !/^\d+$/.test(e.code)) return undefined;
+  const number = Number(e.code);
+  const { CLICKHOUSE_CODES } = await import("./error-codes-clickhouse.ts");
+  let code: string | undefined;
+  for (const [first, names] of CLICKHOUSE_CODES) if (number >= first && number < first + names.length) code = names[number - first];
+  const message = e.message.replace(/^Code: \d+\.\s*/, "").replace(/^DB::Exception:\s*/, "").replace(/\s*\(version .*\)\s*$/, "").replace(/\s*\([A-Z][A-Z0-9_]+\)\s*$/, "").trim();
+  return new DatabaseError(message, error, { code, number }) as ClickhouseQueryError;
 }
 
 function postgresError(error: unknown) {

@@ -1257,6 +1257,7 @@ fn binary(m: &Member, dialect: Dialect) -> bool {
     match dialect {
         Dialect::Postgres => false,
         Dialect::Sqlite => m.schema.is_none() && affinity(&m.ty) == "BLOB",
+        Dialect::Clickhouse => false,
         Dialect::Mysql => {
             let t = m.ty.to_ascii_lowercase();
             ["binary", "varbinary", "tinyblob", "blob", "mediumblob", "longblob"].iter().any(|b| t == *b || t.starts_with(&format!("{b}(")))
@@ -1304,6 +1305,7 @@ pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server
             Dialect::Mysql if server.mariadb => ("JSON_COMPACT(", ")"),
             Dialect::Mysql => ("cast(", " as json)"),
             Dialect::Sqlite => ("", ""),
+            Dialect::Clickhouse => unreachable!("ClickHouse's parameters carry their types, so its engine never runs this pass"),
         };
         let text = format!("{before}{placeholder}{after}");
         return Lowered { placeholder: (before.len(), before.len() + placeholder.len()), text, members: Vec::new(), lists: Vec::new() };
@@ -1469,6 +1471,7 @@ pub fn lower(found: &Found, dialect: Dialect, placeholder: &str, server: &Server
                 w.push(&format!(") AS {alias}"));
             }
         }
+        Dialect::Clickhouse => unreachable!("ClickHouse's parameters carry their types, so its engine never runs this pass"),
         Dialect::Mysql => {
             // A binary member is read as its hexadecimal text and decoded with UNHEX().
             let table = |w: &mut Writer, ordinal: bool, alias: &str| {
@@ -2079,6 +2082,7 @@ fn table_columns<D: Describe>(f: &Found, sql: &str, dialect: Dialect, server: &S
             let (schema, name) = split_name(written);
             host.query(SQLITE_TABLE_QUERY, vec![serde_json::json!(name), serde_json::json!(schema.unwrap_or_else(|| "main".into()))], Scope::Statement)?
         }
+        Dialect::Clickhouse => return Some(Vec::new()),
         Dialect::Mysql => {
             let (schema, name) = split_name(written);
             host.query(if server.mariadb { MARIADB_TABLE_QUERY } else { MYSQL_TABLE_QUERY }, vec![schema.map_or(Value::Null, Value::String), serde_json::json!(name)], Scope::Statement)?
@@ -2094,6 +2098,7 @@ fn table_columns<D: Describe>(f: &Found, sql: &str, dialect: Dialect, server: &S
                     let default = r.get(7).and_then(as_str).map(|e| copy_of(e, &text(r, 8), dialect));
                     TableColumn { name: text(r, 0), base: text(r, 1), written: text(r, 2), not_null: flag(r, 3), has_default: flag(r, 4), generated: flag(r, 5), always: flag(r, 6), default, inherited: flag(r, 9) }
                 }
+                Dialect::Clickhouse => unreachable!("ClickHouse's parameters carry their types, so its engine never runs this pass"),
                 Dialect::Mysql => TableColumn { name: text(r, 0), base: text(r, 1), written: text(r, 2), not_null: flag(r, 3), has_default: flag(r, 4), generated: flag(r, 5), always: false, default: None, inherited: false },
                 Dialect::Sqlite => {
                     let declared = text(r, 1);
@@ -2244,6 +2249,7 @@ fn type_differs(m: &Member, field: &Field, c: &TableColumn, domains: &std::colle
             }
             (mysql_type(&m.ty) != mysql_type(&c.written)).then(|| advice.to_string())
         }
+        Dialect::Clickhouse => None,
         // SQLite keeps a value by the column's affinity; a JSON member is text to it.
         Dialect::Sqlite => (m.schema.is_none() && affinity(&m.ty) != affinity(&c.written)).then(|| format!("their affinities differ ({} and {}), and {advice}", affinity(&m.ty), affinity(&c.written))),
     }

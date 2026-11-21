@@ -1,0 +1,32 @@
+by_id.sql: many (id: UInt64) -> { id: UInt64, name: String(UTF-8, ill-formed) }
+count_all.sql: one (than: UInt8) -> { n: UInt64, oldest: UInt8 }
+count_array_join.sql: many () -> { n: UInt64 }
+count_distinct.sql: one () -> { n: UInt64 }
+count_except.sql: many () -> { n: UInt64 }
+count_filled.sql: many () -> { n: UInt64 }
+count_from_view.sql: many () -> { n: UInt64 }
+count_group_all.sql: one () -> { n: UInt64 }
+count_group_constant.sql: many () -> { n: UInt64 }
+count_group_nothing.sql: many () -> { n: UInt64 }
+count_grouped.sql: many () -> { plan: String(UTF-8, ill-formed), n: UInt64 }
+count_having.sql: at_most_one (least: UInt64) -> { n: UInt64 }
+count_in_subquery.sql: many () -> { next: UInt64 }
+count_limit_zero.sql: at_most_one () -> { n: UInt64 }
+count_limited.sql: one () -> { n: UInt64 }
+count_of_array_join.sql: one () -> { n: UInt64, letters: UInt64 }
+count_of_subquery.sql: one () -> { groups: UInt64, largest: UInt64 }
+count_offset.sql: at_most_one (skip: UInt64) -> { n: UInt64 }
+count_ordered.sql: one () -> { n: UInt64, years: UInt64 }
+count_qualified.sql: at_most_one () -> { n: UInt64 }
+count_scalar.sql: many () -> { orders: UInt64?, name: String(UTF-8, ill-formed) }
+count_setting.sql: at_most_one (than: UInt8) -> { n: UInt64 }
+count_union.sql: many () -> { n: UInt64 }
+count_window.sql: at_most_one () -> { n: UInt64 }
+limit_by.sql: many () -> { id: UInt64, name: String(UTF-8, ill-formed) }
+limit_given.sql: many (count: UInt64) -> { id: UInt64 }
+limit_one.sql: at_most_one (id: UInt64) -> { id: UInt64, name: String(UTF-8, ill-formed) }
+limit_one_offset.sql: at_most_one () -> { id: UInt64, name: String(UTF-8, ill-formed) }
+limit_ties.sql: many () -> { id: UInt64 }
+limit_two.sql: many () -> { id: UInt64 }
+no_table.sql: many (n: UInt8) -> { one: UInt8, next: UInt16 }
+one_value.sql: one () -> { sum(balance): Decimal(39,4) } value

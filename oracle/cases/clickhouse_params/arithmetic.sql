@@ -1,0 +1,1 @@
+SELECT age + {more:UInt8} AS older, balance * {times:Decimal(4, 2)} AS scaled, concat(name, {suffix:String}) AS named, created + toIntervalDay({days:UInt16}) AS later, round(balance, {digits:UInt8}) AS rounded, substring(name, {from:UInt8}, 2) AS part, if({flag:Bool}, name, 'hidden') AS shown, arrayElement(tags, {at:UInt8}) AS tag FROM users ORDER BY id, name

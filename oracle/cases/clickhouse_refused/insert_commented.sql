@@ -1,0 +1,1 @@
+INSERT INTO orders (id /* the key */, user_id, total, note, placed) VALUES (/* the key */ {id:UInt64}, {user:UInt64}, {total:Float64} /* a float is no decimal */, {note:Nullable(String)}, {placed:Date})

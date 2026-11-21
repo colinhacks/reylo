@@ -1,0 +1,1 @@
+SELECT {s:Nullable(String)} AS s, {n:Nullable(Int32)} AS n, {s:Nullable(String)} IS NULL AS s_is_null, coalesce({n:Nullable(Int32)}, 0) AS n_or_zero, {day:Nullable(Date)} AS day, {packed:LowCardinality(Nullable(String))} AS packed

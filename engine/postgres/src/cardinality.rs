@@ -3720,7 +3720,7 @@ pub fn never_a_row(sql: &str, dialect: Dialect) -> Option<&'static str> {
 fn one_select(sql: &str, dialect: Dialect) -> Result<Box<SelectStmt>, String> {
     let text = match dialect {
         Dialect::Postgres => sql.to_string(),
-        Dialect::Sqlite | Dialect::Mysql => infer::dollar_placeholders(sql),
+        Dialect::Sqlite | Dialect::Mysql | Dialect::Clickhouse => infer::dollar_placeholders(sql),
     };
     let parsed = crate::stack::parse(&text).map_err(|_| match dialect {
         Dialect::Postgres => "the statement does not parse".to_string(),

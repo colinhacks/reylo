@@ -30,7 +30,7 @@ export async function analyze(input: AnalyzeInput): Promise<StatementDescriptor>
   if (!url) throw new Error(project.missingUrl);
   const dialect = dialectOf(url);
   // The project's own URL has passed this check in resolveProject: only a given one can fail it here.
-  if (!dialect) throw new Error("Cannot tell the database from the URL (the url given): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs.");
+  if (!dialect) throw new Error("Cannot tell the database from the URL (the url given): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs, and for ClickHouse clickhouse+http:// or clickhouse+https://, the URL of its HTTP interface.");
   // A relative path in a URL the caller named is the caller's, from the working directory; one in the
   // project's URL is from the project's root, as the type check reads it.
   const base = given === undefined ? project.root : cwd;

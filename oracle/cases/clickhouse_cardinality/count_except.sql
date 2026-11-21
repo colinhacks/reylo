@@ -1,0 +1,1 @@
+SELECT count() AS n FROM users EXCEPT SELECT toUInt64(2)

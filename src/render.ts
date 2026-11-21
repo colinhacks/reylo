@@ -153,8 +153,8 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
       // A row inside a document is an object of its fields; a built-in geometric type, its text.
       if (inJson) return dialect === "postgres" && name !== "record" && json[name] !== undefined ? json[name]! : renderFields(t.fields, dialect, t.extra);
       // A Postgres row value, and a geometric type, is an object of its fields, each as a column
-      // of its type is (src/values.ts).
-      if (dialect === "postgres") return t.fields.length ? `{ ${t.fields.map((f) => `${ident(f.name)}: ${(f.nullable ? orNull : (x: string) => x)(renderType(f.type, false, dialect, codecs))}`).join("; ")} }` : "Record<never, never>";
+      // of its type is (src/values.ts), and so is a ClickHouse tuple whose elements have names.
+      if (dialect === "postgres" || dialect === "clickhouse") return t.fields.length ? `{ ${t.fields.map((f) => `${ident(f.name)}: ${(f.nullable ? orNull : (x: string) => x)(renderType(f.type, false, dialect, codecs))}`).join("; ")} }` : "Record<never, never>";
       break;
     // A JSON value: what the statement built, the values a schema admits, or any JSON.
     case "json":
@@ -414,6 +414,17 @@ export function renderParamType(t: EngineType, dialect: Dialect = "postgres", in
   const codec = leafCodec(t, dialect, codecs);
   if (codec !== undefined) return codecType(codec, t, (e) => renderParamType(e, dialect, true), true);
   const kind = columnKind(t, dialect);
+  // A ClickHouse parameter's type says all of it: whether an array's elements or a tuple's may be
+  // NULL, and a tuple's names. A wide integer takes a BigInt, or a number that is whole.
+  if (dialect === "clickhouse") {
+    const slot = (s: { type: EngineType; nullable?: boolean }) => (s.nullable ? orNull : (x: string) => x)(renderParamType(s.type, dialect, false, undefined, codecs));
+    if (t.kind === "array") {
+      return `${grouped(slot(t.element))}[]`;
+    }
+    if (t.kind === "struct") return t.fields.length ? `{ ${t.fields.map((f) => `${ident(f.name)}: ${slot(f)}`).join("; ")} }` : "Record<never, never>";
+    if (t.kind === "tuple") return `[${t.elements.map(slot).join(", ")}]`;
+    if (kind === "int8") return "number | bigint";
+  }
   // A JSON parameter takes the JSON a result of its type holds, which `.run()` writes with
   // `JSON.stringify`, so one with no schema takes whatever that writes, a value with a `toJSON()`
   // among them; its null is JSON's null where the statement takes no SQL NULL (src/execute.ts),

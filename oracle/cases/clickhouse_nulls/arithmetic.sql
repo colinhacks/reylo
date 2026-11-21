@@ -1,0 +1,1 @@
+SELECT age / 0 AS inf, intDivOrZero(age, 0) AS zero, age % 7 AS rest, toInt8OrNull(name) AS maybe_number, toUInt64OrZero(name) AS number_or_zero, tags[10] AS no_tag, has(tags, 'a') AS has_a, arrayFirst(x -> x = 'zzz', tags) AS not_found, toDecimal64OrNull(name, 2) AS maybe_decimal FROM users ORDER BY id, name

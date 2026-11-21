@@ -1,0 +1,2 @@
+SELECT 1 AS a;
+SELECT 2 AS b
