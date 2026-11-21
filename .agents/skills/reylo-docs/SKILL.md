@@ -73,7 +73,7 @@ Cut each of these on sight. None carries a fact.
 
 ## Interactive UI
 
-- **Nothing moves by itself.** No tab, dialect or example turns on a timer. No script reads the scroll position to move, hide or restyle anything; an element that should travel with the page and stay is `position: sticky`.
+- **What the reader picks never changes by itself.** No tab, dialect or example turns on a timer: it shows Postgres, or the first, until the reader picks another. No script reads the scroll position to move, hide or restyle anything; an element that should travel with the page and stay is `position: sticky`.
 - **Every new or changed UI gets an optical pass** before anyone sees it: icons against their labels, labels against their buttons, measured from the ink, not the boxes. A chip, a code token or a badge looks the same wherever it appears: the table of contents, the page list, the pager and the prose.
 - **A design that doesn't exist yet is a page, not a screenshot.** Mock it as one self-contained HTML file, every image inside it as a `data:` URI.
 - **Light and dark both**, and a phone.
