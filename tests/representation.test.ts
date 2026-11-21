@@ -120,6 +120,10 @@ test("Postgres: one row on every driver, however the app set its driver up; the 
     const pool = new pg.Pool({ connectionString: url.href, max: 2, types: { getTypeParser: (oid: number, f?: string) => (oid === 1184 ? (x: string) => `app:${x}` : pg.types.getTypeParser(oid, f)) } });
     pool.on("connect", (c: any) => c.setTypeParser(1082, (x: string) => `connect:${x}`));
     assert.deepEqual(plain(await q.run(pool)), PG_ROWS, "pg Pool");
+    // Methods named as Drizzle's driver names its own leave a pg Pool a pg Pool.
+    const helperPool = Object.assign(new pg.Pool({ connectionString: url.href, max: 1 }), { queryTyped() {}, acquire() {}, outsideTransaction() {}, parallel() {} });
+    assert.deepEqual(plain(await q.run(helperPool)), PG_ROWS, "a pg Pool with helpers named as Drizzle's");
+    await helperPool.end();
     const tx = await pool.connect();
     await tx.query("begin");
     assert.deepEqual(plain(await q.run(tx)), PG_ROWS, "pg PoolClient in a transaction");
@@ -185,6 +189,18 @@ test("Postgres: one row on every driver, however the app set its driver up; the 
     // Its HTTP clients name no column's type: refused before they send anything.
     const neonHttp = driver("drizzle-orm/postgres/client/neon-http");
     await assert.rejects(q.run(neonHttp.createPool(url.href)), /Drizzle's HTTP clients/);
+    // A transaction of Drizzle's Aurora database has the type of every Drizzle transaction, and is refused before it runs a statement.
+    const aurora = driver("drizzle-orm/postgres/aurora");
+    const calls: string[] = [];
+    const dataApi = async (request: string, init: { body: string }) => {
+      const action = new URL(request).pathname.slice(1);
+      calls.push(action === "Execute" ? JSON.parse(init.body).sql : action);
+      return Response.json(action === "BeginTransaction" ? { transactionId: "t" } : { transactionStatus: "Rollback Complete" });
+    };
+    const auroraDb = aurora.drizzle({ connection: { resourceArn: "arn:aws:rds:us-east-1:1:cluster:c", secretArn: "arn:aws:secretsmanager:us-east-1:1:secret:s", sign: () => ({}), fetch: dataApi } });
+    await assert.rejects(auroraDb.transaction((t: unknown) => q.run(t)), /Drizzle's HTTP clients/);
+    assert.equal(calls.at(-1), "RollbackTransaction");
+    assert.ok(!calls.includes(PG_SELECT), "Reylo's statement never reached the Data API");
     // PGlite, with the same schema and the app's own parsers on the instance.
     const lite = await PGlite.create({ parsers: { 20: (x: string) => Number(x), 1184: (x: string) => new Date(x) } });
     await lite.exec(PG_SCHEMA);

@@ -412,15 +412,17 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
 }
 
 // ---------------------------------------------------------------------------------------------
-// Drizzle's Postgres driver (`drizzle-orm/postgres/client`, and `@drizzle-team/postgres`): a query
-// in its `buffer` mode hands over each value as the bytes of the server's text, past every decoder
+// Drizzle's Postgres driver (`drizzle-orm/postgres/client`): a query in its `buffer` mode hands over each value as the bytes of the server's text, past every decoder
 // the app set up (`types`, `int8`, `temporal`, `jsonBigints`), and `debug` names each column's type.
 
-/** Drizzle's Pool (acquire() and outsideTransaction()) and its Connection (queryTyped()), on every runtime it connects from: a transaction's and an acquired connection are Connections too. */
-const isDrizzlePostgres = (c: AnyClient) => typeof c.query === "function" && (typeof c.queryTyped === "function" || (typeof c.acquire === "function" && typeof c.outsideTransaction === "function"));
+/** Whether `c` is an instance of one of the driver's classes, each of which carries a global symbol, so a method another driver's client happens to have never matches. */
+const isDrizzleClass = (c: AnyClient, ...classes: string[]) => classes.some((name) => (c as Record<symbol, unknown>)[Symbol.for(`@drizzle/postgres:${name}`)] === true);
 
-/** Drizzle's HTTP clients: `neon-http`'s and `http`'s (parallel()), and `aurora`'s (endpoint and inTransaction), whose results name no column's type. */
-const isDrizzleHttp = (c: AnyClient) => typeof c.query === "function" && (typeof c.parallel === "function" || (typeof c.endpoint === "string" && typeof c.inTransaction === "boolean"));
+/** Drizzle's Pool and its Connection, on every runtime it connects from: a transaction's and an acquired connection are Connections too. */
+const isDrizzlePostgres = (c: AnyClient) => isDrizzleClass(c, "Pool", "Connection");
+
+/** Drizzle's HTTP clients, and an Aurora transaction, which inherits from its client. Their results name no column's type. */
+const isDrizzleHttp = (c: AnyClient) => isDrizzleClass(c, "NeonHttpClient", "HttpClient", "AuroraClient");
 
 const refuseDrizzleHttp = () =>
   new TypeError("Reylo cannot read the results of Drizzle's HTTP clients (neon-http, http and aurora), which name no column's type. Pass Drizzle's Pool or a Connection, from neon-ws for Neon.");

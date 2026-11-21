@@ -1015,7 +1015,7 @@ const user = await getUser.run(db, { id: 1 });
 await db.transaction((tx) => getUser.run(tx, { id: 1 }));
 ```
 
-Its HTTP clients, from `neon-http`, `http` and `aurora`, aren't supported: use its `Pool` from `neon-ws` for Neon.
+Its HTTP clients (`neon-http`, `http` and `aurora`) aren't supported, directly or under a Drizzle database. On Neon, use the `Pool` from `neon-ws`.
 
 ### Knex
 

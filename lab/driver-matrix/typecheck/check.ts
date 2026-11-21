@@ -88,6 +88,7 @@ import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 import type { Pool as DrizzlePool, Connection as DrizzleConnection } from "drizzle-orm-1/postgres/client";
 import type { PostgresDatabase as DrizzlePostgresDatabase, PostgresTransaction as DrizzlePostgresTransaction } from "drizzle-orm-1/postgres";
+import type { PostgresAuroraTransaction } from "drizzle-orm-1/postgres/aurora";
 import type { DurableObjectStorage } from "@cloudflare/workers-types";
 import type { Database as SqliteWasmDb, OpfsDatabase, OpfsSAHPoolDatabase } from "@sqlite.org/sqlite-wasm";
 import type * as SqlJs from "sql.js";`;
@@ -175,6 +176,7 @@ pg("drizzle-orm@1.0.0-rc.6 (postgres/client)", "Pool", "DrizzlePool");
 pg("drizzle-orm@1.0.0-rc.6 (postgres/client)", "Connection (connect(), pool.acquire(), a transaction)", "DrizzleConnection");
 pg("drizzle-orm@1.0.0-rc.6 (postgres)", "drizzle({ client: pool })", "DrizzlePostgresDatabase<any> & { $client: DrizzlePool }");
 pg("drizzle-orm@1.0.0-rc.6 (postgres)", "PostgresTransaction (db.transaction, tx.transaction)", "DrizzlePostgresTransaction<any>");
+pg("drizzle-orm@1.0.0-rc.6 (postgres/aurora)", "PostgresAuroraTransaction (db.transaction)", "PostgresAuroraTransaction<any>", "has the type of every Drizzle transaction; run() refuses it, as it does the Aurora client");
 for (const [ns, v] of [["ls017", "0.17.4"], ["ls018", "0.18.0"], ["ls015", "0.15.15"], ["ls014", "0.14.0"]]) {
   sq(`@libsql/client@${v}`, "Client", `${ns}.Client`);
   sq(`@libsql/client@${v}`, "Transaction", `${ns}.Transaction`);
