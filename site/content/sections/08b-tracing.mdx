@@ -38,6 +38,6 @@ queries.subscribe({
 });
 ```
 
-Each event carries the `query`, its `params`, the `client`, and then its `result` or `error`. Calls to `.runSync()` and `.trySync()` set `sync` and end on `end`; every other call ends on `asyncEnd`.
+Each event carries the `query`, its `params` and the `client`. A later event adds the `result` or the `error`. Calls to `.runSync()` and `.trySync()` set `sync` and end on `end`. Every other call ends on `asyncEnd`.
 
 The channel is there on Node, on Bun, and on Cloudflare Workers with the `nodejs_compat` flag. Elsewhere, queries run untraced.

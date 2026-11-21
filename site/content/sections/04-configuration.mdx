@@ -19,7 +19,7 @@ sqlcommenter: true
 dir: reylo
 ```
 
-The `package.json` it sits beside is the nearest one at or above the directory Reylo runs in, short of your home directory: one in the home directory itself is passed over, and `reylo migrate init` starts no project there.
+Reylo uses the nearest `package.json` at or above the directory it runs in. One in your home directory doesn't count.
 
 ## `direct_url`
 
@@ -40,7 +40,7 @@ DATABASE_URL=mysql://root@localhost:3306/app
 DATABASE_URL=file:./app.db
 ```
 
-Point it at a direct connection, not a pooler: describing a query through a pooler in transaction mode, such as PgBouncer's, can fail. You can interpolate other variables from your environment to construct a connection string.
+Point it at a direct connection, not a pooler. A pooler in transaction mode, such as PgBouncer, can fail to describe a query. You can interpolate other variables from your environment to construct a connection string.
 
 ```yaml title=".reylo.yaml"
 # the default is ${DATABASE_URL}
@@ -53,16 +53,16 @@ A variable can fall back, as in a shell, when it is unset or empty:
 direct_url: ${BUILD_DATABASE_URL:-${DATABASE_URL}}
 ```
 
-To keep a password out of every file, `$(…)` runs a command, such as a password manager's or a cloud's token command, and puts what it prints in its place. Reylo runs it once per editor session or build, and again when the database refuses the login, as when a token expires.
+To keep a password out of every file, use `$(…)`. It runs a command, such as a password manager's, and puts what it prints in its place. Reylo runs it once per editor session or build, and again when a login is refused.
 
 ```yaml title=".reylo.yaml"
 # or $(aws rds generate-db-auth-token …) for a short-lived token
 direct_url: postgres://app:$(op read op://dev/db/password)@db:5432/app
 ```
 
-A type check or a build reads this database, so in CI and on your host it needs your migrations applied. The database a query runs on is the client you pass to `.run()`, so the two can differ.
+A type check or a build reads this database. In CI and on your host, apply your migrations first. The database a query runs on is the client you pass to `.run()`, so the two can differ.
 
-A script that runs against production is typed on your dev database, so its types hold only where the two schemas agree. To type it on the database it runs on:
+A script that runs against production is typed on your dev database. Its types hold only where the two schemas agree. To type it on the database it runs on:
 
 ```sh
 DATABASE_URL="$PRODUCTION_URL" node --import reylo/register report.ts
@@ -84,8 +84,8 @@ DATABASE_URL=mysql://…/app?ssl-mode=VERIFY_IDENTITY
 The defaults, and the other settings each reads:
 
 - With no setting, a Postgres connection is encrypted where the server offers it, and a MySQL connection isn't.
-- Postgres also reads `sslrootcert`, `sslcert`, `sslkey` and `channel_binding`, as libpq does, and node-postgres's `ssl=true`.
-- MySQL also reads mysql2's `ssl` setting, as JSON with `rejectUnauthorized`, `ca`, `cert` and `key`, and Prisma's `sslaccept=strict`.
+- Postgres also reads libpq's `sslrootcert`, `sslcert`, `sslkey` and `channel_binding`, and node-postgres's `ssl=true`.
+- MySQL also reads mysql2's `ssl` JSON setting and Prisma's `sslaccept=strict`.
 - A certificate is also checked against the certificates `NODE_EXTRA_CA_CERTS` names, as Node checks it.
 
 ## `env`
@@ -119,7 +119,7 @@ allow_untyped_params: true
 
 Whether a Postgres array column may hold nested arrays.
 
-Postgres doesn't track an array's dimensions, so by default Reylo types an array column with one, and `.run()` throws on a value of more. With this set, the column is typed at any depth, as `NestedArray<T>`, and nothing is refused.
+Postgres doesn't track an array's dimensions. By default Reylo types an array column as one-dimensional, and `.run()` throws on a deeper value. With this set, the column is a `NestedArray<T>` of any depth.
 
 ```yaml title=".reylo.yaml"
 # the default is false
@@ -128,7 +128,7 @@ allow_nested_arrays: true
 
 ## `sqlcommenter`
 
-Each query Reylo sends ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. On SQLite the comment opens the query instead, since SQLite would write it into the name of a last column with no alias. The query's [`.sql`](/typescript#sql) leaves it out. Set `sqlcommenter: false` to leave it off what Reylo sends too.
+Each query Reylo sends ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format. Monitoring tools such as Datadog and PlanetScale group your queries by it. On SQLite the comment opens the query instead. The query's [`.sql`](/typescript#sql) leaves it out. Set `sqlcommenter: false` to leave it off what Reylo sends too.
 
 ```yaml title=".reylo.yaml"
 # the default is true
@@ -143,7 +143,7 @@ select id, name, email from users where id = $1::int /*file='queries%2Fget_user.
 
 ## `dir`
 
-The directory beside `.reylo.yaml` that holds Reylo's files: the `schema.sql`, `migrations/` and `reylo.lock` of [migrations](/migrate/docs), which you commit, and its cache in `.cache/`, which keeps itself out of git.
+The directory beside `.reylo.yaml` that holds Reylo's files. You commit its [migrations](/migrate/docs), and its `.cache/` keeps itself out of git.
 
 ```yaml title=".reylo.yaml"
 # the default is reylo

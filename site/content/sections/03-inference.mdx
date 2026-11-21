@@ -53,7 +53,7 @@ Each card shows the types in TypeScript or in Rust: pick one at the top of any c
 
 Each SQL type has one TypeScript type, the same on every driver<Rust>, and one Rust type</Rust>.
 
-Dates and times are ISO 8601 strings, never a `Date`, so they keep their full precision ([Dates and times](/postgres#dates-and-times)).
+Dates and times are ISO 8601 strings, never a `Date`, so they keep [full precision](/postgres#dates-and-times).
 
 <LanguageSwitch />
 
@@ -210,11 +210,11 @@ Dates and times are ISO 8601 strings, never a `Date`, so they keep their full pr
 </Dialect>
 </DialectTabs>
 
-For every rule and edge case of each database, from 64-bit integers to time zones, nulls, row counts and parameters, see its own page: [Postgres](/postgres#data-types), [MySQL](/mysql#data-types) and [SQLite](/sqlite#data-types).
+Each database's page has every rule and edge case: [Postgres](/postgres#data-types), [MySQL](/mysql#data-types) and [SQLite](/sqlite#data-types).
 
 ## Named parameters [#naming]
 
-Name a parameter with a colon, and Reylo infers its type from where it's used, and compiles it to your database's own placeholder:
+Name a parameter with a colon. Reylo infers its type from where it's used, and compiles it to your database's own placeholder:
 
 <InferenceCard>
 
@@ -249,23 +249,23 @@ It's an error that says to [cast it](#casts), unless [`allow_untyped_params: tru
 <DialectTabs>
 <Dialect value="Postgres">
 
-Postgres types a parameter from its context: a bare `select :x` is a `string`, and `select :x is null` is an error until a cast types it.
+Postgres types a parameter from its context. A bare `select :x` is a `string`, and `select :x is null` needs a cast.
 
 </Dialect>
 <Dialect value="MySQL">
 
-MySQL types every parameter: one that nothing else types, such as a bare `select :x`, is a `string`.
+MySQL types every parameter. One with no context, such as a bare `select :x`, is a `string`.
 
 </Dialect>
 <Dialect value="SQLite">
 
-A bare `select :x`, or an argument of a table-valued function other than `json_each` and `json_tree`, has no type until a cast gives it one:
+A bare `select :x` has no type until a cast gives it one. Neither does an argument of a table-valued function, except `json_each` and `json_tree`:
 
 ```sql
 select length(:text::text) as n
 ```
 
-A call to a function your application registers fails the type check, cast or not: Reylo prepares the statement in its own SQLite, which lacks it ("no such function"). Apply that function in TypeScript instead.
+A function your application registers fails the type check. Reylo prepares the statement in its own SQLite, which doesn't have it. Apply that function in TypeScript instead.
 
 </Dialect>
 </DialectTabs>
@@ -342,7 +342,7 @@ where user_id = coalesce(:user_id::nullable(int), user_id)
 
 </InferenceCard>
 
-A parameter written as it is to a column that may hold null, as `:published_at` is to `posts.published_at`, takes null too, and may be left out as well. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value. A JSON parameter there takes `null` as JSON's `null`, which a `not null` JSON column holds; cast it to `nullable(…)` to pass SQL's `NULL` instead.
+Like `:published_at`, a parameter written straight into a nullable column takes null and may be left out. Any other parameter takes no null, and `.run()` throws if one is null or missing. A JSON parameter there reads `null` as JSON's `null`. To pass SQL's `NULL` instead, cast it to `nullable(…)`.
 
 ## Dynamic sorting
 
@@ -365,7 +365,7 @@ order by
 
 ## Dynamic filtering
 
-To filter a list by a form's values, pass them as one [JSON parameter](#typed-json), which Reylo checks against its schema before the query runs:
+To filter a list by a form's values, pass them as one [JSON parameter](#typed-json). Reylo checks it against its schema before the query runs:
 
 <InferenceCard>
 
@@ -464,7 +464,7 @@ order by
 
 </InferenceCard>
 
-A filter left out takes its default, and one with none, like the author, is null, which turns it off:
+A filter left out takes its default. One with no default, like the author, is null, which turns it off:
 
 ```ts twoslash
 declare const request: Request;
@@ -475,11 +475,11 @@ import searchPosts from "./search_posts.sql";
 const posts = await searchPosts.run(db, { filters: await request.json() });
 ```
 
-Read with `->>`, each filter is a value the database can plan with, so on Postgres and MySQL a filter left out drops out of the plan and one given, like the author, can use an index.
+Each filter read with `->>` is a value the database can plan with. On Postgres and MySQL, a filter left out drops out of the plan, and one given can use an index.
 
 <Details summary="Which filters use an index, in each dialect" id="filter-indexes">
 
-- **Postgres** plans each run with its values on pg and PGlite. On postgres.js and Bun.sql, which prepare each statement once per connection, it can switch to one plan for every value after five runs, which reads the whole table; create the client with `connection: { plan_cache_mode: "force_custom_plan" }` to keep planning each run with its values. The same filter read from `jsonb_to_record` reads the whole table under every plan.
+- **Postgres** plans each run with its values on pg and PGlite. On postgres.js and Bun.sql, it can switch to one generic plan after five runs, which reads the whole table. To keep planning each run with its values, create the client with `connection: { plan_cache_mode: "force_custom_plan" }`. The same filter read from `jsonb_to_record` reads the whole table under every plan.
 - **MySQL** plans each run with its values. The same filter read from `json_table` reads the whole table.
 - **SQLite** plans a statement before its values are bound, so a filter that may be left out reads every row.
 
@@ -638,10 +638,10 @@ where user_id = :user_id::int
 
 </InferenceCard>
 
-An expression with no `as` has no name of its own, only what your database makes up for it, which can differ by driver. Add an `as` to get rows back, as in the [query above](#aggregates). A column read as it is, like `select id`, already has a name and keeps its rows.
+An expression with no `as` has no name of its own. Your database makes one up, and it can differ by driver. Add an `as` to get rows back, as in the [query above](#aggregates). A column read as it is, like `select id`, already has a name and keeps its rows.
 
 - Where such a value may be null and the query may also match no row, `null` stands for both. Name the column to tell them apart.
-- Among several columns, a made-up name that isn't an identifier, like `count(*)` or `?column?`, is a type error. Name the column with `as`.
+- Among several columns, a made-up name like `count(*)` or `?column?` is a type error. Name the column with `as`.
 
 ## Window functions
 
@@ -963,7 +963,7 @@ where u.id = :id::int
 
 </InferenceCard>
 
-On Postgres, each field of an array of rows is read as a column is, so a `bigint` stays exact. [Inside JSON, values can differ](/postgres#json). JSON is still the smaller result when rows nest three levels deep and hold JSON documents, since a row's text escapes the quotes of what it holds at each level:
+On Postgres, each field of an array of rows is read as a column is, so a `bigint` stays exact. [Inside JSON, values can differ](/postgres#json). JSON is still smaller for rows nested three levels deep that hold JSON documents. A row's text escapes the quotes inside it at every level:
 
 <InferenceCard>
 
@@ -1032,7 +1032,7 @@ where id = :id::int
 
 ## JSON parameters [#typed-json]
 
-A JSON parameter declares its schema in its cast to `json` or `jsonb`, and Reylo infers the parameter's type from it:
+A JSON parameter declares its schema in its cast. Reylo infers the parameter's type from it:
 
 <InferenceCard>
 
@@ -1160,7 +1160,7 @@ where id in (select j.value from input, json_each(input.ids) as j)
 
 ## Bulk inserts
 
-Pass the rows as one [JSON parameter](#typed-json): the schema in its cast types them, and Reylo checks every row before the statement runs:
+Pass the rows as one [JSON parameter](#typed-json). The schema in its cast types them, and Reylo checks every row before the statement runs:
 
 <InferenceCard>
 
@@ -1283,7 +1283,7 @@ cross join jsonb_to_recordset(u.posts) as p(title text)
 </Dialect>
 <Dialect value="MySQL">
 
-On MySQL, a `with` only reads, so the users and the posts are two statements, run in one transaction:
+On MySQL, a `with` only reads. So the users and the posts are two statements in one transaction:
 
 ```ts twoslash tab="main.ts"
 import mysql from "mysql2/promise";
@@ -1370,7 +1370,7 @@ where u.title is not null
 </Dialect>
 <Dialect value="SQLite">
 
-On SQLite, a `with` only reads, so the users and the posts are two statements, run in one transaction:
+On SQLite, a `with` only reads. So the users and the posts are two statements in one transaction:
 
 ```ts twoslash tab="main.ts"
 import Database from "better-sqlite3";

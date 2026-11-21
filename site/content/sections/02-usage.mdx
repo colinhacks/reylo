@@ -21,7 +21,7 @@ const user = await getUser.run(db, { id: 1 });
 select id, name, email from users where id = :id::int
 ```
 
-Pass your database client as the first argument of `.run()`: a pool, a client, or a connection or [transaction](#run) taken from one, from any of the [supported drivers](#run).
+Pass your database client as the first argument of `.run()`. It takes a pool, a client, a connection or a [transaction](#run) from any [supported driver](#run).
 
 ### `.sql`
 
@@ -33,7 +33,7 @@ import getUser from "./get_user.sql";
 getUser.sql; // "select id, name, email from users where id = $1::int"
 ```
 
-To get the file's contents as written, before Reylo compiles its [parameters](/inference#naming), use `.raw`. Its path, relative to your project, is `.source`, a name for your [logs and traces](/typescript#observability); Reylo's own errors about the query start with it.
+To get the file's contents as written, before Reylo compiles its [parameters](/inference#naming), use `.raw`. Its path in your project is `.source`, for your [logs and traces](/typescript#observability).
 
 ### `.run()`
 
@@ -880,15 +880,15 @@ The error codes and types are specific to your database dialect, so TypeScript c
 | MySQL | `code`, the error's name, `errno` and `sqlState` | `key`, `constraint`, `table`, `column` |
 | SQLite | `code`, the result code's name, and `errcode` | `table`, `columns`, `constraint` |
 
-When the query runs none of your own code, such as a trigger or a function you wrote, Reylo also narrows each error to the names it can carry: a unique violation names one of the unique keys of the tables the query writes, as in the examples above. Your database's page says what it narrows.
+Reylo also narrows each error to the names it can carry. A unique violation names one of the unique keys of the tables the query writes. A trigger or function of your own turns this off. Your database's page lists what it narrows.
 
-- Each driver's error is read into the same fields, and the driver's own error is the `cause`. Any other error still throws, as from `.run()`: a refused connection, say.
+- Each driver's error is read into the same fields, and the driver's own error is the `cause`. Any other error, such as a refused connection, still throws.
 - The file exports the error's type as `QueryError`. On a synchronous SQLite driver, `.trySync()` returns the result itself.
-- On Postgres, an error aborts the transaction it is in, even an error `.try()` returned: every later statement in it fails, and the transaction rolls back. MySQL and SQLite keep it open after most errors. The [Postgres page](/postgres#database-errors) shows how to carry on after an error.
+- On Postgres, any error aborts its transaction, even one `.try()` returned. Every later statement in it fails, and the transaction rolls back. MySQL and SQLite keep it open after most errors. The [Postgres page](/postgres#database-errors) shows how to carry on after an error.
 
 ### `.readOnly`
 
-To tell whether a query writes nothing, read `.readOnly`. It is `true` only where Reylo finds nothing that could write, so it's safe to run the query again after a lost connection:
+To tell whether a query writes nothing, read `.readOnly`. It is `true` only when nothing in the query can write. Such a query is safe to retry after a lost connection:
 
 ```ts twoslash
 import getUser from "./get_user.sql";
@@ -897,7 +897,7 @@ getUser.readOnly;
 //      ^?
 ```
 
-A write is `false`, and so is a query that locks rows or may call a volatile function, directly or through a view, a policy or an operator. A function of your own counts by the volatility it declares.
+A write is `false`. So is a query that locks rows or may call a volatile function, even through a view, a policy or an operator. A function of your own counts by the volatility it declares.
 
 ### `.with()`
 

@@ -264,7 +264,7 @@ Queries stay on the server:
 
 ## The edge runtime
 
-On the edge runtime, which has no TCP sockets, use a driver that connects over HTTP or WebSockets, such as Neon's:
+The edge runtime has no TCP sockets. Use a driver that connects over HTTP or WebSockets, such as Neon's:
 
 ```ts twoslash tab="route.ts"
 import { neon } from "@neondatabase/serverless";
@@ -284,7 +284,7 @@ Next.js 16.4 marks the edge runtime as deprecated, and refuses it with Cache Com
 
 ## Building
 
-The build runs Reylo's type check after the compile, and a type error in a query or its caller stops it:
+The build runs Reylo's type check after the compile. A type error in a query or its caller stops it:
 
 ```text title="Terminal"
 $ next build
@@ -298,4 +298,4 @@ How the build checks types:
 
 - Next.js's own check runs without `--runExternalCode`, so `withReylo` turns it off and runs Reylo's instead. The build still prints "Skipping validation of types" for Next.js's check.
 - Setting `typescript.ignoreBuildErrors` in your config turns Reylo's check off too.
-- The build needs your dev database, as the type check does. In CI, start it and apply your migrations first ([Deployment / CI](/deployment)). A host that builds before it migrates, such as Vercel, can [build against a database of its own](/deployment#build-before-migrate).
+- The build needs your dev database, as the type check does. In CI, start it and [apply your migrations](/deployment) first. A host that builds before it migrates, such as Vercel, can [build against a database of its own](/deployment#build-before-migrate).

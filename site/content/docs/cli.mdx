@@ -28,14 +28,14 @@ scoop install reylo
 docker run --rm -v "$PWD:/work" ghcr.io/reylosql/reylo migrate status
 ```
 
-To pin a version in a project, name it in mise's `mise.toml`, which every developer and CI job then installs with `mise install`:
+To pin a version, name it in mise's `mise.toml`. Every developer and CI job then installs it with `mise install`:
 
 ```toml title="mise.toml"
 [tools]
 "github:reylosql/reylo" = "0.8.0"
 ```
 
-The scripts take a version too, as `REYLO_VERSION=0.8.0`, and the image a tag, as `ghcr.io/reylosql/reylo:0.8.0`.
+The scripts take `REYLO_VERSION=0.8.0`. The image takes a tag, as `ghcr.io/reylosql/reylo:0.8.0`.
 
 Each command reads the database your project names, as the type check does:
 
@@ -239,7 +239,7 @@ reylo db introspect --schema app
 
 Runs SQL on the database as written, outside any migration's history.
 
-It takes statements as text and files with `--file`, and runs the text first, then each file, each in the order given:
+It runs the statements you pass as text, then each `--file`, in order:
 
 ```terminal
 $ reylo run 'alter table users add column bio text'
@@ -252,7 +252,7 @@ On a SQLite file that isn't there, it refuses rather than make an empty database
 
 Serves the playground on this machine.
 
-The page is a query editor whose Params, Returns and errors are Reylo's analysis of the query against your project's database, at every keystroke. Nothing is run. It opens in your browser, or stays closed with `--no-open`, for a script or an agent, which reads the same analysis as JSON:
+The page is a query editor. It shows Reylo's analysis of the query against your database at every keystroke, without running it. The `--no-open` flag leaves the browser closed, for a script or an agent. Either reads the same analysis as JSON:
 
 ```text
 http://127.0.0.1:4983/?q=<sql>         the page, with a query in it

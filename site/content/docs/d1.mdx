@@ -133,7 +133,7 @@ wrangler d1 migrations apply DB --remote
 
 ## Blocked functions
 
-D1 blocks some of SQLite's functions, such as `json_pretty` and `power`. The type check also runs each query on Cloudflare's SQLite, as Wrangler runs it locally, so a blocked function is a type error. It does so when your `package.json` has `wrangler` and its config has a D1 database:
+D1 blocks some of SQLite's functions, such as `json_pretty` and `power`. The type check also runs each query on Cloudflare's SQLite, so a blocked function is a type error. It does so when your `package.json` has `wrangler` and its config has a D1 database:
 
 ```jsonc title="wrangler.jsonc"
 {
@@ -159,7 +159,7 @@ export default defineConfig({
 });
 ```
 
-Wrangler makes every imported `.sql` file a text module, and the Vitest plugin applies that rule before Vite runs any plugin. List Wrangler's other text types so that `.sql` is left to Reylo:
+Wrangler makes every imported `.sql` file a text module. The Vitest plugin applies that rule before any Vite plugin runs. List Wrangler's other text types so that `.sql` is left to Reylo:
 
 ```jsonc title="wrangler.jsonc"
 {

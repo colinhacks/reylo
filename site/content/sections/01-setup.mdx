@@ -207,7 +207,7 @@ To type-check without building, run `next typegen` first, which writes the route
 
 <Details summary="How the build checks the types" id="nextjs-type-check">
 
-Next.js type-checks with your project's `tsc` but without `--runExternalCode`, so `withReylo` turns that check off and runs `tsc --noEmit --runExternalCode` itself, after the compile and before the prerender. Next.js still prints "Skipping validation of types" for its own check.
+Next.js type-checks without `--runExternalCode`. So `withReylo` turns that check off and runs `tsc --noEmit --runExternalCode` itself, after the compile. Next.js still prints "Skipping validation of types" for its own check.
 
 </Details>
 
@@ -283,7 +283,7 @@ export default defineConfig({
 });
 ```
 
-Pass the D1 binding as the client, as in `getUser.run(env.DB, { id: 1 })`; you don't need `nodejs_compat`. For the type check, set [`direct_url`](/configuration#direct_url) in `.reylo.yaml` to a local SQLite file your migrations create ([Cloudflare D1](/d1#local-database)). Don't set it in `.env`, which Wrangler loads into the Worker as secrets.
+Pass the D1 binding as the client, as in `getUser.run(env.DB, { id: 1 })`; you don't need `nodejs_compat`. For the type check, point [`direct_url`](/configuration#direct_url) at a [local SQLite file](/d1#local-database) your migrations create. Don't set it in `.env`, which Wrangler loads into the Worker as secrets.
 
 Complete example: [`examples/cloudflare-workers`](https://github.com/reylosql/reylo/tree/main/examples/cloudflare-workers)
 
