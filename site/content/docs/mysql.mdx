@@ -27,9 +27,7 @@ create table users (
   active boolean not null default true,
   created_at datetime(3) not null default (utc_timestamp(3))
 );
-```
 
-```sql file="schema.sql" dialect="mysql"
 create table orders (
   id bigint auto_increment primary key,
   user_id int not null,
@@ -39,9 +37,7 @@ create table orders (
   receipt blob,
   foreign key (user_id) references users (id)
 );
-```
 
-```sql file="schema.sql" dialect="mysql"
 create table events (
   id int auto_increment primary key,
   kind varchar(10) not null,

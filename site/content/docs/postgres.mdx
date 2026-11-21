@@ -33,9 +33,7 @@ create table users (
   created_at timestamptz not null default now()
 );
 create unique index users_email_lower on users (lower(email));
-```
 
-```sql file="schema.sql"
 create table orders (
   id bigserial primary key,
   user_id integer not null references users (id),
@@ -45,9 +43,7 @@ create table orders (
   ships_on date,
   receipt bytea
 );
-```
 
-```sql file="schema.sql"
 create table events (
   id bigserial primary key,
   kind text not null check (kind in ('click', 'key')),
@@ -328,6 +324,8 @@ select kind, jsonb_agg(payload order by id) as payloads
 from events
 group by kind
 ```
+
+A whole row through `to_jsonb`:
 
 ```ts twoslash tab="main.ts"
 import userRow from "./pg_user_row.sql";

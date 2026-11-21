@@ -122,9 +122,13 @@
 
 /* A card and the whole format read in one scroll of the page: Fumadocs caps a code block at 600px. */
 #nd-page .typedef-card figure .max-h-\[600px\],
-#nd-page .typedef-analyzed figure .max-h-\[600px\],
 #nd-page .typedef-spec figure .max-h-\[600px\] {
   max-height: none;
+}
+
+/* The analysis a statement prints is long, so its terminal scrolls past 26rem. */
+#nd-page .typedef-analyzed figure .max-h-\[600px\] {
+  max-height: 26rem;
 }
 
 /* A dialect page's types: each row's label is a type's name, written as code, and its descriptor

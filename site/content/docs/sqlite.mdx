@@ -30,9 +30,7 @@ create table users (
   created_at text not null
     default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
-```
 
-```sql file="schema.sql" dialect="sqlite"
 create table orders (
   id integer primary key,
   user_id integer not null references users (id),
@@ -42,9 +40,7 @@ create table orders (
   ships_on text,
   receipt blob
 ) strict;
-```
 
-```sql file="schema.sql" dialect="sqlite"
 create table events (
   id integer primary key,
   kind text not null,
