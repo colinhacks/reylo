@@ -727,7 +727,7 @@ What Reylo can't type on MySQL, and what to do instead:
 
 | Limit | Instead |
 | --- | --- |
-| The labels of an `ENUM` or a `SET` a query reads through a `WITH` query, a `UNION` or an expression: it is typed `string`, or `Set<string>` | Select the column itself where you need the union |
+| The labels of an `ENUM` or a `SET` a query reads through an expression or a recursive `WITH` query, of an `ENUM` through a `UNION` with a side of another type, and of a `SET` through any `UNION`: it is typed `string`, or `Set<string>` | Select the column itself where you need the union |
 | Where in a query an error is, which MySQL doesn't say | None: the type check marks the whole query |
 | An `if` or a `case` that returns a `BIT` column, which MySQL sends as the column's bytes under a `DECIMAL` type, or as a number under a `BIT` one: it is typed `unknown` | Make the column a number first: `if(n > 0, enabled + 0, 0)` |
 | A `coalesce`, `ifnull`, `greatest`, `least` or `any_value` of `BIT` columns alone, which MySQL sends as the number's decimal digits under a `BIT` type, in a column or inside JSON: it is typed `unknown` | Make the column a number first: `coalesce(mask + 0, 0)` |
