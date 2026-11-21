@@ -43,36 +43,36 @@ export function MigrateLanding({ stars }: { stars?: number }) {
         </div>
       </header>
 
-      <Row n={1} title="The most advanced cross-dialect diff engine" visual={<DialectMigrations />}>
-        <p>Edit <code>schema.sql</code>, then generate a migration with one command. Editable as needed.</p>
-      </Row>
-
-      <Row n={2} title="Use the full power of your database" visual={<SchemaKinds />} flip>
+      <Row n={1} title="Use the full power of your database" visual={<FullSchema />}>
         <p>No lossy or limited DSLs. Declare views, functions, triggers, policies, checks, computed columns, and more.</p>
       </Row>
 
-      <Row n={3} title="Explicit disambiguation" visual={<Term lines={RENAMES} />}>
-        <p>When schema changes are ambiguous, Reylo asks you for clarification. Use <code>--drop</code> or <code>--rename</code> to disambiguate.</p>
-      </Row>
-
-      <Row n={4} title="Fast iteration loops" visual={<Term lines={PUSH} />} flip>
+      <Row n={2} title="Fast iteration loops" visual={<Term lines={PUSH} />} flip>
         <p>Push <code>schema.sql</code> to your development database on every save. Then generate a migration once you're done iterating on schema.</p>
       </Row>
 
-      <Row n={5} title="Schemaless mode" visual={<Schemaless />}>
-        <p>For a DDL-first experience, just delete <code>schema.sql</code>. You (or your agents) can write raw DDL migrations.</p>
+      <Row n={3} title="The most advanced cross-dialect diff engine" visual={<DialectMigrations />}>
+        <p>Edit <code>schema.sql</code>, then generate a migration with one command. Editable as needed.</p>
       </Row>
 
-      <Row n={6} title="Introspect anytime" visual={<Term lines={INTROSPECT} sql />} flip>
-        <p>Introspect the current database schema anytime in readable SQL.</p>
+      <Row n={4} title="Explicit disambiguation" visual={<Term lines={RENAMES} />} flip>
+        <p>When schema changes are ambiguous, Reylo asks you for clarification. Use <code>--drop</code> or <code>--rename</code> to disambiguate.</p>
       </Row>
 
-      <Row n={7} title={<>Linear history via <code>reylo.lock</code></>} visual={<LockFile />}>
+      <Row n={5} title={<>Linear history via <code>reylo.lock</code></>} visual={<LockFile />}>
         <p>Enforce linear migration history in Git with the <code>reylo.lock</code> lockfile.</p>
       </Row>
 
-      <Row n={8} title="Soundness guaranteed" visual={<Term lines={HAND_CHANGE} />} flip>
+      <Row n={6} title="Soundness guaranteed" visual={<Term lines={HAND_CHANGE} />} flip>
         <p>Checksums in the lockfile prevent edited or reordered migrations. Untracked schema changes are detected and flagged.</p>
+      </Row>
+
+      <Row n={7} title="Introspect anytime" visual={<Term lines={INTROSPECT} sql />}>
+        <p>Introspect the current database schema anytime in readable SQL.</p>
+      </Row>
+
+      <Row n={8} title="Schemaless mode" visual={<Schemaless />} flip>
+        <p>For a DDL-first experience, just delete <code>schema.sql</code>. You (or your agents) can write raw DDL migrations.</p>
       </Row>
 
       <Row n={9} title="Lock-free mode" visual={<Term lines={LOCK_FREE} />}>
@@ -523,98 +523,157 @@ function SchemaToMigration() {
   );
 }
 
-/**
- * One edit to schema.sql, and the migration `reylo migrate new email_required` writes for it on each
- * database, as reylo 0.8.0 wrote them: Postgres and MySQL alter the column, SQLite rebuilds the table.
- */
-const DIALECTS: { name: string; sql: ReactNode }[] = [
-  {
-    name: 'Postgres',
-    sql: (
-      <>
-        {kw('alter table')} users {kw('alter column')} email {kw('set not null')};
-      </>
+/** SQL as the editor windows colour it: keywords pink and types and strings yellow (`.ml-kw`, `.ml-ty`), names plain. */
+const SQL_KW = new Set('create type as enum domain check value table generated always identity primary key not null unique default references on delete cascade stored index where desc view select from join is function returns trigger language begin end return before update for each row execute enable level security policy using alter add column constraint valid validate set drop insert into rename to foreign or replace'.split(' '));
+const SQL_TY = new Set('text bigint integer int boolean timestamptz jsonb numeric varchar plpgsql tinyint'.split(' '));
+
+function Sql({ text }: { text: string }) {
+  return text.split(/('(?:[^']|'')*'|\$\$|\b[a-z_]+\b)/).map((t, i) =>
+    t.startsWith("'") ? (
+      <span key={i} className="ml-ty">
+        {t}
+      </span>
+    ) : SQL_KW.has(t) ? (
+      <span key={i} className="ml-kw">
+        {t}
+      </span>
+    ) : SQL_TY.has(t) ? (
+      <span key={i} className="ml-ty">
+        {t}
+      </span>
+    ) : (
+      t
     ),
-  },
-  {
-    name: 'MySQL',
-    sql: (
-      <>
-        {kw('alter table')} users {kw('modify column')} email {ty('text')} {kw('not null')};
-      </>
-    ),
-  },
-  {
-    name: 'SQLite',
-    sql: (
-      <>
-        {kw('create table')} new_users (id {ty('integer')} {kw('primary key')}, email {ty('text')} {kw('not null')}, name {ty('text')} {kw('not null')}) {kw('strict')};{'\n'}
-        {kw('insert into')} new_users (id, email, name) {kw('select')} id, email, name {kw('from')} users;{'\n'}
-        {kw('drop table')} users;{'\n'}
-        {kw('alter table')} new_users {kw('rename to')} users;
-      </>
-    ),
-  },
+  );
+}
+
+/** A whole schema.sql on Postgres, checked with `reylo db push`: an enum, a domain, an identity, a check, a generated column, a partial index, a view, a trigger and a policy. */
+const FULL_SCHEMA = "create type plan as enum ('free', 'pro', 'team');\n\ncreate domain email as text check (value ~ '^[^@\\s]+@[^@\\s]+$');\n\ncreate table users (\n  id bigint generated always as identity primary key,\n  email email not null unique,\n  plan plan not null default 'free',\n  created_at timestamptz not null default now()\n);\n\ncreate table posts (\n  id bigint generated always as identity primary key,\n  author_id bigint not null references users on delete cascade,\n  title text not null check (length(title) <= 200),\n  slug text generated always as (lower(replace(title, ' ', '-'))) stored,\n  published_at timestamptz,\n  updated_at timestamptz not null default now()\n);\n\ncreate index posts_feed on posts (published_at desc)\n  where published_at is not null;\n\ncreate view feed as\n  select p.id, p.title, u.email as author\n  from posts p join users u on u.id = p.author_id\n  where p.published_at is not null;\n\ncreate function touch() returns trigger language plpgsql as $$\nbegin\n  new.updated_at := now();\n  return new;\nend $$;\n\ncreate trigger posts_touch before update on posts\n  for each row execute function touch();\n\nalter table posts enable row level security;\n\ncreate policy own_posts on posts\n  using (author_id = current_setting('app.user_id')::bigint);";
+
+/** The first row's schema.sql, in an editor. */
+function FullSchema() {
+  return (
+    <div className="ml-win ml-full" aria-hidden="true">
+      <div className="ml-bar">
+        <FileIcon />
+        reylo/schema.sql
+      </div>
+      <pre className="ml-sql">
+        <Sql text={FULL_SCHEMA} />
+      </pre>
+    </div>
+  );
+}
+
+/** One edit to schema.sql: `posts.title` made required and checked, a column added, and the view over it widened; `…` marks lines left out. */
+const EDIT: [gutter: ' ' | '-' | '+' | '…', text: string][] = [
+  [' ', 'create table posts ('],
+  [' ', '  id integer primary key,'],
+  [' ', '  author_id integer not null,'],
+  ['-', '  title text,'],
+  ['+', "  title text not null check (length(title) <= 200),"],
+  ['+', '  published boolean not null default false,'],
+  [' ', '  body text not null,'],
+  [' ', '  foreign key (author_id) references users (id)'],
+  [' ', ');'],
+  ['…', ''],
+  [' ', 'create view post_titles as'],
+  ['-', '  select p.id, p.title, u.name as author'],
+  ['+', '  select p.id, p.title, p.published, u.name as author'],
+  [' ', '  from posts p join users u on u.id = p.author_id;'],
 ];
 
-/** schema.sql with `email` made required, and under it the migration for each database, as tabs: Postgres's first, another only when the reader picks it. */
+/**
+ * The migrations `reylo migrate new tighten_posts` wrote for that edit, run with reylo 0.8.1 on
+ * Postgres 18, MySQL 8.4 and SQLite, where `comments` references `posts`: Postgres drops and
+ * recreates the view and validates its new constraints apart, so no step blocks writes; MySQL takes
+ * one statement per migration; SQLite rebuilds `posts` and the table that references it.
+ */
+const MIGRATIONS: { name: string; files: [file: string, sql: string][] }[] = [
+  {
+    name: "Postgres",
+    files: [
+      [
+        "20261121090447_tighten_posts.sql",
+        "drop view post_titles;\nalter table posts add column published boolean default false not null;\nalter table posts add constraint title_not_null check (title is not null) not valid;\nalter table posts add constraint posts_title_check check (length(title) <= 200) not valid;\ncreate view post_titles as\n  select p.id, p.title, p.published, u.name as author\n  from posts p join users u on u.id = p.author_id;"
+      ],
+      [
+        "20261121090448_tighten_posts_2.sql",
+        "alter table posts validate constraint title_not_null;\nalter table posts validate constraint posts_title_check;\nalter table posts alter column title set not null;\nalter table posts drop constraint title_not_null;"
+      ]
+    ]
+  },
+  {
+    name: "MySQL",
+    files: [
+      [
+        "20261121090447_tighten_posts.sql",
+        "alter table posts\n  modify column title text not null,\n  add column published tinyint(1) not null default '0',\n  add constraint posts_chk_1 check ((length(title) <= 200));"
+      ],
+      [
+        "20261121090448_tighten_posts_2.sql",
+        "create or replace view post_titles as select p.id as id, p.title as title, p.published as published, u.name as author from (posts p join users u on((u.id = p.author_id)));"
+      ]
+    ]
+  },
+  {
+    name: "SQLite",
+    files: [
+      [
+        "20261121090447_tighten_posts.sql",
+        "drop view post_titles;\ncreate table new_posts (\n  id integer primary key,\n  author_id integer not null,\n  title text not null check (length(title) <= 200),\n  published boolean not null default false,\n  body text not null,\n  foreign key (author_id) references users (id)\n);\ncreate table new_comments (\n  id integer primary key,\n  post_id integer not null,\n  body text not null,\n  foreign key (post_id) references new_posts (id)\n);\ninsert into new_posts (id, author_id, title, body) select id, author_id, title, body from posts;\ninsert into new_comments (id, post_id, body) select id, post_id, body from comments;\ndrop table comments;\ndrop table posts;\nalter table new_posts rename to posts;\nalter table new_comments rename to comments;\ncreate index posts_author on posts (author_id);\ncreate view post_titles as\n  select p.id, p.title, p.published, u.name as author\n  from posts p join users u on u.id = p.author_id;"
+      ]
+    ]
+  }
+];
+
+/** The edit over the migration each database gets for it, as tabs: Postgres's first, another only when the reader picks it. */
 function DialectMigrations() {
   const [at, setAt] = useState(0);
   return (
     <div className="ml-pair">
-      <div className="ml-win ml-editor" aria-hidden="true">
+      <div className="ml-win ml-editor ml-edit" aria-hidden="true">
         <div className="ml-bar">
           <FileIcon />
           reylo/schema.sql
         </div>
         <pre className="ml-code">
-          <span className="ml-l" data-g=" ">
-            {kw('create table')} users (
-          </span>
-          <span className="ml-l" data-g=" ">
-            {'  id '}
-            {ty('integer')} {kw('primary key')},
-          </span>
-          <span className="ml-l ml-del" data-g="-">
-            {'  email '}
-            {ty('text')},
-          </span>
-          <span className="ml-l ml-add" data-g="+">
-            {'  email '}
-            {ty('text')} {kw('not null')},
-          </span>
-          <span className="ml-l" data-g=" ">
-            {'  name '}
-            {ty('text')} {kw('not null')}
-          </span>
-          <span className="ml-l" data-g=" ">
-            );
-          </span>
+          {EDIT.map(([g, text], i) =>
+            g === '…' ? (
+              <span key={i} className="ml-l ml-gap" data-g=" ">
+                …
+              </span>
+            ) : (
+              <span key={i} className={g === '-' ? 'ml-l ml-del' : g === '+' ? 'ml-l ml-add' : 'ml-l'} data-g={g}>
+                <Sql text={text} />
+              </span>
+            ),
+          )}
         </pre>
       </div>
       <div className="ml-win ml-under ml-dialects">
         <div className="ml-bar">
           <FileIcon />
-          reylo/migrations/20261104140347_email_required.sql
+          reylo/migrations/
         </div>
         <div className="ml-tabs" role="tablist">
-          {DIALECTS.map((d, i) => (
-            <button
-              key={d.name}
-              type="button"
-              role="tab"
-              aria-selected={i === at}
-              className={i === at ? 'on' : undefined}
-              onClick={() => setAt(i)}
-            >
+          {MIGRATIONS.map((d, i) => (
+            <button key={d.name} type="button" role="tab" aria-selected={i === at} className={i === at ? 'on' : undefined} onClick={() => setAt(i)}>
               {d.name}
             </button>
           ))}
         </div>
-        <div className="ml-kinds-body">
-          {DIALECTS.map((d, i) => (
+        <div className="ml-stack">
+          {MIGRATIONS.map((d, i) => (
             <pre key={d.name} className="ml-sql" data-on={i === at || undefined}>
-              {d.sql}
+              {d.files.map(([file, sql], j) => (
+                <span key={file}>
+                  {j ? '\n\n' : ''}
+                  <span className="ml-mu">-- {file}</span>
+                  {'\n'}
+                  <Sql text={sql} />
+                </span>
+              ))}
             </pre>
           ))}
         </div>
@@ -707,173 +766,6 @@ function LockFile() {
         {line('20261106093000_nick.sql', 'e51b7a38')}
         <span className="ml-er">{'>>>>>>> add-nick'}</span>
       </pre>
-    </div>
-  );
-}
-
-/** What schema.sql can declare, one kind at a time, from the docs' examples. */
-const KINDS: { name: string; sql: ReactNode }[] = [
-  {
-    name: 'Views',
-    sql: (
-      <>
-        {kw('create view')} active_users {kw('as')}{'\n'}
-        {'  '}
-        {kw('select')} id, email {kw('from')} users {kw('where')} deleted_at {kw('is null')};{'\n'}
-        {'\n'}
-        {kw('create materialized view')} daily_signups {kw('as')}{'\n'}
-        {'  '}
-        {kw('select')} date_trunc({ty("'day'")}, created_at) {kw('as')} day, count(*){'\n'}
-        {'  '}
-        {kw('from')} users {kw('group by')} 1;
-      </>
-    ),
-  },
-  {
-    name: 'Functions',
-    sql: (
-      <>
-        {kw('create function')} slugify(t {ty('text')}) {kw('returns')} {ty('text')}{'\n'}
-        {'  '}
-        {kw('language')} sql {kw('immutable')} {kw('as')} {'$$'}{'\n'}
-        {'    '}
-        {kw('select')} lower(regexp_replace(t, {ty("'[^a-z0-9]+'")}, {ty("'-'")}, {ty("'gi'")})){'\n'}
-        {'  '}
-        {'$$'};
-      </>
-    ),
-  },
-  {
-    name: 'Triggers',
-    sql: (
-      <>
-        {kw('create function')} touch() {kw('returns trigger language')} plpgsql {kw('as')} {'$$'}{'\n'}
-        {kw('begin')} new.updated_at := now(); {kw('return')} new; {kw('end')} {'$$'};{'\n'}
-        {'\n'}
-        {kw('create trigger')} users_touch {kw('before update on')} users{'\n'}
-        {'  '}
-        {kw('for each row execute function')} touch();
-      </>
-    ),
-  },
-  {
-    name: 'Indexes',
-    sql: (
-      <>
-        {kw('create index')} users_unverified {kw('on')} users (created_at){'\n'}
-        {'  '}
-        {kw('where')} verified_at {kw('is null')};{'\n'}
-        {'\n'}
-        {kw('create unique index')} users_email {kw('on')} users (lower(email));
-      </>
-    ),
-  },
-  {
-    name: 'Policies',
-    sql: (
-      <>
-        {kw('alter table')} documents {kw('enable row level security')};{'\n'}
-        {kw('create policy')} documents_own {kw('on')} documents{'\n'}
-        {'  '}
-        {kw('using')} (owner_id = current_setting({ty("'app.user_id'")})::{ty('integer')});
-      </>
-    ),
-  },
-  {
-    name: 'Checks',
-    sql: (
-      <>
-        {kw('create table')} bookings ({'\n'}
-        {'  '}seats {ty('integer')} {kw('not null check')} (seats {'>'} 0),{'\n'}
-        {'  '}starts_at {ty('timestamptz')} {kw('not null')},{'\n'}
-        {'  '}ends_at {ty('timestamptz')} {kw('not null')},{'\n'}
-        {'  '}
-        {kw('check')} (ends_at {'>'} starts_at){'\n'}
-        );
-      </>
-    ),
-  },
-  {
-    name: 'Computed',
-    sql: (
-      <>
-        {kw('create table')} line_items ({'\n'}
-        {'  '}price {ty('numeric')} {kw('not null')},{'\n'}
-        {'  '}qty {ty('integer')} {kw('not null')},{'\n'}
-        {'  '}total {ty('numeric')} {kw('generated always as')} (price * qty) {kw('stored')}{'\n'}
-        );
-      </>
-    ),
-  },
-  {
-    name: 'JSON Schema',
-    sql: (
-      <>
-        {kw('create table')} events ({'\n'}
-        {'  '}payload {ty('jsonb')} {kw('not null check')} (jsonb_matches_schema({ty("'{")}{'\n'}
-        {'    '}
-        {ty('"type": "object",')}
-        {'\n'}
-        {'    '}
-        {ty('"properties": { "x": { "type": "integer" } },')}
-        {'\n'}
-        {'    '}
-        {ty('"required": ["x"]')}
-        {'\n'}
-        {'  '}
-        {ty("}'")}, payload)){'\n'}
-        );
-      </>
-    ),
-  },
-  {
-    name: 'And more',
-    sql: (
-      <>
-        {kw('create extension if not exists')} btree_gist;{'\n'}
-        {kw('create type')} mood {kw('as enum')} ({ty("'sad'")}, {ty("'ok'")}, {ty("'happy'")});{'\n'}
-        {kw('create domain')} email {kw('as')} {ty('text')} {kw('check')} (value {kw('like')} {ty("'%@%'")});{'\n'}
-        {kw('create type')} floatrange {kw('as range')} (subtype = {ty('float8')});{'\n'}
-        {kw('create table')} rooms (room {ty('int')}, during {ty('tstzrange')},{'\n'}
-        {'  '}
-        {kw('exclude using')} gist (room {kw('with')} =, during {kw('with')} &&));{'\n'}
-        {kw('grant select on')} active_users {kw('to')} reporting;{'\n'}
-        {kw('comment on table')} users {kw('is')} {ty("'The people who sign in'")};
-      </>
-    ),
-  },
-];
-
-/** The kinds as tabs over an editor; none turns by itself. */
-function SchemaKinds() {
-  const [at, setAt] = useState(0);
-  return (
-    <div className="ml-win ml-kinds">
-      <div className="ml-bar">
-        <FileIcon />
-        reylo/schema.sql
-      </div>
-      <div className="ml-tabs" role="tablist">
-        {KINDS.map((k, i) => (
-          <button
-            key={k.name}
-            type="button"
-            role="tab"
-            aria-selected={i === at}
-            className={i === at ? 'on' : undefined}
-            onClick={() => setAt(i)}
-          >
-            {k.name}
-          </button>
-        ))}
-      </div>
-      <div className="ml-kinds-body">
-        {KINDS.map((k, i) => (
-          <pre key={k.name} className="ml-sql" data-on={i === at || undefined}>
-            {k.sql}
-          </pre>
-        ))}
-      </div>
     </div>
   );
 }
