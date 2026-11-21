@@ -18,9 +18,8 @@
 //! operand before the last, whose scope reaches the operands after it
 //! ([`crate::mysql_derived::with_outlives_operand`]).
 
-use crate::api::{MysqlColumn, MysqlDescribe};
+use crate::api::{MysqlColumn, MysqlDescribe, Scope};
 use crate::host::{as_str, Host, Lazy};
-use crate::mysql_params::TYPES_QUERY;
 use crate::types::Type;
 use sqlparser::ast::{Cte, Expr, ObjectNamePart, Query, Select, SelectItem, SelectItemQualifiedWildcardKind, SetExpr, SetOperator, TableFactor, TableWithJoins, With};
 
@@ -232,6 +231,11 @@ fn items(q: &Query, select: &Select) -> Vec<(String, Item)> {
                 let qualifier = alias.as_ref().map_or_else(|| table.to_string(), |a| a.name.value.clone());
                 // A WITH query of that name in scope, the innermost first, is what the name reads.
                 let ctes: &[Cte] = q.with.as_ref().map_or(&[], |w| &w.cte_tables);
+                // The server may fold a letter outside ASCII to another name's.
+                if !ctes.is_empty() && (!table.is_ascii() || ctes.iter().any(|c| !c.alias.name.value.is_ascii())) {
+                    out.push((qualifier, Item::Unknown));
+                    return;
+                }
                 match ctes.iter().rposition(|c| c.alias.name.value.eq_ignore_ascii_case(table)) {
                     // A recursive WITH query, or one whose name is in another case, is not followed.
                     Some(i) if q.with.as_ref().is_some_and(|w| w.recursive) || ctes[i].alias.name.value != *table => out.push((qualifier, Item::Unknown)),
@@ -370,18 +374,21 @@ enum Column {
     Unknown,
 }
 
+/// A column as the session's own `SHOW COLUMNS` has it, which reads the table the name resolves to:
+/// `information_schema` lists a table a TEMPORARY table of the same name hides.
 fn table_column(table: &str, column: &str, host: &Host) -> Lazy<Column> {
-    let rows = crate::mysql::by_table(host, TYPES_QUERY, &[table.to_string()])?.unwrap_or_default();
-    let rows: Vec<_> = rows.iter().filter(|row| row.first().and_then(as_str).is_some_and(|t| t == table)).collect();
+    let sql = format!("SHOW COLUMNS FROM `{}`", table.replace('`', "``"));
+    let Ok(rows) = host.query(&sql, Vec::new(), Scope::Statement)? else { return Some(Column::Unknown) };
     if rows.is_empty() {
         return Some(Column::Unknown);
     }
-    let Some(row) = rows.iter().find(|row| row.get(1).and_then(as_str).is_some_and(|c| c.eq_ignore_ascii_case(column))) else { return Some(Column::Absent) };
-    let (Some(data_type), Some(column_type)) = (row.get(2).and_then(as_str), row.get(3).and_then(as_str)) else { return Some(Column::Other) };
+    let Some(row) = rows.iter().find(|row| row.first().and_then(as_str).is_some_and(|c| c.eq_ignore_ascii_case(column))) else { return Some(Column::Absent) };
+    let Some(column_type) = row.get(1).and_then(as_str) else { return Some(Column::Other) };
+    let lower = column_type.to_ascii_lowercase();
     let labels = crate::mysql_types::labels(column_type);
-    Some(match (data_type.to_ascii_lowercase().as_str(), labels) {
-        ("enum", Some(labels)) => Column::Labelled(Labels::Enum(labels)),
-        ("set", Some(labels)) => Column::Labelled(Labels::Set(labels)),
+    Some(match labels {
+        Some(labels) if lower.starts_with("enum(") => Column::Labelled(Labels::Enum(labels)),
+        Some(labels) if lower.starts_with("set(") => Column::Labelled(Labels::Set(labels)),
         _ => Column::Other,
     })
 }
@@ -403,10 +410,9 @@ mod tests {
     }
 
     #[test]
-    fn a_table_lends_its_labels_only_to_a_column_the_server_flags() {
-        // As a session with a TEMPORARY `statuses` over a table of that name describes it: the
-        // catalog lists the table's ENUM, and the prepare reads the temporary VARCHAR.
-        let labelled = |shadowed: bool| {
+    fn a_table_lends_the_labels_of_what_the_session_resolves() {
+        // A session with a TEMPORARY `statuses` over a table of that name: the prepare and `SHOW COLUMNS` read the temporary table.
+        let labelled = |flags: u32, shown: &str| {
             let sql = "select val from statuses union all select val from statuses2";
             let Some(sqlparser::ast::Statement::Query(q)) = sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::MySqlDialect {}, sql).unwrap().pop() else { panic!() };
             let column = |ty: u32, flags: u32| serde_json::json!({ "name": "val", "type": ty, "flags": flags, "charset": 255 });
@@ -420,18 +426,22 @@ mod tests {
                 for need in host.needs() {
                     let (id, answer) = match need {
                         crate::api::Need::Describe { id, sql } => {
-                            let described = if shadowed && sql == "SELECT val FROM statuses" { column(253, 1) } else { column(254, 257) };
+                            let described = if sql == "SELECT val FROM statuses" { column(if flags & ENUM != 0 { 254 } else { 253 }, flags) } else { column(254, 257) };
                             (id, serde_json::json!({ "mysql": { "columns": [described], "params": [] } }))
                         }
-                        crate::api::Need::Query { id, params, .. } => (id, serde_json::json!({ "rows": [[params[0], "val", "enum", "enum('ready','done')", "", "", "utf8mb4"]] })),
+                        crate::api::Need::Query { id, sql, .. } => {
+                            let ty = if sql.ends_with("`statuses`") { shown } else { "enum('ready','done')" };
+                            (id, serde_json::json!({ "rows": [["val", ty, "NO", "", null, ""]] }))
+                        }
                     };
                     answers.insert(id, serde_json::from_value(answer).unwrap());
                 }
             }
             panic!("the analysis never settled")
         };
-        assert_eq!(labelled(false).as_deref(), Some("enum('ready' | 'done')"));
-        assert_eq!(labelled(true), None);
+        assert_eq!(labelled(257, "enum('ready','done')").as_deref(), Some("enum('ready' | 'done')"));
+        assert_eq!(labelled(1, "varchar(25)"), None);
+        assert_eq!(labelled(257, "enum('other','idle')").as_deref(), Some("enum('other' | 'idle' | 'ready' | 'done')"));
     }
 
     #[test]

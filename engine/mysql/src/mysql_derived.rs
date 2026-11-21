@@ -345,6 +345,10 @@ pub fn members(cte: &Cte) -> Option<(Vec<&SetExpr>, Vec<&SetExpr>)> {
     if q.with.is_some() || q.order_by.is_some() || q.fetch.is_some() || !q.locks.is_empty() {
         return None;
     }
+    // Which side reads the query is read off its name, which only a plain one settles.
+    if !plain_name(&cte.alias.name.value) || !q.to_string().is_ascii() {
+        return None;
+    }
     fn sides<'a>(b: &'a SetExpr, out: &mut Vec<&'a SetExpr>) -> Option<()> {
         match b {
             SetExpr::SetOperation { op: SetOperator::Union, left, right, .. } => {
@@ -375,9 +379,20 @@ pub fn members(cte: &Cte) -> Option<(Vec<&SetExpr>, Vec<&SetExpr>)> {
     (!anchors.is_empty()).then_some((anchors, recursive))
 }
 
+/// Whether a name is written the same way everywhere: ASCII letters, digits, `_` and `$`.
+fn plain_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
 /// The WITH queries of `ctes` that `text` reads, and those they read in turn, in their order: a
 /// name anywhere in the text counts, which at most keeps one it does not read.
 pub fn read_by(ctes: &[Cte], text: &str) -> Vec<Cte> {
+    // The text writes a quote in a name doubled, and the server may fold a letter outside ASCII to
+    // one inside it: where either could hide a reference, every WITH query stays, since one left
+    // out would have its name read a table instead.
+    if !text.is_ascii() || !ctes.iter().all(|cte| plain_name(&cte.alias.name.value) && cte.query.to_string().is_ascii()) {
+        return ctes.to_vec();
+    }
     let mut text = text.to_string();
     let mut read = vec![false; ctes.len()];
     // A WITH query reads only those before it, so one pass from the last finds them all.
@@ -450,7 +465,7 @@ pub fn read_through(name: &str, columns: &[(String, Option<&str>)]) -> String {
 /// WITH that names a query of its own `name`. Whether any was.
 pub fn reads_through(q: &mut Query, k: usize, name: &str, through: &Query) -> bool {
     fn query(q: &mut Query, name: &str, through: &Query) -> bool {
-        if q.with.as_ref().is_some_and(|w| w.cte_tables.iter().any(|c| c.alias.name.value.eq_ignore_ascii_case(name))) {
+        if q.with.as_ref().is_some_and(|w| w.cte_tables.iter().any(|c| c.alias.name.value.eq_ignore_ascii_case(name) || !c.alias.name.value.is_ascii())) {
             return false;
         }
         let mut any = false;
@@ -641,6 +656,12 @@ mod tests {
         assert_eq!(names("SELECT x FROM b"), ["a", "b"]);
         assert_eq!(names("SELECT y FROM c JOIN `d` ON true"), ["c", "d"]);
         assert!(names("SELECT 1 FROM abc").is_empty());
+        // A quote in a name, or text outside ASCII, keeps every one.
+        let quoted = query("with `a``b` as (select 1 as x), c as (select 2 as y) select 1");
+        assert_eq!(read_by(&quoted.with.as_ref().unwrap().cte_tables, "SELECT x FROM `a``b`").len(), 2);
+        assert_eq!(read_by(&q.with.as_ref().unwrap().cte_tables, "SELECT 1 FROM \u{e9}").len(), 4);
+        let cte = query("with recursive `r``s` (n) as (select 1 union all select n + 1 from `r``s` where n < 3) select n from `r``s`").with.unwrap().cte_tables.remove(0);
+        assert!(members(&cte).is_none());
     }
 
     #[test]

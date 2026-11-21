@@ -563,9 +563,9 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
                 },
             };
             // The prepare names an ENUM or a SET column without its labels.
-            let ty = match (labelled_of(c), traced_labels.get(position).cloned().flatten()) {
-                (Some(labelled), _) if matches!(ty.label.as_deref(), Some("enum" | "set")) => labelled,
-                (_, Some(traced)) => traced,
+            let ty = match (traced_labels.get(position).cloned().flatten(), labelled_of(c)) {
+                (Some(traced), _) => traced,
+                (None, Some(labelled)) if matches!(ty.label.as_deref(), Some("enum" | "set")) => labelled,
                 _ => ty,
             };
             let ty = if bits.contains(&position) { Type::unknown() } else { ty };
