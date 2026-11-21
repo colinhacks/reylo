@@ -86,6 +86,34 @@ export function GitHubStar({ github }: { github: string }) {
 }
 
 /**
+ * Under the table of contents, on a site of several pages (`DocsShell`'s `pages`), as nub's docs end
+ * theirs (nub/site/src/components/toc-star-nudge.tsx): a hairline, the repository's mark and name,
+ * and under them the handwritten "Leave a star!", its arrow rising to the link's bottom middle. The
+ * drawing hangs from the link's own box (`.dk-toc-star-note`, style.css), so it lands on the middle
+ * whatever the name's width.
+ */
+export function TocStar({ github }: { github: string }) {
+  const name = github.replace(/^https?:\/\/github\.com\//, '').replace(/\/$/, '');
+  return (
+    <div className="dk-toc-star">
+      <span className="dk-toc-star-anchor">
+        <a href={github} rel="noreferrer noopener" target="_blank" className="dk-toc-star-link">
+          <GitHubIcon className="size-3.5 shrink-0" />
+          <span>{name}</span>
+        </a>
+        <span aria-hidden className="dk-star dk-toc-star-note">
+          <svg viewBox="0 0 120 100" fill="none">
+            <path d="M44 62 C 34 56, 28 48, 32 38" />
+            <path d="M26 46 L 32 38 L 39 45" />
+          </svg>
+          <span>Leave a star!</span>
+        </span>
+      </span>
+    </div>
+  );
+}
+
+/**
  * Below xl, where the left column is hidden: one row above the title, not sticky. On a `centered`
  * page, which has no left column, it stays at every width and shares both edges of the page's column.
  */

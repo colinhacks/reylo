@@ -1,12 +1,18 @@
 'use client';
 
 import Link from 'fumadocs-core/link';
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { GitHubStar, ThemeRow } from './chrome';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { ThemeRow } from './chrome';
 import { SearchField } from './search-trigger';
 
 /** A page of the list. `code` writes its title as code, as a page named for a file is (`.reylo.yaml`); `external` marks a page that leaves the docs, with the links' ↗. */
-export type PageListItem = { title: string; href: string; code?: boolean; external?: boolean };
+export type PageListEntry = { title: string; href: string; code?: boolean; external?: boolean };
+
+/** A page of a group. `items` are the pages under it, listed after it a level in. */
+export type PageListItem = PageListEntry & { items?: PageListEntry[] };
+
+/** Every page of the list in reading order: each page, then the pages under it. */
+export const pagesOf = (groups: PageListGroup[]): PageListEntry[] => groups.flatMap((group) => group.items.flatMap((item) => [item, ...(item.items ?? [])]));
 
 /** A group of pages, under a label or, with none, the list's main run. */
 export type PageListGroup = { label?: string; items: PageListItem[] };
@@ -38,20 +44,26 @@ const centerCurrent = new Function('list', CENTER_CURRENT) as (list: Element | n
 const CENTER_COLUMN_SCRIPT = `try { (function (list) { ${CENTER_CURRENT} })(document.currentScript.previousElementSibling); } catch (e) {}`;
 
 function Groups({ list, onPick }: { list: PageList; onPick?: () => void }) {
+  const entry = (item: PageListEntry) => (
+    <Link key={item.href} href={item.href} className="dk-pages-item" aria-current={item.href === list.current ? 'page' : undefined} onClick={onPick}>
+      {item.code ? <code>{item.title}</code> : item.title}
+      {item.external ? (
+        <span aria-hidden className="dk-pages-out">
+          ↗
+        </span>
+      ) : null}
+    </Link>
+  );
   return (
     <nav className="dk-pages" aria-label="Pages">
       {list.groups.map((group, i) => (
         <div key={group.label ?? i} className="dk-pages-group">
           {group.label ? <div className="dk-pages-label">{group.label}</div> : null}
           {group.items.map((item) => (
-            <Link key={item.href} href={item.href} className="dk-pages-item" aria-current={item.href === list.current ? 'page' : undefined} onClick={onPick}>
-              {item.code ? <code>{item.title}</code> : item.title}
-              {item.external ? (
-                <span aria-hidden className="dk-pages-out">
-                  ↗
-                </span>
-              ) : null}
-            </Link>
+            <Fragment key={item.href}>
+              {entry(item)}
+              {item.items?.length ? <div className="dk-pages-sub">{item.items.map(entry)}</div> : null}
+            </Fragment>
           ))}
         </div>
       ))}
@@ -59,7 +71,7 @@ function Groups({ list, onPick }: { list: PageList; onPick?: () => void }) {
   );
 }
 
-function Foot({ list, github, star }: { list: PageList; github: string; star: boolean }) {
+function Foot({ list, github }: { list: PageList; github: string }) {
   return (
     <div className="dk-pages-foot">
       {list.linksLabel && list.links?.length ? <div className="dk-pages-label">{list.linksLabel}</div> : null}
@@ -71,7 +83,7 @@ function Foot({ list, github, star }: { list: PageList; github: string; star: bo
           </span>
         </a>
       ))}
-      <ThemeRow>{star ? <GitHubStar github={github} /> : <a href={github} rel="noreferrer noopener" target="_blank" className="dk-pages-link">GitHub<span aria-hidden className="dk-pages-out">↗</span></a>}</ThemeRow>
+      <ThemeRow><a href={github} rel="noreferrer noopener" target="_blank" className="dk-pages-link">GitHub<span aria-hidden className="dk-pages-out">↗</span></a></ThemeRow>
     </div>
   );
 }
@@ -91,7 +103,7 @@ export function PageListColumn({ list, brand, github }: { list: PageList; brand:
         <div className="dk-pages-brand">{brand}</div>
         <SearchField />
         <Groups list={list} />
-        <Foot list={list} github={github} star />
+        <Foot list={list} github={github} />
       </div>
       <script dangerouslySetInnerHTML={{ __html: CENTER_COLUMN_SCRIPT }} />
     </aside>
@@ -142,7 +154,7 @@ export function PageListMenu({ list, brand, github, title }: { list: PageList; b
           <div ref={scroll} className="dk-pages-scroll">
             <SearchField onOpen={() => setOpen(false)} />
             <Groups list={list} onPick={() => setOpen(false)} />
-            <Foot list={list} github={github} star={false} />
+            <Foot list={list} github={github} />
           </div>
         </div>
       ) : null}

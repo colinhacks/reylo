@@ -70,18 +70,21 @@ function collectAfterCompile() {
 type WatchingContext = { addWatchFile(file: string): void };
 
 /**
- * One MDX compile per edit, in `vite dev`. The browser's copy of a page and the server's are two
- * Vite environments, and each ran fumadocs-mdx's transform, so every edit compiled the page twice on
- * one thread. The transform is memoized by the file and its source, so the environment that asks
- * second takes the first one's output (both compile for development, so the output is the same),
- * and the files the compile watched (a remark plugin's dependencies) are watched for it too, so an
- * edit to one of them reaches the page in both environments.
+ * One MDX compile per edit in `vite dev`, and one per page in the build. The browser's copy of a page
+ * and the server's are two Vite environments, and each ran fumadocs-mdx's transform, so every edit
+ * compiled the page twice on one thread, and the build compiled every page twice, once for the
+ * client bundle and again for the server's (9.8 s of Reylo's 28.9 s build, 2026-11-20). The
+ * transform is memoized by the file and its source, so the environment that asks second takes the
+ * first one's output (both compile with the same options, so the output is the same), and the files
+ * the compile watched (a remark plugin's dependencies) are watched for it too, so an edit to one of
+ * them reaches the page in both environments.
  */
 function sharedCompile(): Plugin {
   const cache = new Map<string, { result: Promise<unknown>; watched: string[] }>();
   return {
     name: 'docs-kit:shared-compile',
-    apply: 'serve',
+    // One instance for every environment of the build, as the dev server has.
+    sharedDuringBuild: true,
     // A page's output also depends on files other than its own (a statement another section
     // defines, captured types): any change Vite sees empties the cache, so the cache only ever
     // shares one compile between the two environments that ask for the same version.

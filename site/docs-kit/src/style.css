@@ -1766,6 +1766,16 @@ html #nd-page .prose table {
   background: var(--dk-accent);
 }
 
+/* The pages under a page (`items` in its entry) sit a level in, by the table of contents' own step.
+   The page being read keeps its mark in the list's gutter, so every level's mark is in one column. */
+.dk-pages-sub {
+  padding-inline-start: 0.75rem;
+}
+
+.dk-pages-sub .dk-pages-item[aria-current='page']::before {
+  left: -1.5rem;
+}
+
 .dk-pages-out {
   font-size: 0.75rem;
   opacity: 0.7;
@@ -1899,6 +1909,9 @@ html #nd-page .prose table {
   align-items: center;
   gap: 0.375rem;
   font-size: 0.8125rem;
+  /* A whole-pixel line: on the inherited 19.5px one the label and its arrow snapped to the pixel
+     grid apart, and the arrow read level on some pages and 1px high on others. */
+  line-height: 1.25rem;
   color: var(--color-fd-muted-foreground);
 }
 
@@ -2319,4 +2332,67 @@ html:has(.dk-search[open]) {
   .dk-search-head {
     height: 3.5rem;
   }
+}
+
+/* ── The star under the table of contents (`TocStar` in chrome.tsx) ─────────────────────────────
+   After the entries, as nub's docs end theirs: a hairline, the repository's mark and name in the
+   entries' muted colour, and the handwritten note hanging under the link, its arrow's tip (32, 38)
+   in its 120 × 100 drawing, 6px under the link's bottom middle. The padding under the link holds the
+   drawing, which is placed absolutely and so takes no room of its own. */
+.dk-toc-star {
+  margin-top: 1rem;
+  padding: 1rem 0 5.25rem 0.75rem;
+  border-top: 1px solid var(--color-fd-border);
+}
+
+.dk-toc-star-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.dk-toc-star-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding-block: 0.375rem;
+  font-size: 0.875rem;
+  color: var(--color-fd-muted-foreground);
+  transition: color 120ms;
+}
+
+.dk-toc-star-link:hover {
+  color: var(--color-fd-accent-foreground);
+}
+
+.dk-toc-star-note {
+  position: absolute;
+  left: calc(50% - 32px);
+  top: calc(100% - 32px);
+  width: 120px;
+  height: 100px;
+  pointer-events: none;
+  user-select: none;
+}
+
+.dk-toc-star-note svg {
+  position: absolute;
+  inset: 0;
+  width: 120px;
+  height: 100px;
+}
+
+.dk-toc-star-note path {
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dk-toc-star-note > span {
+  position: absolute;
+  left: 50px;
+  top: 62px;
+  white-space: nowrap;
+  font: 600 1.125rem / 1 var(--font-hand);
+  transform: rotate(-3deg);
 }

@@ -3,8 +3,8 @@ import { DocsBody, DocsPage, DocsTitle } from 'fumadocs-ui/layouts/docs/page';
 import Link from 'fumadocs-core/link';
 import type { TOCItemType } from 'fumadocs-core/toc';
 import type { ComponentProps, CSSProperties, ReactNode } from 'react';
-import { TocFooter, TocHeader, TopRow } from './chrome';
-import { PageListColumn, PageListMenu, type PageList } from './page-list';
+import { TocFooter, TocHeader, TocStar, TopRow } from './chrome';
+import { PageListColumn, PageListMenu, pagesOf, type PageList } from './page-list';
 
 /**
  * Fumadocs' docs grid with the table of contents moved to the left, where the sidebar tree would
@@ -43,7 +43,7 @@ type Tree = ComponentProps<typeof DocsLayout>['tree'];
  * hold, or the first or last, shows the one link it has.
  */
 function Pager({ list }: { list: PageList }) {
-  const pages = list.groups.flatMap((g) => g.items).filter((p) => !p.external);
+  const pages = pagesOf(list.groups).filter((p) => !p.external);
   const at = pages.findIndex((p) => p.href === list.current);
   if (at < 0) return null;
   const prev = pages[at - 1];
@@ -97,6 +97,7 @@ export function DocsShell({
   pageTitle,
   brand,
   github,
+  star = true,
   before,
   titleAside,
   footer,
@@ -127,6 +128,8 @@ export function DocsShell({
   brand: ReactNode;
   /** The repository's URL. */
   github: string;
+  /** Whether the table of contents ends with the repository's link and its "Leave a star!" (`TocStar`); off on a page that asks for a star elsewhere, so no page asks twice. */
+  star?: boolean;
   /** Rendered before the title, outside the page's prose: a script of structured data, say. */
   before?: ReactNode;
   /** Rendered at the right end of the title's row, above its rule: `<CopyAgentPrompt />`, say. */
@@ -170,7 +173,7 @@ export function DocsShell({
         <PageListMenu list={pages} brand={brand} github={github} title={pageTitle ?? ''} />
         <DocsPage
           toc={centered ? [] : foldToc(toc, fold)}
-          tableOfContent={centered ? { enabled: false } : { style: 'clerk', container: { className: 'ps-4 pt-8' } }}
+          tableOfContent={centered ? { enabled: false } : { style: 'clerk', container: { className: 'ps-4 pt-8' }, footer: star && toc.length ? <TocStar github={github} /> : undefined }}
           tableOfContentPopover={centered ? { enabled: false } : undefined}
           breadcrumb={{ enabled: false }}
           footer={{ enabled: false }}

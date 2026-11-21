@@ -13,6 +13,7 @@ import { compareTitle, docsTitle, docsUrl, githubUrl, introUrl, migrateDocsUrl, 
 import { ogAlt, ogSize } from '@/lib/og';
 import { unlistedPage } from '@/lib/rust-content';
 import { source } from '@/lib/source';
+import { fetchStars } from '@/lib/stars';
 
 /**
  * The h2s whose h3s stay out of a page's table of contents, by page; none today, since every page's
@@ -54,6 +55,8 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     tree: source.getPageTree(),
     og: createHash('sha256').update(card).digest('hex').slice(0, 16),
     agentPrompt: agentPrompt === undefined ? undefined : `${agentPrompt}\n`,
+    // The intro's star pill shows the count.
+    stars: slug ? undefined : await fetchStars(),
   };
 }
 
@@ -116,9 +119,9 @@ export default function Page({ loaderData }: Route.ComponentProps) {
 }
 
 function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
-  const { slug, path, title, tree, url, agentPrompt } = loaderData;
+  const { slug, path, title, tree, url, agentPrompt, stars } = loaderData;
   const files = use(loadPage(path));
-  const components = getMDXComponents(slug === '' ? { HeroActions: () => <HeroActions agentPrompt={agentPrompt} /> } : undefined);
+  const components = getMDXComponents(slug === '' ? { HeroActions: () => <HeroActions agentPrompt={agentPrompt} stars={stars} /> } : undefined);
   const main = slug === '';
   // Reylo Migrate's docs are a site of their own, on one page under its landing page (/migrate): no
   // list of the docs' pages, so docs-kit draws its table of contents on the left.
@@ -150,6 +153,8 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
       pageTitle={pageName(slug, title)}
       brand={<Brand />}
       github={githubUrl}
+      // The intro asks for a star beside "Copy agent prompt" (components/hero.tsx), so its table of contents doesn't.
+      star={!main}
       footer={<>Released under the MIT License. Copyright © 2026 Colin McDonnell.</>}
     >
       {files.map((file, i) => (

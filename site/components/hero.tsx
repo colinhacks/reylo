@@ -1,7 +1,7 @@
 import { CopyAgentPrompt } from 'docs-kit/components';
 import { useEffect, useRef, type ReactNode } from 'react';
 import { wordmark } from '@/components/wordmark';
-import { githubUrl } from '@/lib/layout.shared';
+import { StarPill } from '@/components/star-pill';
 
 /**
  * The main page's title (app/routes/page.tsx): the mark over the name, centred, the name in
@@ -36,10 +36,11 @@ export function HeroTitle({ children }: { children: ReactNode }) {
 }
 
 /**
- * Under the main page's subheader (content/docs/index.mdx): the licence, npm and GitHub stars
- * badges, then "Copy agent prompt", centred, as at the top of Zod's README.
+ * Under the main page's subheader (content/docs/index.mdx): the licence and npm badges, then "Copy
+ * agent prompt" with the star pill beside it, centred, as at the top of Zod's README. The handwritten
+ * "Leave a star!" hangs to the pill's right, out of the pair's centring.
  */
-export function HeroActions({ agentPrompt }: { agentPrompt?: string }) {
+export function HeroActions({ agentPrompt, stars }: { agentPrompt?: string; stars?: number }) {
   return (
     <div className="hero-actions not-prose">
       <p className="hero-badges">
@@ -49,11 +50,20 @@ export function HeroActions({ agentPrompt }: { agentPrompt?: string }) {
         <a href="https://www.npmjs.com/package/reylo">
           <img src="https://img.shields.io/npm/v/reylo" alt="npm version" height={20} />
         </a>
-        <a href={githubUrl}>
-          <img src="https://img.shields.io/github/stars/reylosql/reylo" alt="GitHub stars" height={20} />
-        </a>
       </p>
-      <CopyAgentPrompt text={agentPrompt} />
+      <div className="hero-cta-row">
+        <CopyAgentPrompt text={agentPrompt} />
+        <span className="hero-star">
+          <StarPill stars={stars} large />
+          <span className="hero-star-note" aria-hidden="true">
+            <svg viewBox="0 0 44 24" fill="none">
+              <path d="M42 16 C 32 21, 16 20, 5 12" />
+              <path d="M7.2 19.7 L 5 12 L 13 11.7" />
+            </svg>
+            <span>Leave a star!</span>
+          </span>
+        </span>
+      </div>
     </div>
   );
 }
