@@ -77,6 +77,24 @@ impl Connection {
     }
 }
 
+/// Why an analysis can't run through the transaction pooler a URL names: Supabase's pooler on port
+/// 6543, whose transaction mode shares server sessions between clients and keeps one client's
+/// prepared statements on them for the next, so the statements an analysis prepares collide by
+/// name with those another type check, or one that was stopped, left there ("prepared statement
+/// \"s5\" already exists"), and its describes fail. Its session pooler and the direct connection
+/// give each client a session of its own.
+pub fn transaction_pooler(url: &str) -> Option<String> {
+    let Parsed { config, .. } = parse(url, &|key| std::env::var(key).ok()).ok()?;
+    let ports = config.get_ports();
+    config.get_hosts().iter().enumerate().find_map(|(i, host)| {
+        let tokio_postgres::config::Host::Tcp(name) = host else { return None };
+        let port = ports.get(i).or(ports.first()).copied().unwrap_or(5432);
+        (port == 6543 && name.to_ascii_lowercase().ends_with(".pooler.supabase.com")).then(|| {
+            format!("{name}:6543 is Supabase's transaction pooler, which shares server sessions between clients, and the statements the type check prepares on one collide with other clients' there: point direct_url in .reylo.yaml at its session pooler, port 5432 on the same host, or at the direct connection")
+        })
+    })
+}
+
 /// A connection to the database a libpq URL names, as the program opens one, and the server's
 /// version as it reports it when the connection starts (`server_version`), which costs no round
 /// trip: its number alone, `18.1` of `18.1 (Homebrew)`.
@@ -141,6 +159,9 @@ pub struct Session {
 
 impl Session {
     pub async fn open(url: &str) -> Result<Session, Failure> {
+        if let Some(refusal) = transaction_pooler(url) {
+            return Err(Failure::Error(refusal));
+        }
         let Started { client, version, date_style } = connect(url, None).await.map_err(|answer| Failure::of(&answer))?;
         Ok(Session { connection: Connection { client, url: url.to_string(), bridge: None, answers: AnswerCache::until_cleared(), date_style }, version: server_version(&version) })
     }
@@ -163,6 +184,9 @@ impl Program for Postgres {
             "open" => {
                 let url = request["url"].as_str().unwrap_or_default();
                 let bridge = request["bridge"].as_str().map(String::from);
+                if let Some(refusal) = transaction_pooler(url) {
+                    return Some(json!({ "status": "error", "message": refusal }));
+                }
                 match connect(url, bridge.as_deref()).await {
                     Ok(Started { client, version, date_style }) => {
                         self.next += 1;
@@ -586,6 +610,23 @@ mod tests {
 
     fn no_env(_: &str) -> Option<String> {
         None
+    }
+
+    #[test]
+    fn an_analysis_refuses_supabases_transaction_pooler_alone() {
+        let refusal = transaction_pooler("postgresql://postgres.abc:p%40ss@AWS-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require").expect("the transaction pooler");
+        assert!(refusal.starts_with("AWS-1-us-east-1.pooler.supabase.com:6543 is Supabase's transaction pooler"), "{refusal}");
+        assert!(!refusal.contains("p@ss") && !refusal.contains("p%40ss"), "{refusal}");
+        // Its session pooler, the direct connection, and another host's port 6543 take an analysis.
+        for url in [
+            "postgresql://postgres.abc:x@aws-1-us-east-1.pooler.supabase.com:5432/postgres",
+            "postgresql://postgres:x@db.abc.supabase.co:5432/postgres",
+            "postgresql://u@my-pooler.example.com:6543/app",
+            "postgresql://u@pooler.supabase.com.example.com:6543/app",
+            "postgresql://u@127.0.0.1:6543/app",
+        ] {
+            assert_eq!(transaction_pooler(url), None, "{url}");
+        }
     }
 
     #[test]
