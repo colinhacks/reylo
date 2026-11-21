@@ -19,35 +19,20 @@ export const compareTools = [
   { id: 'postgrestypedsql', name: 'Typed SQL', sub: 'Postgres', href: 'https://github.com/fli/postgres-typed-sql' },
 ];
 
-/** The rows by group, each with what it asks of a tool, shown when its label is hovered. */
-export const compareRows: { group: string; rows: { id: string; label: string; asks?: string }[] }[] = [
-  {
-    group: 'Setup',
-    rows: [
-      { id: 'no-codegen', label: 'No codegen', asks: 'Types appear with nothing to generate or commit.' },
-      { id: 'from-the-database', label: 'Live database', asks: 'Types come from your running database, not from a copy of its schema.' },
-    ],
-  },
-  {
-    group: 'Inference',
-    rows: [
-      { id: 'outer-joins', label: 'Nullable left joins', asks: 'A column from the joined side of a `left join` is typed as possibly null, and the other side is not.' },
-      { id: 'expression-nullability', label: 'Nullable expressions', asks: 'It knows that `count(*)` is never null and that `max(x)` can be.' },
-      { id: 'parameter-types', label: 'Parameter types', asks: 'Each parameter is typed from the query, with no annotation.' },
-      { id: 'parameter-nullability', label: 'Nullable parameters', asks: 'A parameter written to a nullable column takes `null`, and one compared with `=` does not.' },
-      { id: 'cardinality', label: 'Cardinality', asks: 'It works out how many rows a query returns: at most one for a lookup by primary key, exactly one for `count(*)`.' },
-      { id: 'json-shapes', label: 'Nested JSON', asks: 'The JSON a query builds, as with `json_agg(json_build_object(…))`, is typed by its shape.' },
-      { id: 'json-schema', label: 'JSON Schema types', asks: 'A `jsonb` column is typed by the JSON Schema its `CHECK` holds it to.' },
-    ],
-  },
-  {
-    group: 'Databases',
-    rows: [
-      { id: 'postgres', label: 'Postgres' },
-      { id: 'mysql', label: 'MySQL' },
-      { id: 'sqlite', label: 'SQLite' },
-    ],
-  },
+/** The rows, in one table, each with what it asks of a tool, shown when its label is hovered. */
+export const compareRows: { id: string; label: string; asks?: string }[] = [
+  { id: 'no-codegen', label: 'No codegen', asks: 'Types appear with nothing to generate or commit.' },
+  { id: 'from-the-database', label: 'Live database', asks: 'Types come from your running database, not from a copy of its schema.' },
+  { id: 'outer-joins', label: 'Nullable left joins', asks: 'A column from the joined side of a `left join` is typed as possibly null, and the other side is not.' },
+  { id: 'expression-nullability', label: 'Nullable expressions', asks: 'It knows that `count(*)` is never null and that `max(x)` can be.' },
+  { id: 'parameter-types', label: 'Parameter types', asks: 'Each parameter is typed from the query, with no annotation.' },
+  { id: 'parameter-nullability', label: 'Nullable parameters', asks: 'A parameter written to a nullable column takes `null`, and one compared with `=` does not.' },
+  { id: 'cardinality', label: 'Cardinality', asks: 'It works out how many rows a query returns: at most one for a lookup by primary key, exactly one for `count(*)`.' },
+  { id: 'json-shapes', label: 'Nested JSON', asks: 'The JSON a query builds, as with `json_agg(json_build_object(…))`, is typed by its shape.' },
+  { id: 'json-schema', label: 'JSON Schema types', asks: 'A `jsonb` column is typed by the JSON Schema its `CHECK` holds it to.' },
+  { id: 'postgres', label: 'Postgres' },
+  { id: 'mysql', label: 'MySQL' },
+  { id: 'sqlite', label: 'SQLite' },
 ];
 
 export const compareCell = (tool: string, row: string): CompareCell => compareResults.tools[tool]?.cells[row] ?? { state: 'n' };
@@ -58,6 +43,6 @@ export function expandCompare(text: string): string {
   const word = { y: 'yes', p: 'partly', n: 'no' };
   const head = `| | Reylo | ${compareTools.map((t) => `[${t.id === 'postgrestypedsql' ? 'Postgres Typed SQL' : t.name}](${t.href})`).join(' | ')} |`;
   const rule = `| --- | --- | ${compareTools.map(() => '---').join(' | ')} |`;
-  const rows = compareRows.flatMap((g) => g.rows).map((r) => `| ${r.label} | ${word[compareCell('reylo', r.id).state]} | ${compareTools.map((t) => word[compareCell(t.id, r.id).state]).join(' | ')} |`);
+  const rows = compareRows.map((r) => `| ${r.label} | ${word[compareCell('reylo', r.id).state]} | ${compareTools.map((t) => word[compareCell(t.id, r.id).state]).join(' | ')} |`);
   return text.replace('<CompareTable />', [head, rule, ...rows].join('\n'));
 }

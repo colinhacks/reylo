@@ -15,11 +15,15 @@ const db = postgres(process.env.DATABASE_URL);
 const author = await getAuthor.run(db, { id: 1 });
 ```
 
+It works through a new TypeScript feature:
+
 <Callout title="Content mappers">
 
 Reylo is powered by TypeScript [content mappers](https://github.com/microsoft/typescript-go/pull/4712), introduced in [TypeScript 7.1](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/) (currently in nightly builds), which let you dynamically define static types for external file types and integrate them directly into TypeScript compilation.
 
 </Callout>
+
+This is what happens on each import:
 
 <HowItWorksDiagram />
 
@@ -29,11 +33,12 @@ To install Reylo, you'll need:
 
 - **TypeScript 7.1 (currently in nightly builds).** The first release with content mappers. The `tsconfig.json` entry below needs a nightly from 2026-11-12 or later.
 - **Node 24 or later.**
-- **macOS, Linux or Windows, on x64 or Arm64.** Reylo's engine is a native program, installed for your machine.
 - **A running dev database.** Reylo reads your current schema from it ([Database](#database) points Reylo at it):
   - **Postgres** 14 to 19, including Neon and PGlite
   - **MySQL** 8.0.38 or later, including PlanetScale
   - **SQLite**, including Cloudflare D1 and Durable Objects, Turso and libSQL
+
+A coding agent can set it up for you:
 
 <AgentPrompt>
 
@@ -53,7 +58,6 @@ Each setup has a complete, working example project to copy, whose README's "How 
    For more queries, from nested JSON to bulk inserts, see https://reylo.dev/inference
 7. Run the typecheck script. The query's types come from the database; an error in a .sql file shows at its line and column.
 8. Install Reylo's agent skill, which gives later sessions its rules for writing queries: npx skills add reylosql/reylo --skill reylo
-9. If the project queries its database through Prisma Client, move each call to a .sql file as https://reylo.dev/prisma describes, starting with its schema changes.
 ```
 
 </AgentPrompt>
@@ -82,7 +86,7 @@ Add Reylo to `tsconfig.json`, for `.sql` files and for its project file, `.reylo
 }
 ```
 
-Then type-check with `--runExternalCode`, which lets `tsc` run content mappers:
+When type-checking with `tsc`, you must pass the `--runExternalCode` flag. Update your type check scripts accordingly:
 
 ```jsonc title="package.json"
 {
@@ -105,11 +109,7 @@ Load Reylo's preload with `--import`:
 node --env-file=.env --import reylo/register main.ts
 ```
 
-<Callout title="In production">
-
-The preload builds each query's module as it loads, so your app needs the engine at run time: keep `reylo` a dependency, not a dev dependency, and install it without `--omit=optional`. If you compile with `tsc`, copy your `.sql` files into its output directory, keeping their paths, and run the output with the preload.
-
-</Callout>
+Complete example: [`examples/node`](https://github.com/reylosql/reylo/tree/main/examples/node)
 
 </Tab>
 <Tab value="Bun" id="setup-bun">
@@ -136,6 +136,8 @@ await Bun.build({
 });
 ```
 
+Complete example: [`examples/bun`](https://github.com/reylosql/reylo/tree/main/examples/bun)
+
 </Tab>
 <Tab value="Nub" id="setup-nub">
 
@@ -155,6 +157,8 @@ nub add --allow-similar-name reylo
 
 A `nub.jsonc` applies to every package below it, and the preload fails where Reylo isn't installed. Give a workspace package that installs on its own, without Reylo, a `nub.jsonc` of its own holding `{}`.
 
+Complete example: [`examples/nub`](https://github.com/reylosql/reylo/tree/main/examples/nub)
+
 </Tab>
 <Tab value="Vite" id="setup-vite">
 
@@ -170,6 +174,8 @@ export default defineConfig({
 ```
 
 Import `.sql` files from server code only, such as a `.server/` directory: Vite bundles a query wherever it is imported, the browser included. For Vitest, this plugin is all you need.
+
+Complete example: [`examples/vite`](https://github.com/reylosql/reylo/tree/main/examples/vite)
 
 </Tab>
 <Tab value="Next.js" id="setup-nextjs">
@@ -205,6 +211,8 @@ Next.js type-checks with your project's `tsc` but without `--runExternalCode`, s
 
 </Details>
 
+Complete example: [`examples/nextjs`](https://github.com/reylosql/reylo/tree/main/examples/nextjs)
+
 </Tab>
 <Tab value="esbuild" id="setup-esbuild">
 
@@ -224,6 +232,8 @@ await esbuild.build({
 });
 ```
 
+Complete example: [`examples/esbuild`](https://github.com/reylosql/reylo/tree/main/examples/esbuild)
+
 </Tab>
 <Tab value="webpack" id="setup-webpack">
 
@@ -240,6 +250,8 @@ export default {
 
 Compile TypeScript with `swc-loader` or `babel-loader`, since TypeScript 7 has no JavaScript API for `ts-loader`.
 
+Complete example: [`examples/webpack`](https://github.com/reylosql/reylo/tree/main/examples/webpack)
+
 </Tab>
 <Tab value="Rspack" id="setup-rspack">
 
@@ -253,6 +265,8 @@ export default {
   },
 };
 ```
+
+Complete example: [`examples/rspack`](https://github.com/reylosql/reylo/tree/main/examples/rspack)
 
 </Tab>
 <Tab value="Cloudflare" id="setup-cloudflare-workers">
@@ -271,6 +285,8 @@ export default defineConfig({
 
 Pass the D1 binding as the client, as in `getUser.run(env.DB, { id: 1 })`; you don't need `nodejs_compat`. For the type check, set [`direct_url`](/configuration#direct_url) in `.reylo.yaml` to a local SQLite file your migrations create ([Cloudflare D1](/d1#local-database)). Don't set it in `.env`, which Wrangler loads into the Worker as secrets.
 
+Complete example: [`examples/cloudflare-workers`](https://github.com/reylosql/reylo/tree/main/examples/cloudflare-workers)
+
 </Tab>
 <Tab value="Jest" id="setup-jest">
 
@@ -288,21 +304,18 @@ export default {
 NODE_OPTIONS=--experimental-vm-modules npx jest
 ```
 
+Complete example: [`examples/jest`](https://github.com/reylosql/reylo/tree/main/examples/jest)
+
 </Tab>
 </Tabs>
 
-For a complete, working project, copy the example for your setup. Its README, under "How Reylo is wired in", names every line Reylo needs:
+Every setup also has a full project to copy:
 
-- [Node](https://github.com/reylosql/reylo/tree/main/examples/node)
-- [Nub](https://github.com/reylosql/reylo/tree/main/examples/nub)
-- [Bun](https://github.com/reylosql/reylo/tree/main/examples/bun)
-- [Vite](https://github.com/reylosql/reylo/tree/main/examples/vite)
-- [Next.js](https://github.com/reylosql/reylo/tree/main/examples/nextjs)
-- [esbuild](https://github.com/reylosql/reylo/tree/main/examples/esbuild)
-- [webpack](https://github.com/reylosql/reylo/tree/main/examples/webpack)
-- [Rspack](https://github.com/reylosql/reylo/tree/main/examples/rspack)
-- [Jest](https://github.com/reylosql/reylo/tree/main/examples/jest)
-- [Cloudflare Workers](https://github.com/reylosql/reylo/tree/main/examples/cloudflare-workers)
+<Callout title="Complete examples">
+
+Each tab links a complete, working project that you or your agents can use as a reference. Its README, under "How Reylo is wired in", names every line Reylo needs.
+
+</Callout>
 
 ### Database
 
@@ -323,29 +336,73 @@ DATABASE_URL=mysql://root@localhost:3306/app
 DATABASE_URL=file:./app.db
 ```
 
-To override this, create a `.reylo.yaml` file in your project root and set the `direct_url` field:
-
-```yaml title=".reylo.yaml"
-# or mysql://… or sqlite:./path/to/your.db, etc
-direct_url: postgres://localhost:5432/app
-```
-
-You can also reference other environment variables via string interpolation:
-
-```yaml title=".reylo.yaml"
-direct_url: ${APP_DATABASE_URL}
-```
-
-Or specify a set of `.env` files to load:
+Reylo reads `.env.local` and `.env`. To read other files, list them in `.reylo.yaml`:
 
 ```yaml title=".reylo.yaml"
 # the default is [.env.local, .env]
 env: [.env.development, .env]
 ```
 
+To override `DATABASE_URL`, set `direct_url` in `.reylo.yaml`. It reads other variables, with a fallback after `:-` as in a shell:
+
+```yaml title=".reylo.yaml"
+direct_url: postgres://${DB_USER:-postgres}@${DB_HOST:-localhost}:5432/app
+```
+
+It also runs commands in `$(…)`, such as a script that makes a database for your git branch:
+
+```yaml tab=".reylo.yaml"
+direct_url: $(./scripts/branch-db.sh)
+```
+
+```sh tab="scripts/branch-db.sh"
+#!/bin/sh
+# a database per git branch, made the first time
+db="app_$(git branch --show-current | tr -c 'a-zA-Z0-9\n' _)"
+createdb "$db" 2>/dev/null
+echo "postgres://localhost:5432/$db"
+```
+
 ### Editor [#editors]
 
-Set up your editor to use the TypeScript 7.1 language server, with content mappers on. Then a hover over a query shows its types, its SQL and the comment at the top of its `.sql` file, an error in a `.sql` file is underlined where it is, and go-to-definition on a query opens its `.sql` file.
+Hover over a query to see its types and the associated SQL statement.
+
+```sql tab="get_user.sql" dialect="all" errors
+select id, nmae, email
+from users
+where id = :id::int
+```
+
+```ts twoslash tab="main.ts"
+// @errors: 2322 2339
+import getUser from "./get_user.sql";
+import listPosts from "./list_posts.sql";
+
+const user = await getUser.run(db, { id: "1" });
+
+const posts = await listPosts.run(db);
+for (const post of posts) console.log(post.body);
+```
+
+```sql tab="list_posts.sql" dialect="all"
+select id, title
+from posts
+order by id
+```
+
+```ansi tab="Terminal"
+$ tsc --noEmit --runExternalCode
+[96mget_user.sql[0m:[93m1[0m:[93m12[0m - [91merror[0m[90m reylo6: [0mcolumn "nmae" does not exist (42703)
+
+[7m1[0m select id, nmae, email
+[7m [0m [91m           ~~~~[0m
+
+Found 1 error in get_user.sql[90m:1[0m
+```
+
+While a `.sql` file has an error, `tsc` holds back the TypeScript errors, so fix the SQL first.
+
+Set up your editor:
 
 <Tabs items={["VS Code", "Cursor", "Zed"]}>
 <Tab value="VS Code" id="editor-vscode">
@@ -426,41 +483,6 @@ Zed doesn't send `.sql` files to the language server, so an error inside one sho
 
 </Tab>
 </Tabs>
-
-```sql tab="get_user.sql" dialect="all" errors
-select id, nmae, email
-from users
-where id = :id::int
-```
-
-```ts twoslash tab="main.ts"
-// @errors: 2322 2339
-import getUser from "./get_user.sql";
-import listPosts from "./list_posts.sql";
-
-const user = await getUser.run(db, { id: "1" });
-
-const posts = await listPosts.run(db);
-for (const post of posts) console.log(post.body);
-```
-
-```sql tab="list_posts.sql" dialect="all"
-select id, title
-from posts
-order by id
-```
-
-```ansi tab="Terminal"
-$ tsc --noEmit --runExternalCode
-[96mget_user.sql[0m:[93m1[0m:[93m12[0m - [91merror[0m[90m reylo6: [0mcolumn "nmae" does not exist (42703)
-
-[7m1[0m select id, nmae, email
-[7m [0m [91m           ~~~~[0m
-
-Found 1 error in get_user.sql[90m:1[0m
-```
-
-While a `.sql` file has an error, `tsc` holds back the TypeScript errors, so fix the SQL first.
 
 ### Skill
 

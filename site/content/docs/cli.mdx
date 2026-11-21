@@ -5,7 +5,39 @@ description: Every command and flag of the reylo command, with where each is cov
 
 Every command and flag of `reylo`.
 
-Run it in your project with `npx reylo`. It reads the database your project names, as the type check does.
+In a JavaScript project, run it with `npx reylo`. Elsewhere, install the binary on its own:
+
+```bash tab="Homebrew"
+brew install reylosql/tap/reylo
+```
+
+```bash tab="curl"
+curl -fsSL https://reylo.dev/install.sh | sh
+```
+
+```powershell tab="PowerShell"
+irm https://reylo.dev/install.ps1 | iex
+```
+
+```bash tab="Scoop"
+scoop bucket add reylo https://github.com/reylosql/scoop-bucket
+scoop install reylo
+```
+
+```bash tab="Docker"
+docker run --rm -v "$PWD:/work" ghcr.io/reylosql/reylo migrate status
+```
+
+To pin a version in a project, name it in mise's `mise.toml`, which every developer and CI job then installs with `mise install`:
+
+```toml title="mise.toml"
+[tools]
+"github:reylosql/reylo" = "0.8.0"
+```
+
+The scripts take a version too, as `REYLO_VERSION=0.8.0`, and the image a tag, as `ghcr.io/reylosql/reylo:0.8.0`.
+
+Each command reads the database your project names, as the type check does:
 
 ```terminal
 Usage: reylo <command> [flags]
@@ -31,43 +63,9 @@ Flags:
   --version                Print the version
 ```
 
-## Install
-
-Outside a JavaScript project, install the command on its own. It is one binary, with no Node and nothing else to install beside it:
-
-```bash tab="Homebrew"
-brew install reylosql/tap/reylo
-```
-
-```bash tab="curl"
-curl -fsSL https://reylo.dev/install.sh | sh
-```
-
-```powershell tab="PowerShell"
-irm https://reylo.dev/install.ps1 | iex
-```
-
-```bash tab="Scoop"
-scoop bucket add reylo https://github.com/reylosql/scoop-bucket
-scoop install reylo
-```
-
-```bash tab="Docker"
-docker run --rm -v "$PWD:/work" ghcr.io/reylosql/reylo migrate status
-```
-
-Each installs the latest release, checked against its published checksums. To pin a version in a project, name it in mise's `mise.toml`, which every developer and CI job then installs with `mise install`:
-
-```toml title="mise.toml"
-[tools]
-"github:reylosql/reylo" = "0.8.0"
-```
-
-The scripts take a version too, as `REYLO_VERSION=0.8.0`, and the image a tag, as `ghcr.io/reylosql/reylo:0.8.0`.
-
 ## `reylo analyze`
 
-Prints what Reylo infers for each statement. [Inference engine](/inference#how-it-works) covers it.
+Prints what Reylo infers for each statement ([Inference](/inference)).
 
 ## `reylo generate`
 
@@ -134,11 +132,4 @@ http://127.0.0.1:4983/?q=<sql>         the page, with a query in it
 GET  /api/analyze?q=<sql>               a query's Params, Returns and diagnostics
 POST /api/analyze  {"sql": "<sql>"}     the same
 GET  /api/schema                        the tables, their columns, functions and types
-```
-
-## Examples
-
-```sh
-# the playground, for an agent: no browser
-npx reylo play --no-open
 ```

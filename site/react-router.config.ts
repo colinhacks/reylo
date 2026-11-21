@@ -7,7 +7,7 @@ import { builtPage } from './lib/rust-content.ts';
 // homepage (/), each page of content/docs (index.mdx at /docs, every other file at its name), each
 // page's Markdown (/index.md, /<name>.md), the files beside them, the playground (/play) and its link
 // preview (/play/og.png), and the page for a missing address, which Vercel serves from 404.html. The
-// Rust page is one only while the docs show Rust (lib/languages.ts).
+// Rust page is one too, unlisted while the docs leave Rust out (lib/rust-content.ts).
 const names = readdirSync('content/docs')
   .filter(builtPage)
   .map((name) => name.slice(0, -'.mdx'.length));

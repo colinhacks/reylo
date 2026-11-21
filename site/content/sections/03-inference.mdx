@@ -2,11 +2,9 @@
 title: "Inference"
 ---
 
-## How it works [#how-it-works]
+Reylo sends each statement against your live dev database without running it. It gets back a prepared version of the query plus your database's type descriptors, and it infers type information based on those.
 
-Your database does the typing.
-
-Reylo has it prepare each statement without running it, and reads its catalog. Run `reylo analyze` on a file to see what it learns:
+Reylo returns the types in a structured format that is then consumed by the TypeScript content mapper. To read the data in its raw form, you can use the CLI:
 
 <Analyzed file="queries/is_verified.sql">
 
@@ -24,6 +22,8 @@ select verified from users where id = :id
 
 </Analyzed>
 
+Each field of the result:
+
 | Field | What it holds |
 | --- | --- |
 | `file` | The file `reylo analyze` read the statement from. Only the CLI adds it: the format has no such field, and a statement given with `--sql` has none |
@@ -36,6 +36,14 @@ select verified from users where id = :id
 | `result` | Each column's name and type, and the cardinality: how many rows the statement returns |
 | `capabilities` | The tables the statement reads or writes |
 | `diagnostics` | What the database reports where it refuses the statement |
+
+The output is in [Reylo Type Defs](/typedefs), Reylo's format for types:
+
+<Callout type="warning" title="A developing API">
+
+Reylo Type Defs is still changing. For now, consider it an internal detail of Reylo, and don't build on it.
+
+</Callout>
 
 Reylo caches each answer in [`reylo/.cache/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so the next check after a migration sees the new schema.
 
@@ -233,6 +241,8 @@ where name like concat('%', :q::text, '%')
 ```
 
 </InferenceCard>
+
+Where nothing gives a parameter a type:
 
 <Details summary="When a parameter's type cannot be inferred" id="a-parameter-nothing-types">
 
@@ -514,6 +524,8 @@ where email = :email::text
 ```
 
 </InferenceCard>
+
+What counts as a key:
 
 <Details summary="Which matches count as a key, in each dialect" id="key-matches">
 
@@ -1434,7 +1446,7 @@ join json_each(u.value -> 'posts') as p
 </Dialect>
 </DialectTabs>
 
-## Discriminated unions with `oneOf` [#oneof]
+## Discriminated unions [#oneof]
 
 A `oneOf` in a schema is a [union](#unions). Give each member a key with one value, and it is a discriminated union, which TypeScript narrows on that key:
 

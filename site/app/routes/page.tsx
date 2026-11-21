@@ -11,6 +11,7 @@ import { HeroActions } from '@/components/hero';
 import { loadPage } from '@/lib/content';
 import { compareTitle, docsTitle, docsUrl, githubUrl, introUrl, migrateDocsUrl, markdownPath, pageGroups, pageLinks, pageTitle, siteUrl } from '@/lib/layout.shared';
 import { ogAlt, ogSize } from '@/lib/og';
+import { unlistedPage } from '@/lib/rust-content';
 import { source } from '@/lib/source';
 
 /**
@@ -75,8 +76,9 @@ export function meta({ loaderData }: Route.MetaArgs): Route.MetaDescriptors {
     { name: 'application-name', content: 'Reylo' },
     { name: 'author', content: 'Colin McDonnell' },
     { name: 'creator', content: 'Colin McDonnell' },
-    { name: 'robots', content: 'index, follow' },
-    { name: 'googlebot', content: 'index, follow, max-image-preview:large, max-snippet:-1' },
+    // An unlisted page (lib/rust-content.ts) is reachable, but kept out of search results.
+    { name: 'robots', content: unlistedPage(loaderData.slug) ? 'noindex, follow' : 'index, follow' },
+    { name: 'googlebot', content: unlistedPage(loaderData.slug) ? 'noindex, follow' : 'index, follow, max-image-preview:large, max-snippet:-1' },
     { tagName: 'link', rel: 'canonical', href: url },
     { tagName: 'link', rel: 'alternate', type: 'text/markdown', href: `${siteUrl}${markdownPath(loaderData.slug)}` },
     { property: 'og:title', content: title },
