@@ -25,38 +25,6 @@
   display: inline-flex;
 }
 
-/* GitHub's star button, unstarred. Only the border warms on hover. */
-.rh-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4375rem;
-  height: 2.125rem;
-  padding: 0 0.875rem 0 0.625rem;
-  border: 1px solid var(--color-fd-border);
-  border-radius: 999px;
-  color: var(--color-fd-foreground);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  transition: border-color 0.15s;
-}
-
-.rh-pill:hover {
-  border-color: var(--color-fd-primary);
-}
-
-.rh-pill svg {
-  width: 1.0625rem;
-  height: 1.0625rem;
-}
-
-.rh-pill .rh-pill-star {
-  width: 0.875rem;
-  height: 0.875rem;
-  margin-left: 0.125rem;
-  color: var(--color-fd-muted-foreground);
-}
-
 /* The note's arrow tip is at (150, 3) in its box: the box's left edge 150px left of the pill's middle,
    its top 2px under the pill, so the tip lands a hair below the pill's underside. */
 .rh-star-note {
@@ -81,6 +49,23 @@
   stroke-width: 1.9;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+/* On a wide window, the note on the pill's right, in the margin past the nav, clear of the hero's
+   windows under the pill's left: the arrow's tip at (20, 3), rising from the note's start. */
+.rh-star-note-right {
+  display: none;
+}
+
+@media (min-width: 1420px) {
+  .rh-star-note-left {
+    display: none;
+  }
+
+  .rh-star-note-right {
+    display: block;
+    left: calc(50% - 20px);
+  }
 }
 
 .dark .rh-star-note {
@@ -230,7 +215,8 @@
 }
 
 .rh-hero-split {
-  padding-bottom: 4rem;
+  padding-top: 6rem;
+  padding-bottom: 6rem;
 }
 
 /* The install and "Read the docs" side by side, and the button under the command only where the
@@ -281,8 +267,8 @@
 .rh-examples {
   max-width: 1280px;
   margin: 0 auto;
-  padding: 7rem 3rem;
-  border-top: 1px solid var(--color-fd-border);
+  /* No rule above it: the hero's "Works with" row parts the two. */
+  padding: 4rem 3rem 7rem;
 }
 
 .rh-section-head {
@@ -320,16 +306,37 @@
   display: none;
 }
 
+/* At least as tall as the list of names beside it, the room past its own lines in the query, so the
+   card and the list end together; an example longer than the list grows the card past it. */
+.rh-ex-cards {
+  display: flex;
+  flex-direction: column;
+}
+
 .rh-ex-card[data-on] {
-  display: block;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.rh-ex-card > .rh-card {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.rh-ex-card > .rh-card > .rh-card-row {
+  flex: 1;
 }
 
 /* The list: the names in the left gutter, the picked one lit with the yellow rule the docs' sidebar uses. */
 .rh-ex-list {
   display: flex;
   flex-direction: column;
-  gap: 0.125rem;
-  align-self: center;
+  /* Spaced so the list is as tall as the longest card, Subqueries', and no card runs past it. */
+  gap: 0.5rem;
+  /* At the top of the card, which grows and shrinks with the picked example, so the names never move. */
+  align-self: start;
 }
 
 .rh-ex-list button {
@@ -371,8 +378,8 @@
 .rh-features {
   max-width: 1280px;
   margin: 0 auto;
-  padding: 7rem 3rem;
-  border-top: 1px solid var(--color-fd-border);
+  /* No rule above it: the hero's "Works with" row parts the two. */
+  padding: 4rem 3rem 7rem;
 }
 
 .rh-grid {

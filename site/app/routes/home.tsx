@@ -6,6 +6,7 @@ import { siteTitle, siteUrl } from '@/lib/layout.shared';
 import { movedAnchorsScript } from '@/lib/moved-anchors';
 import { ogAlt, ogSize } from '@/lib/og';
 import { source } from '@/lib/source';
+import { fetchStars } from '@/lib/stars';
 import { structuredData } from '@/lib/structured-data';
 
 /**
@@ -18,23 +19,7 @@ import { structuredData } from '@/lib/structured-data';
 export async function loader() {
   const description = source.getPage([])?.data.description ?? '';
   const og = createHash('sha256').update(await readFile('app/routes/opengraph-image.tsx')).digest('hex').slice(0, 16);
-  return { description, og, stars: await starCount() };
-}
-
-/** The star count once read, for an hour: GitHub answers 60 unauthenticated requests an hour, which a dev server's reloads use up. */
-let cached: { stars: number; at: number } | undefined;
-
-async function starCount(): Promise<number | undefined> {
-  if (cached && Date.now() - cached.at < 3_600_000) return cached.stars;
-  try {
-    const res = await fetch('https://api.github.com/repos/reylosql/reylo', { headers: { Accept: 'application/vnd.github+json' } });
-    const repo = (await res.json()) as { stargazers_count?: number };
-    if (!res.ok || repo.stargazers_count === undefined) return undefined;
-    cached = { stars: repo.stargazers_count, at: Date.now() };
-    return repo.stargazers_count;
-  } catch {
-    return undefined;
-  }
+  return { description, og, stars: await fetchStars() };
 }
 
 /** The site's metadata: its title, the intro's description, and the link previews, whose image is app/routes/opengraph-image.tsx. */
