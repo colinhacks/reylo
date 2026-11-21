@@ -51,10 +51,10 @@ direct_url: ${DIRECT_URL:-${DATABASE_URL}}
 
 Why not the transaction pooler:
 
-- The type check prepares each query on its session. The transaction pooler shares sessions between clients, so one client's prepared queries collide with another's, and the type check refuses the shared pooler's port 6543.
+- The type check prepares each query on its session. The transaction pooler shares sessions between clients, so their prepared queries collide. The type check refuses its port, 6543.
 - Copy each connection string from the Connect panel of your project's dashboard.
 - The direct connection is IPv6 only, unless your project has Supabase's IPv4 add-on. From a network without IPv6, use the session pooler.
-- With no TLS setting in the URL, the connection is encrypted, since Supabase offers TLS. To check its certificate too, download it from your project's database settings and name it in the URL ([TLS](/configuration#direct_url)).
+- With no TLS setting in the URL, the connection is encrypted, since Supabase offers TLS. To check its certificate too, download it from your project's database settings and [name it in the URL](/configuration#direct_url).
 
 ## Drivers
 
@@ -91,7 +91,7 @@ Through the transaction pooler:
 - Reylo prepares its queries on postgres.js as postgres.js prepares its own, so with `prepare: false` they run unprepared too.
 - Reylo's queries on `pg` are unnamed statements, which the transaction pooler runs with no setting.
 - Supabase's [Postgres.js guide](https://supabase.com/docs/guides/database/postgres-js) notes that postgres.js pipelines queries, which the transaction pooler can answer out of order.
-- Supabase's JavaScript client, `@supabase/supabase-js`, isn't a client `.run()` takes: it calls Supabase's REST API, which takes no SQL. Create a postgres.js or `pg` client for your Reylo queries.
+- The `@supabase/supabase-js` client calls Supabase's REST API, which takes no SQL, so `.run()` can't use it. Create a postgres.js or `pg` client for your Reylo queries.
 
 ## Local development
 
@@ -115,7 +115,7 @@ supabase db reset
 
 About the local database:
 
-- The local database has Supabase's own schemas, such as `auth` and `storage`, so a query that reads `auth.users` or calls `auth.uid()` is typed as it is on your project.
+- The local database has Supabase's own schemas, such as `auth` and `storage`. A query that reads `auth.users` is typed as it is on your project.
 - The type check reads every `.sql` file that `tsconfig.json` takes in, and a migration of several statements is an error. If your `include` takes in `supabase/`, as `**/*` does, add `"exclude": ["supabase"]`.
 
 ## CI
@@ -159,7 +159,7 @@ Once that runs:
 
 Reylo runs each query as the role your client connects as. Supabase's connection strings connect as `postgres`, which bypasses Row Level Security, so no policy filters those queries.
 
-To run a query as a signed-in user, as Supabase's REST API runs their requests, switch to the `authenticated` role in a transaction, with the user's claims:
+To run a query as a signed-in user, switch to the `authenticated` role in a transaction, with the user's claims:
 
 ```ts twoslash tab="main.ts" dialect="postgres"
 declare const userId: string;

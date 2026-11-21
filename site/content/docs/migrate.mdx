@@ -281,7 +281,7 @@ drop policy docs_read on docs;
 create policy docs_read on docs for select to reader, writer using (owner_name = current_user or body is null);
 ```
 
-Text search configurations, security labels and a few other kinds are compared by name only, or not at all: write them, and their changes, by hand. On MySQL, so is a routine, trigger or event made under another `sql_mode` than the server's.
+Text search configurations, security labels and a few other kinds are compared by name only, or not at all. Write their changes by hand. On MySQL, so is a routine, trigger or event made under another `sql_mode` than the server's.
 
 ## Schemaless mode
 
@@ -425,7 +425,7 @@ Some commands only run in development:
 
 <Callout title="Development only">
 
-The commands that change a database in ways no deploy wants, `migrate dev`, `db push`, `db reset` and `db wipe`, refuse to run where `CI` is set.
+Four commands refuse to run where `CI` is set: `migrate dev`, `db push`, `db reset` and `db wipe`.
 
 </Callout>
 
@@ -463,7 +463,7 @@ Writes the next migration, from your change to `schema.sql`.
 
 - It replays your migrations on a shadow database and writes the difference to `schema.sql`. It never reads your database's schema.
 - It first checks that your development database ran each migration as it now reads. An edited or deleted one, such as another branch's, is refused until `reylo migrate dev` settles it.
-- With no `schema.sql`, it writes what your development database has that your migrations don't ([Schemaless mode](/migrate/docs#schemaless-mode)).
+- With no `schema.sql`, it writes what your development database has that your migrations don't. That's [schemaless mode](/migrate/docs#schemaless-mode).
 - Edit the file freely, and add any data changes.
 - On Postgres, new constraints and indexes never block writes, and a table rewrite needs `--blocking`. Each statement gives up a busy lock after half a second and retries.
 
@@ -608,7 +608,7 @@ When nothing changed since its last run, it skips the shadow databases.
 
 ### `deploy`
 
-Runs the lock's pending migrations, each in one transaction with its history row. On MySQL, where a schema change commits on its own, each migration holds one change. A statement in MySQL's executable comments, as mysqldump writes them (`/*!50001 … */`), runs as written, and is checked as every version of MySQL reads it, with each comment's text run or skipped.
+Runs the lock's pending migrations, each in one transaction with its history row. On MySQL, a schema change commits on its own, so each migration holds one change. A statement in MySQL's executable comments, such as `/*!50001 … */`, runs as written. It's checked both with and without each comment's text.
 
 ```terminal
 $ reylo migrate deploy
@@ -620,7 +620,7 @@ Applying to postgres://db.example.com/app
 It needs no shadow database. It refuses to run:
 
 - **On an edited schema file.** A `schema.sql` that doesn't match the lock's checksum.
-- **On a database changed by hand.** Each migration stores a fingerprint of the schema, and a database that no longer matches it is refused, a hand-added index included.
+- **On a database changed by hand.** Each migration stores a fingerprint of the schema. A database that no longer matches it is refused, even for a hand-added index.
 
 The refusal shows the change:
 
@@ -654,7 +654,7 @@ $ reylo migrate deploy --dry-run
 
 A failed migration rolls back and records nothing. Fix the file, run `reylo migrate dev`, and deploy again. Where a database already ran the old version, write a new migration instead.
 
-A migration and the build that needs it go live at different moments, and the old build's queries fail on a renamed or dropped column. So rename in steps. To rename `users.email` to `contact`, add the new column and copy its values, then deploy code that reads `contact` and writes both:
+A migration and the build that needs it go live at different moments. The old build's queries fail on a renamed or dropped column. So rename in steps. To rename `users.email` to `contact`, add the new column and copy its values, then deploy code that reads `contact` and writes both:
 
 ```sql title="20261110120000_add_contact.sql"
 alter table users add column contact text;
@@ -671,7 +671,7 @@ alter table users drop column email;
 Two things the fingerprint leaves out:
 
 - **Comments.** One added in a dashboard stops no deploy.
-- **Upgrades.** After a new Reylo or a new major version of your database, the next deploy stores a new fingerprint and says so.
+- **Upgrades.** After you upgrade Reylo or your database's major version, the next deploy stores a new fingerprint and says so.
 
 ### `status`
 
@@ -693,7 +693,7 @@ Migrations on postgres://db.example.com/app
     reylo migrate deploy
 ```
 
-It exits 1 for anything out of step: a pending, edited or deleted migration, a change made by hand, or a `schema.sql` changed with no migration:
+It exits 1 for anything out of step, such as a pending migration or a change made by hand:
 
 ```terminal
 $ reylo migrate status
@@ -717,7 +717,7 @@ In CI, run it after a deploy. Before one, run `reylo migrate deploy --dry-run`.
 
 ### `lock`
 
-Writes the lock from your database's history, to turn the lock back on ([Lock-free mode](/migrate/docs#lock-free-mode)) or replace a lost one. It refuses where a lock exists:
+Writes the lock from your database's history. Use it to [turn the lock back on](/migrate/docs#lock-free-mode) or replace a lost one. It refuses where a lock exists:
 
 ```terminal
 $ reylo migrate lock
@@ -738,7 +738,7 @@ Recording on postgres://db.example.com/app
 
 ### `history pull`
 
-Writes your migration files from your database's history: a deleted migration comes back, an edited one is written over, and a lost lock is written again:
+Writes your migration files from your database's history. A deleted migration comes back, and an edited one is written over:
 
 ```terminal
 $ reylo migrate history pull --url $PROD_URL
@@ -862,7 +862,7 @@ create table users (
 );
 ```
 
-In a terminal, a spinner shows while it reads, and the SQL is coloured; a pipe or a redirect gets plain SQL. Where it can't check the schema, it prints the database's own dump instead.
+In a terminal, a spinner shows while it reads, and the SQL is coloured. A pipe or a redirect gets plain SQL. Where it can't check the schema, it prints the database's own dump instead.
 
 To save it over `schema.sql`, write another file first, so a failed run can't empty it:
 
@@ -885,7 +885,7 @@ direct_url: ${DATABASE_URL}
 shadow_url: null
 ```
 
-To migrate another database, pass `--url`, which on Turso Cloud is its `libsql://` URL with your auth token ([Turso](/turso#migrations)):
+To migrate another database, pass `--url`. On [Turso Cloud](/turso#migrations), that's its `libsql://` URL with your auth token:
 
 ```terminal
 $ reylo migrate status --url $PROD_URL
@@ -907,11 +907,11 @@ Most commands use shadow databases: throwaway databases where Reylo Migrate repl
 
 Each database makes them its own way:
 
-- **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do the roles Neon and Supabase give you. Reylo Migrate keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new. On Azure Database for PostgreSQL, list each extension your migrations create in the server's `azure.extensions` parameter first, or no shadow can create it. Timescale Cloud refuses `create database`, so point `shadow_url` at a server with TimescaleDB and `timescaledb_toolkit`, such as the `timescale/timescaledb-ha` image. On Supabase, each shadow also gets Supabase's extensions and schemas, such as `auth` and `storage`, so a migration that references `auth.users` replays as it runs.
-- **MySQL:** on your database's server, with `create database`, so your user needs the `CREATE` privilege on every database. PlanetScale's Vitess refuses `create database`, so point `shadow_url` at a plain MySQL 8.4 server.
-- **SQLite:** in memory. There's nothing to grant. A Turso database's shadows run on libSQL's own engine, as Turso Cloud does ([Turso](/turso#migrations)).
+- **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do Neon's and Supabase's roles. Reylo Migrate keeps up to 32 as a cache, so a run replays only new migrations. On Azure, list each extension your migrations create in the server's `azure.extensions` parameter. Timescale Cloud refuses `create database`, so point `shadow_url` at the `timescale/timescaledb-ha` image. On Supabase, each shadow gets Supabase's schemas too, so a migration can reference `auth.users`.
+- **MySQL:** on your database's server, with `create database`, so your user needs the `CREATE` privilege on every database. PlanetScale refuses `create database`, so point `shadow_url` at a plain MySQL 8.4 server.
+- **SQLite:** in memory. There's nothing to grant. A [Turso](/turso#migrations) database's shadows run on libSQL's own engine.
 
-A migration that would reach past its shadow is refused: one that changes a role, a database, a tablespace or a server setting, and on MySQL one that names a database, as in `app.users`. Code inside a `do` block or a function isn't checked, so keep it from changing those.
+A migration that would reach past its shadow is refused. That's one that changes a role, a database, a tablespace or a server setting. On MySQL, it's also one that names a database, as in `app.users`. Code inside a `do` block or a function isn't checked.
 
 Where your role can't create a database, point `shadow_url` at a server that can, running the same version:
 
@@ -949,7 +949,7 @@ await migrate({ url: process.env.PRODUCTION_URL });
 ```
 
 <Rust>
-In Rust, `.run()` returns the same names, or an error with the deploy's problems, whose `.applied()` lists the migrations that ran before one failed. The macro compiles your migrations into the crate, with their lock and `reylo/schema.sql`, so the app runs the migrations it was built with. To check the database without changing it, call `.status()`:
+In Rust, `.run()` returns the same names, or an error with the deploy's problems. Its `.applied()` lists the migrations that ran before one failed. The macro compiles your migrations into the crate, so the app runs the migrations it was built with. To check the database without changing it, call `.status()`:
 
 ```rust
 let status = reylo::migrate!().status(&pool).await?;
@@ -969,4 +969,4 @@ fn main() {
 ```
 </Rust>
 
-A Cloudflare Durable Object runs its migrations on itself, from its constructor ([Durable Objects](/durable-objects#migrations)).
+A [Cloudflare Durable Object](/durable-objects#migrations) runs its migrations on itself, from its constructor.

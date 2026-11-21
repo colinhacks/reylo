@@ -7,13 +7,13 @@ description: A format for types, which says what values a column, a parameter or
 
 A format for types.
 
-Reylo writes the type of every parameter and column it [analyzes](/inference) in it. A type says which values a slot can hold, precisely enough to pick a representation in any language that holds them all.
+Reylo writes the type of every parameter and column it [analyzes](/inference) in it. A type says which values a slot can hold. That's enough to pick a representation in any language.
 
 ## Types
 
 Each type is an object with a `kind`.
 
-Most other fields narrow the kind: a size, bounds, a pattern, a character set. A program reads `kind` and the fields it needs, and ignores the rest, since a field it doesn't know can only narrow the type or describe it. A few fields widen a type instead, each named under its kind below.
+Most other fields narrow the kind: a size, bounds, a pattern, a character set. A program reads `kind` and the fields it needs. It can ignore the rest, since an unknown field only narrows or describes the type. A few fields widen a type instead, each named under its kind below.
 
 ```jsonc
 // A 32-bit integer from 0 to 150, which Postgres calls int4
@@ -22,16 +22,16 @@ Most other fields narrow the kind: a size, bounds, a pattern, a character set. A
 
 Four rules hold for every type:
 
-- **Values inside a type are strings**, in the kind's canonical text, so a 64-bit bound or a date survives any encoding. Counts, such as `bits`, and code points are integers.
+- **Values inside a type are strings**, in the kind's canonical text. So a 64-bit bound or a date survives any encoding. Counts, such as `bits`, and code points are integers.
 - **A flag appears only when it's true.** Its absence means false.
 - **A label is the database's name** for the type, where it has one. It never changes what the type means.
-- **A comment** is the documentation the source keeps on a named type, and **a title** is a short name written for a reader, as JSON Schema's `title`, while the label is the name the database knows the type by. Neither says anything of the values.
+- **A comment** is the source's documentation of a named type. **A title** is a short name for a reader, as in JSON Schema. The label is the database's name for the type. Neither says anything of the values.
 
 ## Slots
 
 Where a value stands, with whether it may be null.
 
-A column, a parameter, a struct's field, an array's element, a tuple's element and a map's key and value are each a slot: a `type`, and `nullable` where the value may be null. Nullability is on the slot and never in the type, since an outer join makes any column nullable.
+A slot is a column, a parameter, a field, or an element, key or value of a collection. It holds a `type`, and `nullable` where the value may be null. Nullability is on the slot, never in the type, since an outer join makes any column nullable.
 
 ```jsonc
 // Text that may be null
@@ -115,7 +115,7 @@ Its range follows from `bits`, two's complement unless `unsigned`. A bound is al
 
 An [IEEE 754](https://en.wikipedia.org/wiki/IEEE_754) binary float.
 
-Its exponent and mantissa widths fix its range and precision, so a program picks the smallest float it has that holds both. It holds the infinities and NaN only where `infinity` and `nan` say so.
+Its exponent and mantissa widths fix its range and precision. A program picks the smallest float it has that holds both. It holds the infinities and NaN only where `infinity` and `nan` say so.
 
 <TypeDef holds={["1.5", "-0", "Infinity", "NaN"]} types={{"postgres": ["real", "double precision"], "mysql": ["float", "double"], "sqlite": ["real"]}}>
 
@@ -152,7 +152,7 @@ Its `precision` counts its digits, and its scale the digits after the point. A d
 
 ### `text`
 
-With no `encoding`, it's any valid Unicode text. An `encoding` names the character set its values are held in, from a [fixed list](#specification), and `ill_formed` lets them be any sequence of that set's code units, valid or not. `code_points` narrows the characters further. Its size counts code points unless its `unit` says otherwise, and a `pattern` is an [I-Regexp](https://www.rfc-editor.org/rfc/rfc9485) every value matches whole. A `format` names what the text is meant to be, by JSON Schema's format names or a source's own. It says nothing of the values, so a rule every value keeps is a `pattern`.
+With no `encoding`, it's any valid Unicode text. An `encoding` names its character set, from a [fixed list](#specification). With `ill_formed`, a value may be any sequence of that set's code units. `code_points` narrows the characters further. Its size counts code points unless its `unit` says otherwise. A `pattern` is an [I-Regexp](https://www.rfc-editor.org/rfc/rfc9485) every value matches whole. A `format` names what the text is meant to be, by JSON Schema's format names or a source's own. It says nothing of the values, so a rule every value keeps is a `pattern`.
 
 <TypeDef holds={["\"ada@example.com\"", "\"happy\"", "\"\""]} types={{"postgres": ["text", "varchar", "char", "name"], "mysql": ["char", "varchar", "tinytext", "text", "mediumtext", "longtext"], "sqlite": ["text"]}}>
 
@@ -204,7 +204,7 @@ A value's length is stated where the type fixes one.
 
 A 128-bit identifier.
 
-It holds any 128 bits, written in [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562)'s text form. Its `versions` say every value has one of those RFC 9562 versions: a UUID that `uuidv7()` or `gen_random_uuid()` makes, or a column whose `CHECK`s hold `uuid_extract_version` to one and keep it non-null. A column with a `default uuidv7()` has none, since an insert may write any UUID.
+It holds any 128 bits, written in [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562)'s text form. Its `versions` say every value has one of those versions. A `uuidv7()` or `gen_random_uuid()` call in the statement sets it. So does a `CHECK` that holds `uuid_extract_version` to one version. A column with a `default uuidv7()` has none, since an insert may write any UUID.
 
 <TypeDef holds={["019a6b2c-3d4e-7f80-9a1b-2c3d4e5f6071"]} types={{"postgres": ["uuid"]}}>
 
@@ -309,7 +309,7 @@ It's the moment alone, as [Temporal](https://tc39.es/proposal-temporal/docs/inst
 
 A point on the timeline, with the time zone it was written in.
 
-Each value keeps its zone, a region or a UTC offset, as [Temporal](https://tc39.es/proposal-temporal/docs/zoneddatetime.html)'s `ZonedDateTime` does, and is written as [RFC 9557](https://www.rfc-editor.org/rfc/rfc9557) writes one. With `offset_only`, every zone is an offset.
+Each value keeps its zone, a region or a UTC offset, as [Temporal](https://tc39.es/proposal-temporal/docs/zoneddatetime.html)'s `ZonedDateTime` does. It's written in [RFC 9557](https://www.rfc-editor.org/rfc/rfc9557)'s form. With `offset_only`, every zone is an offset.
 
 <TypeDef holds={["2026-11-04T09:30:00-08:00[America/Los_Angeles]", "2026-11-04T09:30:00-08:00[-08:00]"]}>
 
@@ -327,7 +327,7 @@ Each value keeps its zone, a region or a UTC offset, as [Temporal](https://tc39.
 
 A length of time.
 
-Its parts are months, days and a time, each signed on its own, so 1 month and 30 days are two values. Its `max` is an [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) duration of the parts it has, each at the largest magnitude it reaches.
+Its parts are months, days and a time, each signed on its own. So 1 month and 30 days are two values. Its `max` is an [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) duration of each part's largest magnitude.
 
 <TypeDef holds={["P1M3D", "PT1H30M", "P-2D"]} types={{"postgres": ["interval"], "mysql": ["time"]}}>
 
@@ -345,7 +345,7 @@ Its parts are months, days and a time, each signed on its own, so 1 month and 30
 
 Elements, in order.
 
-Each element is a slot of its own, so it says whether it may be null. An array is flat: a two-dimensional one is an array of arrays. A [pgvector](https://github.com/pgvector/pgvector) vector is an array of floats, and a set an array whose elements never repeat, `distinct`, as MySQL's `SET` is.
+Each element is a slot of its own, so it says whether it may be null. An array is flat: a two-dimensional one is an array of arrays. A [pgvector](https://github.com/pgvector/pgvector) vector is an array of floats. MySQL's `SET` is a `distinct` array, whose elements never repeat.
 
 <TypeDef holds={["[1, null, 3]", "[]"]} types={{"postgres": ["any array", "bit", "varbit", "lseg", "polygon", "vector", "halfvec"], "mysql": ["set", "bit"]}}>
 
@@ -447,7 +447,7 @@ The key is a slot, as the value is, and the `size` counts the keys. A map whose 
 
 Rows of columns.
 
-It's what a statement returns, and its `cardinality` says how many rows: `one`, `at_most_one`, `many` or `none`. Each column is a field, never optional. Where there may be many rows, `unique` lists the sets of columns no two rows share, a table's primary key first, and `order` the columns the rows are sorted on.
+It's what a statement returns. Its `cardinality` is `one`, `at_most_one`, `many` or `none`. Each column is a field, never optional. Where there may be many rows, `unique` lists the sets of columns no two rows share. The `order` field lists the columns the rows are sorted on.
 
 <TypeDef holds={["[{ \"id\": 1 }, { \"id\": 2 }]"]} types={{"postgres": ["a statement's result"], "mysql": ["a statement's result"], "sqlite": ["a statement's result"]}}>
 
@@ -506,7 +506,7 @@ Its `content` is what a statement built, in these same types, and its `schema` a
 
 One of several types.
 
-A union is flat, of two members or more, and lists its members in the order of the kinds. A union of structs that each give one field a different literal is a discriminated union, as OpenAPI's discriminator and TypeScript describe one: each value says which member it is by that field.
+A union is flat, of two members or more, and lists its members in the order of the kinds. A union of structs that each give one field a different literal is a discriminated union. Each value says which member it is by that field.
 
 <TypeDef holds={["12", "\"abc\""]} types={{"postgres": ["inet", "cidr"], "sqlite": ["any column outside a strict table"]}}>
 
@@ -530,7 +530,7 @@ A union is flat, of two members or more, and lists its members in the order of t
 
 Values of every member at once.
 
-It's JSON Schema's `allOf` and TypeScript's `&`. An intersection one struct can write, of structs whose fields agree or of a struct and a map with text keys, is written as that struct.
+It's JSON Schema's `allOf` and TypeScript's `&`. An intersection that one struct can express is written as that struct.
 
 <TypeDef holds={["{ \"id\": 1, \"meows\": true }"]}>
 

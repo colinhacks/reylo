@@ -49,9 +49,9 @@ direct_url: ${DATABASE_URL_UNPOOLED}
 
 Why the direct connection:
 
-- Neon's pooler is PgBouncer in transaction mode. Your app's queries can go through it, but the type check can fail there, and [migrations](/migrate/docs) refuse it: a run holds a session, which the pooler shares between clients.
+- Neon's pooler is PgBouncer in transaction mode. Your app's queries can go through it. The type check can fail there, and [migrations](/migrate/docs) refuse it, since the pooler shares sessions between clients.
 - Without this line, Reylo reads `DATABASE_URL` and nothing else. `DATABASE_URL_UNPOOLED` is the name Neon's Vercel integration gives the direct string.
-- The type check takes the string as Neon writes it, `sslmode=require` and `channel_binding=require` included ([TLS](/configuration#direct_url)).
+- The type check takes the string as Neon writes it, [TLS settings](/configuration#direct_url) included.
 
 ## Serverless driver
 
@@ -108,11 +108,11 @@ returning id
 Transactions on Neon:
 
 - The `transaction()` of `neon()` takes queries built with Neon's own `sql` tag, so a Reylo query can't join one.
-- Drizzle over Neon's driver has transactions over a `Pool`, and none over HTTP ([Drizzle](/postgres#drizzle)).
+- [Drizzle](/postgres#drizzle) over Neon's driver has transactions over a `Pool`, and none over HTTP.
 
 ## TCP drivers
 
-Over TCP, pass a `pg` pool, a postgres.js client or a Drizzle Postgres pool<Rust>, or in Rust an sqlx pool,</Rust> made with the pooled connection string:
+Over TCP, make a `pg` pool, a postgres.js client or a Drizzle Postgres pool<Rust>, or in Rust an sqlx pool,</Rust> with the pooled connection string:
 
 ```ts twoslash tab="pg"
 import pg from "pg";
@@ -149,7 +149,14 @@ let user = get_user::Query { id: 1 }.run(&db).await?;
 ```
 </Rust>
 
-Each runs a transaction its own way: on a client checked out of the pool with `pg`, in `db.begin()` with postgres.js,<NoRust> and</NoRust> in `db.transaction()` with Drizzle Postgres ([Drivers](/postgres#drivers))<Rust>, and in `db.begin()` with sqlx ([Rust](/rust#transactions))</Rust>.
+Each [driver](/postgres#drivers) runs a transaction its own way:
+
+- `pg`: on a client checked out of the pool
+- postgres.js: in `db.begin()`
+- Drizzle Postgres: in `db.transaction()`
+<Rust>
+- sqlx: in `db.begin()` ([Rust](/rust#transactions))
+</Rust>
 
 ## Branches
 
@@ -170,7 +177,7 @@ A branch starts with its parent's schema, so run your migrations on it before th
 
 ## Pull requests
 
-In CI, create a branch for each pull request with Neon's GitHub Action, migrate it, and type-check against it:
+In CI, create a branch for each pull request with Neon's GitHub Action. Migrate it, then type-check against it:
 
 ```yaml title=".github/workflows/ci.yml"
 on: pull_request
@@ -214,7 +221,7 @@ jobs:
 What the action gives you:
 
 - The action's `db_url` is the branch's direct connection string, and `db_url_pooled` its pooled one.
-- Neon's Vercel integration can also create a branch for each preview deployment, with its own `DATABASE_URL_UNPOOLED`. It starts with its parent's schema, so run your migrations on it before the build ([A host that builds before it migrates](/deployment#build-before-migrate)).
+- Neon's Vercel integration can also create a branch for each preview deployment, with its own `DATABASE_URL_UNPOOLED`. It starts with its parent's schema, so [run your migrations on it](/deployment#build-before-migrate) before the build.
 
 ## Edge runtimes
 
@@ -235,5 +242,5 @@ export default {
 In a Worker:
 
 - In a Worker, it needs no `nodejs_compat` flag. [Cloudflare D1](/d1#setup) covers the Vite plugin that loads `.sql` files there.
-- On the Next.js edge runtime, use it the same way ([The edge runtime](/nextjs#the-edge-runtime)).
+- Use it the same way on the [Next.js edge runtime](/nextjs#the-edge-runtime).
 - In an edge runtime, connect, use and close a `Pool` or `Client` within one request.

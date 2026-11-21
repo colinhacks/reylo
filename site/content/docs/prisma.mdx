@@ -73,12 +73,12 @@ where u.id = :id
 
 What you gain:
 
-- **A page's numbers in one row.** A dozen `count` and `aggregate` calls are a dozen round trips; as scalar subqueries, they are one statement ([Counts](#counts)).
-- **Writes that read back.** An insert, an update or an upsert returns the rows it wrote, and a `with` query runs several writes in one statement.
-- **Types from the database.** Nullability, cardinality, enum labels and JSON shapes come from the schema and the statement, so a migration that changes a column fails the type check wherever the column is read.
-- **Two silent bugs go away.** With `timestamptz`, `now()` no longer reads hours off on a server outside UTC, and `starts_with(key, :prefix)` no longer takes the `_` in a value like `gh_123` for a wildcard, as Prisma's `startsWith` does.
+- **A page's numbers in one row.** A dozen `count` and `aggregate` calls are a dozen round trips. As [scalar subqueries](#counts), they're one statement.
+- **Writes that read back.** An insert, an update or an upsert returns the rows it wrote. A `with` query runs several writes in one statement.
+- **Types from the database.** Nullability, cardinality, enum labels and JSON shapes come from the database. A migration that changes a column fails the type check wherever the column is read.
+- **Two silent bugs go away.** With `timestamptz`, `now()` no longer reads hours off on a server outside UTC. And `starts_with(key, :prefix)` doesn't treat the `_` in `gh_123` as a wildcard, as Prisma's `startsWith` does.
 
-In one production app's migration, of about 750 Prisma Client calls, a billing report went from 40 calls to 5 statements, and a dashboard's twelve aggregates became one.
+One production app migrated about 750 Prisma Client calls. A billing report went from 40 calls to 5 statements, and a dashboard's twelve aggregates became one.
 
 ## Common concerns
 
@@ -98,8 +98,8 @@ In one production app's migration, of about 750 Prisma Client calls, a billing r
   npx skills add reylosql/reylo --skill reylo
   ```
 - **Set Reylo up** as [Setup](/typescript#setup) shows.
-- **Count what moves:** every Prisma Client call, `$queryRaw`, `$executeRaw` and `$transaction`, and every folder that holds them. A folder that `tsconfig.json` leaves out is never type-checked, so check its queries with a `tsconfig` of its own.
-- **Keep the branch short.** A long-lived branch pays for `main` at each sync: new Prisma calls to convert, and re-indented code that reads as conflict. Re-apply what `main` changed onto the `.sql`, rather than taking either side.
+- **Count what moves:** every Prisma Client call, raw query and transaction, and every folder that holds them. A folder that `tsconfig.json` leaves out is never type-checked. Give it a `tsconfig` of its own.
+- **Keep the branch short.** A long-lived branch pays at each sync with `main`, in new Prisma calls to convert and in conflicts. Re-apply what `main` changed onto the `.sql`, rather than taking either side.
 - **Give your pool an error listener**, on the pool and on each connection a transaction takes. Prisma's adapter had both, and without them Node exits when the database drops an idle connection.
 
 With `pg`, the listener looks like this:
@@ -122,11 +122,11 @@ Prisma Client did four things your database never saw. Move each into the databa
 | `@updatedAt` | `@default(now())`, and a trigger that sets it on every update |
 | A `String[]`, and no `null` element in it, which Prisma Client refuses to read | `NOT NULL`, once its nulls are filled, and `check (array_position(tags, null) is null)` |
 
-Prisma's drift check ignores triggers and check constraints, and accepts `NOT NULL` on a `String[]`, so none of these changes fails it.
+Prisma's drift check ignores triggers and check constraints, and accepts `NOT NULL` on a `String[]`. None of these changes fails it.
 
 ### Timestamps
 
-Prisma's `DateTime` is a `timestamp(3)`, a time with no zone, which Prisma Client writes and reads as UTC. Nothing in the column says so, so Reylo returns it without a zone, as `"2026-10-30T09:00:00.123000"`, and `new Date()` reads that in the machine's own zone: on a laptop in Los Angeles, it's seven hours off. A `timestamptz` comes back as `"…Z"`, which every reader reads the same. You can keep `timestamp(3)` if your server runs in UTC and your code treats each value as UTC, but the retype removes the question.
+Prisma's `DateTime` is a `timestamp(3)`, a time with no zone. Prisma Client writes and reads it as UTC, but nothing in the column says so. Reylo returns it without a zone, as `"2026-10-30T09:00:00.123000"`. Then `new Date()` reads it in the machine's own zone, seven hours off in Los Angeles. A `timestamptz` comes back as `"…Z"`, which every reader reads the same. You can keep `timestamp(3)` if your server and code both use UTC.
 
 Retype every `timestamp(3)` column in UTC, one table per migration:
 
@@ -142,7 +142,7 @@ Why this migration is safe:
 
 - **In UTC, no value moves.** Postgres reads each `timestamp` in the session's zone as it converts it, and Prisma wrote them in UTC. In UTC, it also rewrites no rows.
 - **Plain `timestamptz`**, not `timestamptz(3)`, which rewrites the table.
-- **One table per migration.** Prisma runs each migration in one transaction, so a file that alters several tables holds every one until it ends, and can deadlock a live insert that needs two of them.
+- **One table per migration.** Prisma runs each migration in one transaction. A file that alters several tables holds them all until it ends, and can deadlock a live insert.
 - **Each index on the column is rebuilt**, and the table is locked while it is. On a 1 GB table that took 5 seconds, and `set maintenance_work_mem = '256MB'` before it cut that by 40%.
 
 To write those migrations, run this query once against your database: each row is one table's migration.
@@ -200,17 +200,17 @@ How the trigger behaves:
 
 Prisma Client reads a `String[]` as never null, and throws on a `NULL` element. Postgres allows both:
 
-- **Count the nulls and the readers first.** One production app had 224,000 null lists and one reader, so `coalesce(tags, '{}')` in that reader, which is typed as a non-null array, beat a backfill that held the table for most of a minute.
-- **To add `NOT NULL`**, backfill, add `check (tags is not null) not valid`, validate it, then `set not null`, each in its own migration.
+- **Count the nulls and the readers first.** One production app had 224,000 null lists and one reader. A `coalesce(tags, '{}')` in that reader beat a backfill that held the table for most of a minute.
+- **To add `NOT NULL`**, use four migrations: backfill, add `check (tags is not null) not valid`, validate it, then `set not null`.
 - **Elements stay `string | null`**, since a `NOT NULL` column can still hold a `NULL` element.
 
 ## Build and deploy
 
 Reylo types each query against a database with your migrations applied, so every place that type-checks or builds needs one:
 
-- **In CI**, start Postgres, run `prisma migrate deploy`, and then the type check ([In CI](/faq#in-ci)).
-- **On a host that migrates during the build**, such as Vercel, build against a fresh database: create it, run `prisma migrate deploy` into it, point [`direct_url`](/configuration#direct_url) at it for the build, and drop it. Then migrate the deployment's own database. The build types against exactly the schema the commit's migrations make, and no migration reaches production without applying cleanly first.
-- **Each query keeps the types of the schema it was built against.** A column it names that a migration retypes or makes nullable can return values those types rule out, a query naming a dropped or renamed column fails with the database's error, and a new column, a new default or a new `NOT NULL` changes nothing it reads. So add before you remove: the new column first, then the code that uses it, then the drop ([Deploying](/configuration#direct_url)).
+- **[In CI](/faq#in-ci)**, start Postgres, run `prisma migrate deploy`, then the type check.
+- **On a host that migrates during the build**, such as Vercel, build against a fresh database. Create it, run `prisma migrate deploy` into it, and point [`direct_url`](/configuration#direct_url) at it for the build. Drop it after, then migrate the deployment's own database. The build types against exactly the commit's schema, and no migration reaches production untested.
+- **Each query keeps the types of the schema it was built against.** A retyped or newly nullable column can return values those types rule out. A dropped or renamed column fails with the database's error. A new column, default or `NOT NULL` changes nothing it reads. So add before you remove: the new column, then the code that uses it, then the drop.
 
 For the type check itself:
 
@@ -274,7 +274,7 @@ select
 
 ### Partial updates
 
-To update only the fields a request sends, read the row's new values from a JSON patch, in which a missing key keeps its value and `null` clears it:
+To update only the fields a request sends, read the new values from a JSON patch. A missing key keeps its value, and `null` clears it:
 
 <InferenceCard>
 
@@ -314,7 +314,7 @@ Reylo infers each statement's cardinality, which decides what `.run()` returns:
 | Any other write that joins | an array |
 | A write with no `returning` | nothing |
 
-A write can read a `with` query of one row and keep its key's cardinality, which is how to use a parameter twice:
+To use a parameter twice, read it from a `with` query of one row. The write keeps its key's cardinality:
 
 <InferenceCard>
 
@@ -335,12 +335,12 @@ returning p.id
 
 The type check can't catch these, so look for each one in the converted code:
 
-- **Instants compared as strings.** Two instants `.run()` returned compare correctly as strings, since each has six fraction digits, but `toISOString()` writes three, so comparing one with the other misorders. Compare their `Date.parse`, or sort in SQL.
+- **Instants compared as strings.** Two instants from `.run()` compare correctly as strings, with six fraction digits each. But `toISOString()` writes three, so mixing the two misorders. Compare their `Date.parse`, or sort in SQL.
 - **Instants passed through a `Date`.** A `Date` keeps milliseconds and Postgres keeps microseconds, so `where "createdAt" > :since` with a rounded value matches the row it came from. Pass back the text `.run()` returned.
-- **A sort that lost its cast.** An enum sorts by the order its labels were declared, and its `::text` sorts by name, so a query that kept one and dropped the other changes its order.
+- **A sort that lost its cast.** An enum sorts by the order its labels were declared, and its `::text` sorts by name. Dropping the cast changes the order.
 - **A check of an array as if it were a row.** Where `.run()` returns an array, `if (!rows)` is never true. typescript-eslint's `no-unnecessary-condition` flags it.
-- **A `Promise.all` on a transaction's client.** Prisma queued a transaction's calls for you; a `pg` client handed several at once warns, and `pg` 9 will refuse them. Write them as one statement, or await each in turn.
-- **Timestamps inside JSON.** A `timestamptz` you build into JSON is written in the session's time zone (`+00:00`, or `-07:00` on a laptop), unlike the `Z` of a column, so one row can hold both forms.
+- **A `Promise.all` on a transaction's client.** Prisma queued a transaction's calls for you. A `pg` client handed several at once warns, and `pg` 9 will refuse them. Write them as one statement, or await each in turn.
+- **Timestamps inside JSON.** A `timestamptz` built into JSON is written in the session's time zone, such as `-07:00`. A column's is written with `Z`, so one row can hold both forms.
 
 ## Checking your work
 
@@ -348,6 +348,6 @@ Each of these caught something the type check can't see:
 
 - **Type-check every folder.** Run `tsc --noEmit --runExternalCode` against a database with the branch's migrations, and give any folder `tsconfig.json` skips a `tsconfig` of its own.
 - **Probe the risky statements.** Run each compare-and-set, partial update and cardinality guard against throwaway rows, and check what it reports.
-- **Compare with production.** Run every read-only report from the old code and the new under one read-only credential, with `TZ=UTC`, and diff the JSON with arrays sorted by key. In one production app, that separated live drift and tie order from one real bug: a sort that had lost its `::text`.
-- **Compare the catalogs.** Dump each column's table, name, type, `NOT NULL` and default from production and from an empty database built by your old migrations. If they match, each query's types hold on production as they do in the build.
-- **Probe the locks.** Run your migrations against a production-sized copy while a client reads, inserts and updates every 50 ms, and record each operation's worst latency and errors. That is how the deadlock behind one table per migration was found.
+- **Compare with production.** Run every read-only report from the old code and the new, with `TZ=UTC`, and diff the JSON. In one production app, that found one real bug: a sort that had lost its `::text`.
+- **Compare the catalogs.** Dump each column's table, name, type, `NOT NULL` and default from production. Do the same on an empty database built by your old migrations. If they match, each query's types hold on production.
+- **Probe the locks.** Run your migrations against a production-sized copy while a client reads and writes every 50 ms. Record each operation's worst latency and errors.

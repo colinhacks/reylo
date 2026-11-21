@@ -57,7 +57,7 @@ About the driver:
 
 - Version 2.0 isn't supported, since it can't bind parameters.
 - The driver sends each query over HTTP, so it runs where there are no TCP sockets, as in [Cloudflare Workers](/d1#setup).
-- It rounds a `FLOAT` to its shorter text, `1.1`, where `mysql2` returns its exact value ([Decimals](/mysql#decimals)).
+- It rounds a `FLOAT` to its shorter text, such as `1.1`. The `mysql2` driver returns its [exact value](/mysql#decimals).
 
 ### `mysql2`
 
@@ -171,13 +171,13 @@ done
 
 With other tools:
 
-- With Prisma or Drizzle Kit, run its migrate command against the local server ([Schema](/deployment#schema)).
-- In CI, start MySQL as a service and apply the same migrations before the type check ([Deployment / CI](/deployment#mysql)).
-- A host that builds before it migrates, such as Vercel, needs a MySQL server of its own for the build ([Deployment / CI](/deployment#build-before-migrate)).
+- With Prisma or Drizzle Kit, run its [migrate command](/deployment#schema) against the local server.
+- In CI, [start MySQL as a service](/deployment#mysql) and apply the same migrations before the type check.
+- A host that builds before it migrates, such as Vercel, needs [a MySQL server of its own](/deployment#build-before-migrate) for the build.
 
 ## Insights
 
-Each query Reylo sends ends with a [sqlcommenter](/configuration#sqlcommenter) comment that names its file, which PlanetScale's Insights reads as the query's `file` tag:
+Each query Reylo sends ends with a [sqlcommenter](/configuration#sqlcommenter) comment that names its file. PlanetScale's Insights reads it as the query's `file` tag:
 
 ```sql title="What Reylo sends for queries/get_user.sql, by default"
 select id, name, email from users where id = ? /*file='queries%2Fget_user.sql'*/
@@ -185,7 +185,7 @@ select id, name, email from users where id = ? /*file='queries%2Fget_user.sql'*/
 
 ## PlanetScale Postgres
 
-A PlanetScale Postgres database is Postgres. Point `direct_url` at its direct connection on port 5432, not at PgBouncer on port 6432, whose transaction mode can fail to describe a query:
+A PlanetScale Postgres database is Postgres. Point `direct_url` at its direct connection on port 5432. PgBouncer, on port 6432, can fail to describe a query:
 
 ```sh title=".env"
 # pgbouncer, for your app
