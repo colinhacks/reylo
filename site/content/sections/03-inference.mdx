@@ -53,7 +53,7 @@ Each card shows the types in TypeScript or in Rust: pick one at the top of any c
 
 Each SQL type has one TypeScript type, the same on every driver<Rust>, and one Rust type</Rust>.
 
-In TypeScript, a 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`. On Postgres, an instant always has six fraction digits, so two of them sort as strings. Pass back the text `.run()` returned, since a `Date` drops microseconds ([Dates and times](/postgres#dates-and-times)).
+Dates and times are ISO 8601 strings, never a `Date`, so they keep their full precision ([Dates and times](/postgres#dates-and-times)).
 
 <LanguageSwitch />
 
