@@ -258,7 +258,7 @@ fn body_statement(f: &Function) -> Option<String> {
     let parsed = crate::stack::parse(&text).ok()?;
     let [stmt] = parsed.protobuf.stmts.as_slice() else { return None };
     match stmt.stmt.as_deref()?.node.as_ref()? {
-        pg_query::protobuf::node::Node::SelectStmt(s) if s.into_clause.is_none() => crate::stack::deparse(&parsed.protobuf).ok(),
+        syntax::postgres::protobuf::node::Node::SelectStmt(s) if s.into_clause.is_none() => crate::stack::deparse(&parsed.protobuf).ok(),
         _ => None,
     }
 }
@@ -1057,7 +1057,7 @@ fn inline_text(body: &str, f: &Function, args: &[Argument]) -> Option<String> {
 
 /// The expression of a body that is `SELECT <expression>` and nothing more, as the planner inlines it.
 fn bare_expression(body: &str) -> Option<String> {
-    use pg_query::protobuf::node::Node as N;
+    use syntax::postgres::protobuf::node::Node as N;
     let parsed = crate::stack::parse(body).ok()?;
     let [stmt] = parsed.protobuf.stmts.as_slice() else { return None };
     let Some(N::SelectStmt(s)) = stmt.stmt.as_deref()?.node.as_ref() else { return None };

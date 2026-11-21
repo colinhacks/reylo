@@ -1,0 +1,18 @@
+[package]
+name = "reylo-engine-syntax"
+version.workspace = true
+edition = "2021"
+rust-version.workspace = true
+license = "MIT AND PostgreSQL AND BSD-3-Clause"
+repository.workspace = true
+homepage.workspace = true
+description = "Lossless SQL syntax trees for every database Reylo reads, generated from a database's own grammar where its license allows."
+
+[lib]
+name = "reylo_engine_syntax"
+
+[build-dependencies]
+reylo-engine-build.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

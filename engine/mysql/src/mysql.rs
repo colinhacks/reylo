@@ -2440,7 +2440,7 @@ fn kind(read: Option<&Statement>) -> Option<StatementKind> {
 /// `abs`, `json_object`), 195 nested `CASE`s, or 97 nested subqueries, which spend two levels each.
 /// It is less than the Postgres parser's 500 levels because in the WebAssembly engine sqlparser's
 /// recursion runs on the JavaScript engine's own stack, which a host shares (`core/src/stack.rs`),
-/// at about twice libpg_query's cost a level: a nested function call is eight frames of the parser,
+/// at about twice the cost a level of Postgres's tree: a nested function call is eight frames of the parser,
 /// some 2 kB of Node's stack once V8 has optimized them, so under the Postgres bound 496 nested
 /// `coalesce`s needed two thirds of Node's stack before V8 optimized the engine and, on Node 24,
 /// more than all of it after. At 200 the deepest statement of every shape needs at most 42% of it,

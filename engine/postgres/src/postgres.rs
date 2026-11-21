@@ -21,7 +21,7 @@ use crate::lex::{self, Lexed, Rewritten, Target};
 use crate::pgtypes::{not_null_rows, TypeRegistry, RELATION_TYPES_QUERY, TYPE_QUERY};
 use crate::returning::Rows;
 use crate::types::{Cardinality, CheckFacts, DescribedColumn, DescribedStatement, Kind as TyKind, NonFinite, StatementKind, Type};
-use pg_query::protobuf::node::Node as NodeEnum;
+use syntax::postgres::protobuf::node::Node as NodeEnum;
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -2305,7 +2305,7 @@ impl<'a> Engine<'a> {
             }
         }
         // Without a parse tree nothing degrades and nothing is nulled by a join, which is
-        // wrong in the unsafe direction, so a statement libpg_query cannot read keeps every
+        // wrong in the unsafe direction, so a statement the parser cannot read keeps every
         // column nullable.
         let grouping = parsed.is_none_or(|p| p.has_grouping_sets);
         // A table read twice where an outer join nulls one reading: the describe names the table
@@ -2613,7 +2613,7 @@ impl<'a> Engine<'a> {
     /// Per result column, `None` where it is no such column for certain.
     fn generated_rows(&self, sql: &str, count: usize, trust: &Trust) -> Lazy<Vec<Option<Type>>> {
         use infer::ItemRead;
-        use pg_query::protobuf::CommonTableExpr;
+        use syntax::postgres::protobuf::CommonTableExpr;
         let none = vec![None; count];
         let Ok(parsed) = crate::stack::parse(sql) else { return Some(none) };
         let with = match parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) {
@@ -2660,7 +2660,7 @@ impl<'a> Engine<'a> {
         if at.len() != count {
             return Some(none);
         }
-        let names = |nodes: &[pg_query::protobuf::Node]| nodes.iter().filter_map(|n| match n.node.as_ref() {
+        let names = |nodes: &[syntax::postgres::protobuf::Node]| nodes.iter().filter_map(|n| match n.node.as_ref() {
             Some(NodeEnum::String(s)) => Some(s.sval.clone()),
             _ => None,
         }).collect::<Vec<_>>();
@@ -3151,7 +3151,7 @@ fn missing_rows(sql: &str, origins: &[bool], columns: &dyn Fn(&str) -> Option<Ve
     let Ok(parsed) = crate::stack::parse(sql) else { return none };
     let Some(top) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) else { return none };
     // (the rows RETURNING can name, the target relation, the RETURNING list)
-    let shape = |node: &NodeEnum| -> Option<(Rows, String, Vec<pg_query::protobuf::Node>)> {
+    let shape = |node: &NodeEnum| -> Option<(Rows, String, Vec<syntax::postgres::protobuf::Node>)> {
         let (relation, clause) = match node {
             NodeEnum::InsertStmt(s) => (s.relation.as_ref()?, &s.returning_clause),
             NodeEnum::UpdateStmt(s) => (s.relation.as_ref()?, &s.returning_clause),
@@ -3161,7 +3161,7 @@ fn missing_rows(sql: &str, origins: &[bool], columns: &dyn Fn(&str) -> Option<Ve
         };
         Some((Rows::of(node)?, analyze::relation_name(&relation.schemaname, &relation.relname), jsonshape::returning(clause)))
     };
-    let reads_missing = |rows: &Rows, relation: &str, node: &pg_query::protobuf::Node| {
+    let reads_missing = |rows: &Rows, relation: &str, node: &syntax::postgres::protobuf::Node| {
         let known = columns(relation);
         rows.reads_missing(node, &|name| known.as_ref().is_some_and(|k| k.iter().any(|c| c == name)))
     };
@@ -3238,7 +3238,7 @@ struct SublinkRows {
 /// set operation's columns trace to its leftmost arm, so where the statement holds one anywhere,
 /// only a bare reference to a column of a table in its own FROM is sure to be that column,
 /// whatever its WITH queries and subqueries hold: one read through a WITH query, a derived table
-/// or a `*` may come from any arm. A statement libpg_query cannot read owns none.
+/// or a `*` may come from any arm. A statement the parser cannot read owns none.
 fn own_provenance(sql: &str, parsed: Option<&Parsed>, count: usize) -> Vec<bool> {
     match parsed {
         Some(p) if !p.has_set_op => return vec![true; count],
@@ -3290,9 +3290,9 @@ fn with_check_items(sql: &str, parsed: Option<&Parsed>, raw: &RawDescribe, check
 /// name reads a column of any FROM in scope before it reads a row, which
 /// [`Engine::stored_sublinks`] rules out with the tables' columns.
 fn sublink_rows(sql: &str) -> Option<SublinkRows> {
-    use pg_query::protobuf::node::Node as N;
-    use pg_query::protobuf::{Node, SetOperation, SubLinkType};
-    use pg_query::NodeRef;
+    use syntax::postgres::protobuf::node::Node as N;
+    use syntax::postgres::protobuf::{Node, SetOperation, SubLinkType};
+    use syntax::postgres::NodeRef;
     let parsed = crate::stack::parse(sql).ok()?;
     let (mut tables, mut ctes) = (Vec::new(), Vec::new());
     for (node, _, _, _) in parsed.protobuf.nodes() {
@@ -3329,7 +3329,7 @@ fn sublink_rows(sql: &str) -> Option<SublinkRows> {
     fn empty(node: &Node) -> bool {
         match node.node.as_ref() {
             Some(N::TypeCast(c)) => c.arg.as_deref().is_some_and(empty),
-            Some(N::AConst(c)) => matches!(&c.val, Some(pg_query::protobuf::a_const::Val::Sval(s)) if s.sval.trim() == "{}"),
+            Some(N::AConst(c)) => matches!(&c.val, Some(syntax::postgres::protobuf::a_const::Val::Sval(s)) if s.sval.trim() == "{}"),
             Some(N::AArrayExpr(a)) => a.elements.is_empty(),
             _ => false,
         }
@@ -3447,8 +3447,8 @@ enum CheckArg {
 /// functions are such a validator, and which arguments hold the schema and the value, is
 /// [`crate::schema_type::postgres_validator`]'s to say.
 fn check_documents(text: &str, column: &str) -> Vec<(String, Vec<CheckArg>)> {
-    use pg_query::protobuf::node::Node as N;
-    use pg_query::protobuf::Node;
+    use syntax::postgres::protobuf::node::Node as N;
+    use syntax::postgres::protobuf::Node;
     let Ok(parsed) = crate::stack::parse(&format!("SELECT {text}")) else { return Vec::new() };
     let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|s| s.node.as_ref()) else { return Vec::new() };
     let Some(N::ResTarget(target)) = select.target_list.first().and_then(|t| t.node.as_ref()) else { return Vec::new() };
@@ -3470,14 +3470,14 @@ fn check_documents(text: &str, column: &str) -> Vec<(String, Vec<CheckArg>)> {
     };
     let arg = |node: &Node| match uncast(node, &["json", "jsonb", "text"]).node.as_ref() {
         Some(N::AConst(c)) => match &c.val {
-            Some(pg_query::protobuf::a_const::Val::Sval(s)) => CheckArg::Schema(s.sval.clone()),
+            Some(syntax::postgres::protobuf::a_const::Val::Sval(s)) => CheckArg::Schema(s.sval.clone()),
             _ => CheckArg::Other,
         },
         _ if is_column(node) => CheckArg::Column,
         _ => CheckArg::Other,
     };
     fn calls(node: &Node, is_column: &dyn Fn(&Node) -> bool, arg: &dyn Fn(&Node) -> CheckArg, out: &mut Vec<(String, Vec<CheckArg>)>) {
-        use pg_query::protobuf::{BoolExprType, NullTestType};
+        use syntax::postgres::protobuf::{BoolExprType, NullTestType};
         match node.node.as_ref() {
             Some(N::BoolExpr(b)) if b.boolop == BoolExprType::AndExpr as i32 => {
                 for a in &b.args {
@@ -3526,12 +3526,12 @@ pub fn with_values(ty: Type, values: Option<&[String]>, string: bool) -> Type {
 /// one of its conjuncts tests the column `IS NOT NULL`, which a null makes false where any other
 /// test of it would be unknown, and so pass.
 fn refuses_null(text: &str, column: &str) -> bool {
-    use pg_query::protobuf::node::Node as N;
-    use pg_query::protobuf::{BoolExprType, NullTestType};
+    use syntax::postgres::protobuf::node::Node as N;
+    use syntax::postgres::protobuf::{BoolExprType, NullTestType};
     let Ok(parsed) = crate::stack::parse(&format!("SELECT {text}")) else { return false };
     let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|s| s.node.as_ref()) else { return false };
     let Some(N::ResTarget(target)) = select.target_list.first().and_then(|t| t.node.as_ref()) else { return false };
-    fn conjunct(node: &pg_query::protobuf::Node, column: &str) -> bool {
+    fn conjunct(node: &syntax::postgres::protobuf::Node, column: &str) -> bool {
         match node.node.as_ref() {
             Some(N::BoolExpr(b)) if b.boolop == BoolExprType::AndExpr as i32 => b.args.iter().any(|a| conjunct(a, column)),
             Some(N::NullTest(t)) if t.nulltesttype == NullTestType::IsNotNull as i32 => match t.arg.as_deref().and_then(|a| a.node.as_ref()) {
@@ -3550,12 +3550,12 @@ fn refuses_null(text: &str, column: &str) -> bool {
 /// whether a NULL under casts of casts stays NULL (`casts`, where the CHECK calls no user's
 /// function): a NULL cast once from a literal always does.
 fn check_items(text: &str, column: &str, casts: bool) -> bool {
-    use pg_query::protobuf::node::Node as N;
-    use pg_query::protobuf::{BoolExprType, NullTestType};
+    use syntax::postgres::protobuf::node::Node as N;
+    use syntax::postgres::protobuf::{BoolExprType, NullTestType};
     let Ok(parsed) = crate::stack::parse(&format!("SELECT {text}")) else { return false };
     let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|s| s.node.as_ref()) else { return false };
     let Some(N::ResTarget(target)) = select.target_list.first().and_then(|t| t.node.as_ref()) else { return false };
-    fn null(node: &pg_query::protobuf::Node, casts: bool) -> bool {
+    fn null(node: &syntax::postgres::protobuf::Node, casts: bool) -> bool {
         match node.node.as_ref() {
             Some(N::TypeCast(t)) => match t.arg.as_deref() {
                 Some(a) if matches!(a.node.as_ref(), Some(N::AConst(_))) => null(a, casts),
@@ -3566,7 +3566,7 @@ fn check_items(text: &str, column: &str, casts: bool) -> bool {
             _ => false,
         }
     }
-    fn conjunct(node: &pg_query::protobuf::Node, column: &str, casts: bool) -> bool {
+    fn conjunct(node: &syntax::postgres::protobuf::Node, column: &str, casts: bool) -> bool {
         match node.node.as_ref() {
             Some(N::BoolExpr(b)) if b.boolop == BoolExprType::AndExpr as i32 => b.args.iter().any(|a| conjunct(a, column, casts)),
             Some(N::NullTest(t)) if t.nulltesttype == NullTestType::IsNull as i32 => match t.arg.as_deref().and_then(|a| a.node.as_ref()) {
@@ -3592,13 +3592,13 @@ fn check_items(text: &str, column: &str, casts: bool) -> bool {
 /// of its own type and a cast one of the cast's.
 fn check_values(text: &str, column: &str, types: (Option<u32>, Option<u32>), trust: &Trust) -> Option<Vec<String>> {
     use crate::resolution::{Kind, Operand};
-    use pg_query::protobuf::node::Node as N;
+    use syntax::postgres::protobuf::node::Node as N;
     let parsed = crate::stack::parse(&format!("SELECT {text}")).ok()?;
     let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref() else { return None };
     let Some(N::ResTarget(target)) = select.target_list.first()?.node.as_ref() else { return None };
     /// A cast to a string type that keeps the value whole: one with a length (`varchar(1)`) cuts it,
     /// so `x::varchar(1) IN ('a', 'b')` lets `'ab'` in.
-    fn uncast(node: &pg_query::protobuf::Node) -> &pg_query::protobuf::Node {
+    fn uncast(node: &syntax::postgres::protobuf::Node) -> &syntax::postgres::protobuf::Node {
         match node.node.as_ref() {
             Some(N::TypeCast(t)) => {
                 let name = t.type_name.as_ref().filter(|n| n.typmods.is_empty()).and_then(|n| crate::jsonshape::last_string(&n.names)).unwrap_or_default();
@@ -3612,7 +3612,7 @@ fn check_values(text: &str, column: &str, types: (Option<u32>, Option<u32>), tru
     }
     // The type a printed operand has: its outermost cast's, where it has one. The server prints a
     // type's name bare only where the name reads as that type, schema-qualified elsewhere.
-    let cast_type = |node: &pg_query::protobuf::Node| match node.node.as_ref() {
+    let cast_type = |node: &syntax::postgres::protobuf::Node| match node.node.as_ref() {
         Some(N::TypeCast(t)) => match t.type_name.as_ref().and_then(|n| crate::infer::builtin_name(&n.names)).as_deref() {
             Some("text") => Some(Operand::Is(crate::pgtypes::oid::TEXT)),
             Some("varchar") => Some(Operand::Is(crate::pgtypes::oid::VARCHAR)),
@@ -3621,7 +3621,7 @@ fn check_values(text: &str, column: &str, types: (Option<u32>, Option<u32>), tru
         _ => None,
     };
     // A bare column is of its type, which a domain's CHECK reads as `VALUE` of the base type.
-    let column_type = |node: &pg_query::protobuf::Node| {
+    let column_type = |node: &syntax::postgres::protobuf::Node| {
         cast_type(node).unwrap_or(match (node.node.as_ref(), types) {
             (Some(N::ColumnRef(c)), (Some(declared), Some(base))) => match c.fields.as_slice() {
                 [f] if matches!(f.node.as_ref(), Some(N::String(s)) if s.sval == "value" && column != "value") => Operand::Is(base),
@@ -3631,28 +3631,28 @@ fn check_values(text: &str, column: &str, types: (Option<u32>, Option<u32>), tru
             _ => Operand::Opaque,
         })
     };
-    let is_column = |node: &pg_query::protobuf::Node| match uncast(node).node.as_ref() {
+    let is_column = |node: &syntax::postgres::protobuf::Node| match uncast(node).node.as_ref() {
         Some(N::ColumnRef(c)) => matches!(c.fields.as_slice(), [f] if matches!(f.node.as_ref(), Some(N::String(s)) if s.sval == column || s.sval == "value")),
         _ => false,
     };
-    let string = |node: &pg_query::protobuf::Node| match uncast(node).node.as_ref() {
+    let string = |node: &syntax::postgres::protobuf::Node| match uncast(node).node.as_ref() {
         Some(N::AConst(c)) => match &c.val {
-            Some(pg_query::protobuf::a_const::Val::Sval(s)) => Some(s.sval.clone()),
+            Some(syntax::postgres::protobuf::a_const::Val::Sval(s)) => Some(s.sval.clone()),
             _ => None,
         },
         _ => None,
     };
     // A value's type, a literal printed bare being of no type an `=` over strings takes.
-    let value_type = |node: &pg_query::protobuf::Node| cast_type(node).unwrap_or(Operand::Opaque);
+    let value_type = |node: &syntax::postgres::protobuf::Node| cast_type(node).unwrap_or(Operand::Opaque);
     type Comparisons = Vec<[crate::resolution::Operand; 2]>;
     struct Read<'a> {
-        is_column: &'a dyn Fn(&pg_query::protobuf::Node) -> bool,
-        string: &'a dyn Fn(&pg_query::protobuf::Node) -> Option<String>,
-        column_type: &'a dyn Fn(&pg_query::protobuf::Node) -> crate::resolution::Operand,
-        value_type: &'a dyn Fn(&pg_query::protobuf::Node) -> crate::resolution::Operand,
+        is_column: &'a dyn Fn(&syntax::postgres::protobuf::Node) -> bool,
+        string: &'a dyn Fn(&syntax::postgres::protobuf::Node) -> Option<String>,
+        column_type: &'a dyn Fn(&syntax::postgres::protobuf::Node) -> crate::resolution::Operand,
+        value_type: &'a dyn Fn(&syntax::postgres::protobuf::Node) -> crate::resolution::Operand,
     }
-    fn list(node: &pg_query::protobuf::Node, read: &Read, compared: &mut Comparisons) -> Option<Vec<String>> {
-        use pg_query::protobuf::{AExprKind, BoolExprType, NullTestType};
+    fn list(node: &syntax::postgres::protobuf::Node, read: &Read, compared: &mut Comparisons) -> Option<Vec<String>> {
+        use syntax::postgres::protobuf::{AExprKind, BoolExprType, NullTestType};
         match node.node.as_ref()? {
             N::BoolExpr(b) if b.boolop == BoolExprType::AndExpr as i32 => {
                 let mut lists = b.args.iter().filter_map(|a| list(a, read, compared));
@@ -3660,7 +3660,7 @@ fn check_values(text: &str, column: &str, types: (Option<u32>, Option<u32>), tru
                 Some(lists.fold(first, |kept, other| kept.into_iter().filter(|v| other.contains(v)).collect()))
             }
             N::BoolExpr(b) if b.boolop == BoolExprType::OrExpr as i32 && b.args.len() == 2 => {
-                let null_test = |a: &pg_query::protobuf::Node| matches!(a.node.as_ref(), Some(N::NullTest(t)) if t.nulltesttype == NullTestType::IsNull as i32 && t.arg.as_deref().is_some_and(read.is_column));
+                let null_test = |a: &syntax::postgres::protobuf::Node| matches!(a.node.as_ref(), Some(N::NullTest(t)) if t.nulltesttype == NullTestType::IsNull as i32 && t.arg.as_deref().is_some_and(read.is_column));
                 match (null_test(&b.args[0]), null_test(&b.args[1])) {
                     (true, false) => list(&b.args[1], read, compared),
                     (false, true) => list(&b.args[0], read, compared),
@@ -3720,8 +3720,8 @@ const JSON_KIND: Validators = &[&crate::schema_type::REYLO];
 /// Only where `=` over text is the built-in; the caller makes sure the call is.
 fn check_json_kinds(text: &str, column: &str, trust: &Trust) -> Vec<&'static str> {
     use crate::resolution::{Kind, Operand};
-    use pg_query::protobuf::node::Node as N;
-    use pg_query::protobuf::{AExprKind, BoolExprType, Node, NullTestType};
+    use syntax::postgres::protobuf::node::Node as N;
+    use syntax::postgres::protobuf::{AExprKind, BoolExprType, Node, NullTestType};
     let Ok(parsed) = crate::stack::parse(&format!("SELECT {text}")) else { return Vec::new() };
     let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|s| s.node.as_ref()) else { return Vec::new() };
     let Some(N::ResTarget(target)) = select.target_list.first().and_then(|t| t.node.as_ref()) else { return Vec::new() };
@@ -3735,8 +3735,8 @@ fn check_json_kinds(text: &str, column: &str, trust: &Trust) -> Vec<&'static str
         let Some(N::TypeCast(t)) = node.node.as_ref() else { return None };
         let Some(N::AConst(c)) = t.arg.as_deref().and_then(|a| a.node.as_ref()) else { return None };
         match &c.val {
-            Some(pg_query::protobuf::a_const::Val::Sval(s)) if s.sval == "object" => Some(r#"{"type":"object"}"#),
-            Some(pg_query::protobuf::a_const::Val::Sval(s)) if s.sval == "array" => Some(r#"{"type":"array"}"#),
+            Some(syntax::postgres::protobuf::a_const::Val::Sval(s)) if s.sval == "object" => Some(r#"{"type":"object"}"#),
+            Some(syntax::postgres::protobuf::a_const::Val::Sval(s)) if s.sval == "array" => Some(r#"{"type":"array"}"#),
             _ => None,
         }
     };
@@ -3779,8 +3779,8 @@ fn check_json_kinds(text: &str, column: &str, trust: &Trust) -> Vec<&'static str
 pub fn check_array_values(text: &str, column: &str, types: (Option<u32>, Option<u32>), trust: &Trust) -> Option<Vec<String>> {
     use crate::pgtypes::oid;
     use crate::resolution::{Kind, Operand};
-    use pg_query::protobuf::node::Node as N;
-    use pg_query::protobuf::{AExprKind, BoolExprType, Node, NullTestType};
+    use syntax::postgres::protobuf::node::Node as N;
+    use syntax::postgres::protobuf::{AExprKind, BoolExprType, Node, NullTestType};
     let array_type = types.1.filter(|base| [oid::TEXT_ARRAY, oid::VARCHAR_ARRAY].contains(base))?;
     let parsed = crate::stack::parse(&format!("SELECT {text}")).ok()?;
     let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref() else { return None };
@@ -3808,7 +3808,7 @@ pub fn check_array_values(text: &str, column: &str, types: (Option<u32>, Option<
             let Some(N::AConst(c)) = uncast(element).node.as_ref() else { return None };
             match &c.val {
                 _ if c.isnull => {}
-                Some(pg_query::protobuf::a_const::Val::Sval(s)) => out.push(s.sval.clone()),
+                Some(syntax::postgres::protobuf::a_const::Val::Sval(s)) => out.push(s.sval.clone()),
                 _ => return None,
             }
         }
@@ -3858,8 +3858,8 @@ pub fn check_array_values(text: &str, column: &str, types: (Option<u32>, Option<
 pub fn check_non_finite(text: &str, column: &str, types: (Option<u32>, Option<u32>), trust: &Trust) -> Option<NonFinite> {
     use crate::pgtypes::oid;
     use crate::resolution::{Kind, Operand};
-    use pg_query::protobuf::node::Node as N;
-    use pg_query::protobuf::{a_const::Val, AExprKind, BoolExprType, Node, NullTestType};
+    use syntax::postgres::protobuf::node::Node as N;
+    use syntax::postgres::protobuf::{a_const::Val, AExprKind, BoolExprType, Node, NullTestType};
     let parsed = crate::stack::parse(&format!("SELECT {text}")).ok()?;
     let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref() else { return None };
     let Some(N::ResTarget(target)) = select.target_list.first()?.node.as_ref() else { return None };
@@ -3887,7 +3887,7 @@ pub fn check_non_finite(text: &str, column: &str, types: (Option<u32>, Option<u3
             _ => body.parse::<f64>().ok().filter(|v| v.is_finite()).map(|_| Value::Finite),
         }
     }
-    fn number_type(cast: &pg_query::protobuf::TypeCast) -> Option<u32> {
+    fn number_type(cast: &syntax::postgres::protobuf::TypeCast) -> Option<u32> {
         match crate::infer::builtin_name(&cast.type_name.as_ref()?.names)?.as_str() {
             "numeric" => Some(oid::NUMERIC),
             "float8" => Some(oid::FLOAT8),
@@ -4019,15 +4019,15 @@ pub fn check_non_finite(text: &str, column: &str, types: (Option<u32>, Option<u3
 pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), deterministic: bool, trust: &Trust) -> Option<CheckFacts> {
     use crate::pgtypes::oid;
     use crate::resolution::{Kind, Operand};
-    use pg_query::protobuf::node::Node as N;
-    use pg_query::protobuf::{a_const::Val, AExprKind, BoolExprType, Node, NullTestType};
+    use syntax::postgres::protobuf::node::Node as N;
+    use syntax::postgres::protobuf::{a_const::Val, AExprKind, BoolExprType, Node, NullTestType};
     let parsed = crate::stack::parse(&format!("SELECT {text}")).ok()?;
     let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref() else { return None };
     let Some(N::ResTarget(target)) = select.target_list.first()?.node.as_ref() else { return None };
     let check = target.val.as_deref()?;
 
     // A number type, but for one with a modifier, whose cast rounds (`2.55::numeric(3,1)`).
-    fn number_type(cast: &pg_query::protobuf::TypeCast) -> Option<u32> {
+    fn number_type(cast: &syntax::postgres::protobuf::TypeCast) -> Option<u32> {
         let name = cast.type_name.as_ref()?;
         if !name.typmods.is_empty() {
             return None;
@@ -4400,14 +4400,14 @@ fn witness_holds(witness: &analyze::Witness, relation: &str, columns: &[Vec<Valu
 }
 
 /// A column reference's names, where each is a plain name.
-fn bare_fields(c: &pg_query::protobuf::ColumnRef) -> Option<Vec<String>> {
+fn bare_fields(c: &syntax::postgres::protobuf::ColumnRef) -> Option<Vec<String>> {
     c.fields.iter().map(|f| match f.node.as_ref() {
         Some(NodeEnum::String(s)) => Some(s.sval.clone()),
         _ => None,
     }).collect()
 }
 
-/// The relations a statement reads or writes, as the parse names them, sorted. libpg_query
+/// The relations a statement reads or writes, as the parse names them, sorted. The parser's walk
 /// collects them through a hash set, so each parse lists them in another order; a query that
 /// carried that order would be a new need every round, and the replay would settle only when two
 /// rounds happened to agree.
@@ -4563,7 +4563,7 @@ fn build_catalog(set_returning: &(HashSet<String>, HashSet<String>), rows: Catal
 /// expands to. Nothing where a bare `*`, or a star of an item `width` does not answer for, hides
 /// which target is which column, or the targets are not the columns.
 fn aliased_columns(sql: &str, count: usize, width: &dyn Fn(&str) -> Option<usize>) -> Vec<Option<(String, bool)>> {
-    use pg_query::protobuf::{JoinType, Node};
+    use syntax::postgres::protobuf::{JoinType, Node};
     fn items(node: &Node, nulled: bool, ctes: &[String], out: &mut HashMap<String, Option<(String, bool)>>, qualified: &mut Vec<String>) {
         match node.node.as_ref() {
             Some(NodeEnum::RangeVar(rv)) => {
@@ -4606,7 +4606,7 @@ fn aliased_columns(sql: &str, count: usize, width: &dyn Fn(&str) -> Option<usize
     }
     let Ok(parsed) = crate::stack::parse(sql) else { return Vec::new() };
     let Some(NodeEnum::SelectStmt(select)) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) else { return Vec::new() };
-    if select.op != pg_query::protobuf::SetOperation::SetopNone as i32 && select.op != 0 {
+    if select.op != syntax::postgres::protobuf::SetOperation::SetopNone as i32 && select.op != 0 {
         return Vec::new();
     }
     let ctes: Vec<String> = select
@@ -4722,7 +4722,7 @@ fn insert_target(sql: &str) -> Option<InsertTarget> {
                 width = None;
             }
         }
-        Some(NodeEnum::SelectStmt(select)) if select.op == pg_query::protobuf::SetOperation::SetopNone as i32 => {
+        Some(NodeEnum::SelectStmt(select)) if select.op == syntax::postgres::protobuf::SetOperation::SetopNone as i32 => {
             let star = select.target_list.iter().any(|t| matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(rt)) if rt.val.as_deref().is_some_and(expands)));
             width = (!star).then_some(select.target_list.len());
         }
@@ -4733,8 +4733,8 @@ fn insert_target(sql: &str) -> Option<InsertTarget> {
 
 /// Whether a SELECT's target or a VALUES item stands for as many values as a row has columns:
 /// `t.*`, or `(composite).*`, which parses as an indirection ending in the star.
-fn expands(node: &pg_query::protobuf::Node) -> bool {
-    let last_is_star = |items: &[pg_query::protobuf::Node]| items.last().is_some_and(|f| matches!(f.node.as_ref(), Some(NodeEnum::AStar(_))));
+fn expands(node: &syntax::postgres::protobuf::Node) -> bool {
+    let last_is_star = |items: &[syntax::postgres::protobuf::Node]| items.last().is_some_and(|f| matches!(f.node.as_ref(), Some(NodeEnum::AStar(_))));
     match node.node.as_ref() {
         Some(NodeEnum::ColumnRef(c)) => last_is_star(&c.fields),
         Some(NodeEnum::AIndirection(i)) => last_is_star(&i.indirection),
@@ -4823,7 +4823,7 @@ fn column_spans(sql: &str, rewritten: &Rewritten) -> Vec<(usize, usize)> {
     let Ok(parsed) = crate::stack::parse(&rewritten.sql) else { return Vec::new() };
     let Some(top) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) else { return Vec::new() };
     let Some((items, _, _)) = jsonshape::top_context(top) else { return Vec::new() };
-    let targets: Vec<&pg_query::protobuf::ResTarget> = items.iter().map_while(|i| match i.node.as_ref() {
+    let targets: Vec<&syntax::postgres::protobuf::ResTarget> = items.iter().map_while(|i| match i.node.as_ref() {
         Some(NodeEnum::ResTarget(rt)) => Some(&**rt),
         _ => None,
     }).collect();
@@ -5018,7 +5018,7 @@ mod tests {
     /// How many result columns the top statement's own target list names (the leftmost arm's
     /// for a set operation), which is what the fake describer reports.
     fn target_count(sql: &str) -> usize {
-        fn arm(s: &pg_query::protobuf::SelectStmt) -> usize {
+        fn arm(s: &syntax::postgres::protobuf::SelectStmt) -> usize {
             match s.larg.as_deref() {
                 Some(left) => arm(left),
                 None => s.target_list.len(),
@@ -5026,9 +5026,9 @@ mod tests {
         }
         let parsed = crate::stack::parse(sql).expect("the probe parses");
         match parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) {
-            Some(pg_query::NodeEnum::SelectStmt(s)) => arm(s).max(1),
+            Some(syntax::postgres::NodeEnum::SelectStmt(s)) => arm(s).max(1),
             // DDL describes with no columns, as Postgres does.
-            Some(pg_query::NodeEnum::CreateStmt(_) | pg_query::NodeEnum::AlterTableStmt(_) | pg_query::NodeEnum::CopyStmt(_)) => 0,
+            Some(syntax::postgres::NodeEnum::CreateStmt(_) | syntax::postgres::NodeEnum::AlterTableStmt(_) | syntax::postgres::NodeEnum::CopyStmt(_)) => 0,
             _ => 1,
         }
     }
@@ -5834,7 +5834,7 @@ mod tests {
 
     #[test]
     fn a_position_the_parse_reports_is_an_offset_in_the_text_it_read() {
-        // libpg_query 18 leaves comments out of what it parses; a location is still an offset in
+        // Postgres's parser leaves comments out of what it parses; a location is still an offset in
         // the text with them, which is where a diagnostic is put.
         let sql = "/* upsert */ INSERT INTO bar (id, name) -- the row\n VALUES ($1, $2) /* é */ ON CONFLICT (name) DO NOTHING";
         let target = conflict_targets(sql).into_iter().next().expect("a target");
@@ -5856,7 +5856,7 @@ mod tests {
 
     #[test]
     fn a_round_names_the_same_needs_however_the_parse_orders_its_tables() {
-        // libpg_query lists a statement's tables in hash order, which differs between parses; a
+        // The parser's walk lists a statement's tables in hash order, which differs between parses; a
         // need that carried that order would be new every round and the replay would not settle.
         let sql = "SELECT a.x FROM alpha a JOIN beta b ON b.id = a.id JOIN gamma g ON g.id = b.id JOIN delta d ON d.id = g.id";
         let answers: HashMap<String, Answer> = HashMap::new();

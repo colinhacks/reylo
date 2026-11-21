@@ -26,7 +26,7 @@ use crate::levels::{Columns, Level, Withs};
 use crate::pgtypes::{oid, TypeRegistry};
 use crate::returning::Rows;
 use crate::types::{DescribedColumn, Field, JsonType, Kind, Slot, Type};
-use pg_query::protobuf::{self, node::Node as NodeEnum, AStar, ColumnRef, Node, ParseResult, RawStmt, ResTarget, SelectStmt};
+use syntax::postgres::protobuf::{self, node::Node as NodeEnum, AStar, ColumnRef, Node, ParseResult, RawStmt, ResTarget, SelectStmt};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -1561,7 +1561,7 @@ fn select_stmt(items: &[Node], from: &[Node], filter: Option<&Node>, group: &[No
         })
         .collect();
     // Every enumerated field has to carry a value the deparser knows: a protobuf zero means
-    // "unset", and libpg_query asserts rather than guessing.
+    // "unset", and the parser asserts rather than guessing.
     Some(SelectStmt {
         target_list,
         from_clause: from.to_vec(),

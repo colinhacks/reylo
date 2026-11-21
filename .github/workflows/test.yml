@@ -64,7 +64,7 @@ jobs:
           # the docs claim.
           everything() {
             echo engine=true
-            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-migrate -p reylo-cli -p reylo-oracle -p reylo-build -p reylo --features reylo/mysql,reylo/sqlite'
+            echo 'tests=-p reylo-engine-core -p reylo-engine-syntax -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-migrate -p reylo-cli -p reylo-oracle -p reylo-build -p reylo --features reylo/mysql,reylo/sqlite'
             echo "shards=[\"postgres\",\"sqlite\",\"mysql-1\",\"mysql-2\",\"mysql-slow\"${1-}]"
             echo playground=true
           }
@@ -80,10 +80,10 @@ jobs:
           # A renamed file counts at both paths, so a file moved out of a path that runs everything still does.
           files=$(git diff --name-only --no-renames "$base" HEAD)
           echo "$files"
-          # Core, the crate the oracle answers through, the oracle's own code and its mutations, the build, the code lists the
+          # Core, the syntax crate, the crate the oracle answers through, the oracle's own code and its mutations, the build, the code lists the
           # oracle reads, the format's schema and examples the engine's tests and the oracle read, the validators'
           # measurements the engine's tests read, and CI itself reach every database.
-          if grep -qE '^(\.cargo/|engine/(core|build-support|native|wasip2)/|engine/build\.sh$|oracle/src/|oracle/Cargo\.toml$|oracle/mutations\.json$|Cargo\.(toml|lock)$|rust-toolchain|src/error-codes-|spec/typedefs\.schema\.json$|spec/examples\.json$|wiki/json-schema-checks/|\.github/)' <<<"$files"; then
+          if grep -qE '^(\.cargo/|engine/(core|syntax|build-support|native|wasip2)/|engine/build\.sh$|oracle/src/|oracle/Cargo\.toml$|oracle/mutations\.json$|Cargo\.(toml|lock)$|rust-toolchain|src/error-codes-|spec/typedefs\.schema\.json$|spec/examples\.json$|wiki/json-schema-checks/|\.github/)' <<<"$files"; then
             everything >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -255,8 +255,8 @@ jobs:
 
   # The engine's sources, beyond the binary the loader's tests run: the whole workspace built natively,
   # with no warning, and the tests of the crates the change reaches run. sccache keeps each crate's and
-  # each C file's object between runs, libpg_query's and SQLite's included, which rust-cache does not
-  # keep, since they are the workspace's own.
+  # each C file's object between runs, SQLite's included, which rust-cache does not keep, since they
+  # are the workspace's own.
   engine:
     needs: scope
     if: ${{ !github.event.repository.private && needs.scope.outputs.engine == 'true' }}
@@ -300,7 +300,7 @@ jobs:
           persist-credentials: false
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # The patched parser crate (reylo-pg-query) and the SQLite amalgamation: cargo resolves nothing without them.
+      # The SQLite amalgamation: cargo resolves nothing without it.
       - run: engine/build.sh --prepare
       - name: Build the workspace, with no warning
         run: |

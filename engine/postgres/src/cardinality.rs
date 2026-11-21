@@ -61,7 +61,7 @@
 //! `generate_series` are table-valued, live in `FROM`, and are "no such function" in a select
 //! list — and no way to define an operator, so there the rule is empty.
 //!
-//! SQLite statements are read with libpg_query, as `infer` and `jsonshape` read them, after their
+//! SQLite statements are read with Postgres's grammar, as `infer` and `jsonshape` read them, after their
 //! `?n` placeholders become `$n`. Clause structure is the SQL both dialects share, and SQLite's
 //! own syntax — `LIMIT 5, 0`, `[bracketed]` names — does not parse there, which proves nothing.
 
@@ -72,7 +72,7 @@ use crate::resolution::{Kind, Operand};
 use crate::jsonshape::last_string;
 use crate::levels::{Columns, Level, Withs};
 use crate::pgtypes::oid;
-use pg_query::protobuf::{self, node::Node as NodeEnum, SelectStmt};
+use syntax::postgres::protobuf::{self, node::Node as NodeEnum, SelectStmt};
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -366,47 +366,7 @@ pub const TRIGGERS_QUERY: &str = concat!(
 /// returns NULL; a field's assignment leaves the record a row. A CALL can write either back through
 /// an INOUT parameter. A body the parser does not read says nothing.
 pub fn keeps_the_row(body: &str, events: i32) -> bool {
-    use serde_json::Map;
-    /// `varno` as the dump writes it, which leaves a 0 out.
-    fn number(map: &Map<String, Value>, key: &str) -> i64 {
-        map.get(key).and_then(Value::as_i64).unwrap_or(0)
-    }
-    struct Rules {
-        new: i64,
-        old: i64,
-        may_return: Vec<i64>,
-    }
-    fn holds(v: &Value, rules: &Rules) -> bool {
-        match v {
-            Value::Array(items) => items.iter().all(|i| holds(i, rules)),
-            Value::Object(map) => map.iter().all(|(key, child)| {
-                let own = match (key.as_str(), child.as_object()) {
-                    ("PLpgSQL_stmt_return", Some(s)) => !s.contains_key("expr") && rules.may_return.contains(&number(s, "retvarno")),
-                    ("PLpgSQL_stmt_assign" | "PLpgSQL_stmt_foreach_a", Some(s)) => ![rules.new, rules.old].contains(&number(s, "varno")),
-                    // A record named as a target: `SELECT … INTO new`, `FOR new IN …`, `FETCH c INTO new`.
-                    ("PLpgSQL_rec", Some(r)) => ![rules.new, rules.old].contains(&number(r, "dno")),
-                    ("PLpgSQL_stmt_call" | "PLpgSQL_stmt_return_next" | "PLpgSQL_stmt_return_query", _) => false,
-                    _ => true,
-                };
-                own && holds(child, rules)
-            }),
-            _ => true,
-        }
-    }
-    let statement = format!("CREATE FUNCTION reylo_trigger() RETURNS trigger LANGUAGE plpgsql AS '{}'", body.replace('\'', "''"));
-    let Ok(Value::Array(functions)) = crate::stack::run(|| pg_query::parse_plpgsql(&statement)) else { return false };
-    let [function] = functions.as_slice() else { return false };
-    let Some(function) = function.get("PLpgSQL_function").and_then(Value::as_object) else { return false };
-    let Some(action) = function.get("action") else { return false };
-    let (new, old) = (number(function, "new_varno"), number(function, "old_varno"));
-    let mut may_return = Vec::new();
-    if events & TRIGGER_ROW_DELETE == 0 {
-        may_return.push(new);
-    }
-    if events & TRIGGER_ROW_INSERT == 0 {
-        may_return.push(old);
-    }
-    holds(action, &Rules { new, old, may_return })
+    syntax::postgres::plpgsql::keeps_the_row(body, events & TRIGGER_ROW_DELETE == 0, events & TRIGGER_ROW_INSERT == 0)
 }
 
 /// `$1` is `text[]` of relation names as the statement writes them (`users`, `archive.users`), `$2` how many:
@@ -3569,7 +3529,7 @@ fn built_in_result(value: &protobuf::Node, catalog: &Catalog, type_of: &dyn Fn(&
     }
 }
 
-/// Built-in cast targets by the name libpg_query gives them.
+/// Built-in cast targets by the name Postgres's parser gives them.
 const CAST_TYPES: &[(&str, u32)] = &[
     ("text", oid::TEXT),
     ("varchar", oid::VARCHAR),

@@ -1,5 +1,5 @@
 //! Reylo's analysis engine for Postgres, over the core every database shares
-//! ([`reylo_engine_core`]): libpg_query's parse tree (the patched `pg_query` crate), the type
+//! ([`reylo_engine_core`]): Postgres's parse tree (`reylo-engine-syntax`), the type
 //! registry read from `pg_type`, the expression rules ([`infer`]), the row-count proof
 //! ([`cardinality`]), the nested JSON shapes ([`jsonshape`]) and the handshake with a server-side extension
 //! ([`extension`]).
@@ -25,7 +25,6 @@ pub mod levels;
 pub mod literals;
 pub mod pgtypes;
 pub mod postgres;
-mod raw;
 pub mod resolution;
 pub mod returning;
 pub mod stack;
@@ -35,11 +34,11 @@ use reylo_engine_core::{analysis, dialect, lex, schema_type, structured};
 
 pub use api::Postgres;
 
-/// A fingerprint of the sources this engine was built from: core's and this crate's
+/// A fingerprint of the sources this engine was built from: core's, this crate's and the parser's
 /// ([`reylo_engine_core::fingerprint`]). Two engines with the same fingerprint give the same
 /// answer, which is how a client decides whether the engine inside a server-side extension
 /// may answer for it ([`extension`]).
-pub const FINGERPRINT: &str = reylo_engine_core::fingerprint!("REYLO_ENGINE_POSTGRES_HASH");
+pub const FINGERPRINT: &str = reylo_engine_core::fingerprint!("REYLO_ENGINE_POSTGRES_HASH", reylo_engine_core::fingerprint::parse_hex(syntax::SOURCE_HASH));
 
 #[cfg(test)]
 mod tests {
@@ -53,8 +52,7 @@ mod tests {
         let hashed: Vec<&str> = list.split(',').map(|entry| entry.trim().trim_matches('"')).filter(|entry| !entry.is_empty()).collect();
         for entry in std::fs::read_dir(root).unwrap().flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            // `Cargo.toml` is always hashed, a dot-entry is a prepared input (`.patched/`), and
-            // `examples/` builds no part of the engine.
+            // `Cargo.toml` is always hashed, and `examples/` builds no part of the engine.
             if name.starts_with('.') || name == "Cargo.toml" || name == "examples" {
                 continue;
             }

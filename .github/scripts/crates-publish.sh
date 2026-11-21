@@ -29,9 +29,9 @@ fi
 version=${1:?the version to publish, as the tag names it without its v}
 : "${CARGO_REGISTRY_TOKEN:?CARGO_REGISTRY_TOKEN names the crates.io token}"
 agent="reylo-release (github.com/reylosql/reylo)"
-# Each crate after those it depends on. The parser crates keep their own versions, which change only
-# with what they copy.
-crates=(reylo-pg-query reylo-sqlparser reylo-engine-build reylo-engine-core reylo-engine-postgres reylo-engine-sqlite reylo-engine-mysql reylo-engine reylo-migrate reylo-build reylo-macros reylo reylo-cli)
+# Each crate after those it depends on. The parser crate keeps its own version, which changes only
+# with what it copies.
+crates=(reylo-sqlparser reylo-engine-build reylo-engine-syntax reylo-engine-core reylo-engine-postgres reylo-engine-sqlite reylo-engine-mysql reylo-engine reylo-migrate reylo-build reylo-macros reylo reylo-cli)
 
 metadata=$(cargo metadata --no-deps --format-version 1 --locked)
 versions=$(python3 -c '
@@ -48,11 +48,11 @@ if [ "$listed" != "$(printf '%s\n' "${crates[@]}" | sort)" ]; then
   exit 1
 fi
 
-# Every crate at the release's version before any is published, the parser crates aside.
+# Every crate at the release's version before any is published, the parser crate aside.
 for crate in "${crates[@]}"; do
   crate_version=$(awk -v c="$crate" '$1 == c { print $2 }' <<<"$versions")
   case "$crate" in
-    reylo-pg-query | reylo-sqlparser) ;;
+    reylo-sqlparser) ;;
     *)
       if [ "$crate_version" != "$version" ]; then
         echo "$crate is at $crate_version in this checkout, not $version" >&2

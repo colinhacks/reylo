@@ -8,7 +8,7 @@ use crate::analyze;
 use crate::cardinality::{names, relation_named};
 use crate::errors;
 use crate::host::Host;
-use pg_query::protobuf::node::Node as NodeEnum;
+use syntax::postgres::protobuf::node::Node as NodeEnum;
 use reylo_engine_core::api::{Analysis, Scope};
 use reylo_engine_core::dialect::Dialect;
 use reylo_engine_core::errors::has_word;
@@ -530,7 +530,7 @@ fn unread(capabilities: &mut Capabilities) {
 
 /// What a statement that is no query or write does, by its kind.
 fn utility(node: &NodeEnum, capabilities: &mut Capabilities) {
-    use pg_query::protobuf::TransactionStmtKind as T;
+    use syntax::postgres::protobuf::TransactionStmtKind as T;
     use NodeEnum as N;
     match node {
         // A commit runs the deferred constraint triggers and foreign keys' checks, a user's
@@ -571,7 +571,7 @@ fn utility(node: &NodeEnum, capabilities: &mut Capabilities) {
 
 /// What `LOCK TABLE` locks: each table it names, and a view's base relations and a table's
 /// partitions and children, as the server locks them.
-fn locked(l: &pg_query::protobuf::LockStmt, host: &Host, capabilities: &mut Capabilities) -> Lazy<()> {
+fn locked(l: &syntax::postgres::protobuf::LockStmt, host: &Host, capabilities: &mut Capabilities) -> Lazy<()> {
     let mut names = Vec::new();
     for relation in &l.relations {
         match relation.node.as_ref() {
@@ -588,6 +588,6 @@ fn locked(l: &pg_query::protobuf::LockStmt, host: &Host, capabilities: &mut Capa
 }
 
 /// A relation's name as a statement qualifies it.
-fn qualified(rv: &pg_query::protobuf::RangeVar) -> String {
+fn qualified(rv: &syntax::postgres::protobuf::RangeVar) -> String {
     analyze::relation_name(&rv.schemaname, &rv.relname)
 }

@@ -24,7 +24,7 @@
 //! column `u`, for certain ([`Level::lacks`]).
 
 use crate::jsonshape::{as_select, last_string};
-use pg_query::protobuf::{self, node::Node as NodeEnum, Node, SelectStmt};
+use syntax::postgres::protobuf::{self, node::Node as NodeEnum, Node, SelectStmt};
 use serde_json::Value;
 use std::collections::HashMap;
 
