@@ -24,8 +24,9 @@ export type Dialect = "postgres" | "mysql" | "sqlite" | "clickhouse";
 
 /**
  * pg's Pool, Client and PoolClient; PGlite and its transactions; Neon's Pool and Client;
- * pg-promise's database, tasks and transactions; @vercel/postgres: query(text, values) → { rows }
- * (pg-promise resolves to the rows themselves, and its types say any).
+ * pg-promise's database, tasks and transactions; @vercel/postgres; Drizzle's Postgres driver's
+ * Pool and Connection: query(text, values) → { rows } (pg-promise resolves to the rows themselves,
+ * and its types say any).
  */
 export type PgQueryClient = {
   query(text: string, values?: any[]): PromiseLike<{ rows: unknown[] }>;
@@ -147,7 +148,7 @@ export type DrizzleDatabase<C> = { readonly $client: C };
  * which `run` runs on through the transaction's own connection. Each dialect's is known by what
  * only it has: `setTransaction()` on Postgres, `get()` and `all()` on SQLite, neither on MySQL.
  */
-export type DrizzlePgTransaction = { rollback(): never; setTransaction(config: any): Promise<void> };
+export type DrizzlePgTransaction = { rollback(): never; setTransaction(config: any): Promise<unknown> };
 export type DrizzleMysqlTransaction = { rollback(): never; execute(query: any): unknown; setTransaction?: never; get?: never };
 export type DrizzleSqliteTransaction = { rollback(): never; get(query: any): unknown; all(query: any): unknown };
 /** A transaction of a synchronous SQLite driver's Drizzle database, whose `all()` returns the rows themselves. */
@@ -861,7 +862,7 @@ export function compile(query: QueryModule): { text: string; order: readonly str
 }
 
 const accepted: Record<Dialect, string> = {
-  postgres: "query(text, values) as on pg, PGlite, Neon, @vercel/postgres and pg-promise; unsafe(text, values) as on postgres.js and Bun.sql; Neon's neon() function; a Slonik pool, connection or transaction; or a Drizzle database or Knex instance over one of them",
+  postgres: "query(text, values) as on pg, PGlite, Neon, @vercel/postgres, pg-promise and Drizzle's Postgres driver; unsafe(text, values) as on postgres.js and Bun.sql; Neon's neon() function; a Slonik pool, connection or transaction; or a Drizzle database or Knex instance over one of them",
   clickhouse: "a client of @clickhouse/client or @clickhouse/client-web, whose exec() runs the statement",
   mysql: "execute(text, values) as on mysql2 and PlanetScale; query(text, values) as on mariadb's pool or connection, from its promise or callback API; unsafe(text, values) as on Bun.sql; a mysql2 callback pool or connection; or a Drizzle database or Knex instance over one of them",
   sqlite: "prepare(sql) as on better-sqlite3, node:sqlite, bun:sqlite, Turso's @tursodatabase/database, Cloudflare D1, the oo1 Database of @sqlite.org/sqlite-wasm and sql.js; exec(sql, ...values) as on a Durable Object's ctx.storage.sql; execute({ sql, args }) as on @libsql/client; all(sql, params) as on sqlite3 and sqlite; unsafe(text, values) as on Bun.sql; or a Drizzle database or Knex instance over one of them",

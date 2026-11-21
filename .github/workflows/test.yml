@@ -537,16 +537,12 @@ jobs:
         with:
           path: ~/json-schema-validators
           key: ${{ steps.validators.outputs.cache-primary-key }}
-      # Postgres 14's packages carry JIT, on by default, which compiles each of the engine's catalog queries
-      # for seconds and turns the shard's run into hours; the oracle checks types, not plans.
       - name: Install the validators and start Postgres ${{ env.PG_MAJOR }}
         if: startsWith(matrix.shard, 'postgres')
         run: |
           sudo cp -R ~/json-schema-validators/. /
-          jit=''
-          [ "$PG_MAJOR" = 18 ] || jit='-c jit=off'
           "$PG_BIN/initdb" -D "$RUNNER_TEMP/pg" -U postgres --auth=trust --no-sync -E UTF8 --locale=C
-          "$PG_BIN/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 25432 -c listen_addresses=localhost -c unix_socket_directories=$RUNNER_TEMP $jit" -l "$RUNNER_TEMP/postgres.log" -w start
+          "$PG_BIN/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 25432 -c listen_addresses=localhost -c unix_socket_directories=$RUNNER_TEMP" -l "$RUNNER_TEMP/postgres.log" -w start
       - run: engine/build.sh --prepare
       - name: The shard's cases
         id: shard

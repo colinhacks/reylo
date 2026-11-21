@@ -125,6 +125,15 @@ import getUser from "./get_user.sql";
 const user = await getUser.run(sql, { id: 1 });
 ```
 
+```ts twoslash tab="Drizzle's driver" dialect="postgres"
+import { Pool } from "drizzle-orm/postgres/client";
+import getUser from "./get_user.sql";
+
+const db = new Pool({ url: process.env.DATABASE_URL });
+
+const user = await getUser.run(db, { id: 1 });
+```
+
 ```ts twoslash tab="Drizzle" dialect="postgres"
 import { drizzle } from "drizzle-orm/node-postgres";
 import getUser from "./get_user.sql";
@@ -461,6 +470,19 @@ try {
 } finally {
   client.release();
 }
+```
+
+```ts twoslash tab="Drizzle's driver" dialect="postgres"
+import { Pool } from "drizzle-orm/postgres/client";
+import createUser from "./create_user.sql";
+
+const db = new Pool({ url: process.env.DATABASE_URL });
+
+// two inserts in one transaction: both land, or neither
+await db.transaction(async (tx) => {
+  await createUser.run(tx, { name: "Ada" });
+  await createUser.run(tx, { name: "Grace" });
+});
 ```
 
 ```ts twoslash tab="Drizzle" dialect="postgres"

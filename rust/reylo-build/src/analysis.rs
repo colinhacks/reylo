@@ -1,8 +1,8 @@
 //! A statement's analysis at compile time: from `reylo/.cache/` when its entry matches the database's
 //! schema, else from the engine replayed against the database, else, where the database cannot be
-//! reached or no URL names it, from the newest entry `reylo/.cache/` holds for the statement. The
-//! connection is the engine's own (`reylo_engine`), which reads the URL as the loader does,
-//! TLS included. A statement built from `reylo/.cache/` without the database's schema to hold it to
+//! reached, from that database's own entry, and where no URL names one, from the newest entry
+//! `reylo/.cache/` holds for the statement. The connection is the engine's own (`reylo_engine`),
+//! which reads the URL as the loader does, TLS included. A statement built from `reylo/.cache/` without the database's schema to hold it to
 //! says so on standard error, once per process and reason, in the loader's words.
 //!
 //! The cache is the TypeScript loader's (`src/analyze.ts`): the same file names, the same entry and
@@ -169,7 +169,7 @@ pub fn analyze(dir: &Path, sql: &str) -> Result<(Dialect, Value), String> {
         // No URL: whichever database the cache holds an analysis of the statement for.
         for dialect in [Dialect::Postgres, Dialect::Sqlite, Dialect::Mysql] {
             let Some(key) = statement_key(dialect, sql) else { continue };
-            if let Some(entry) = newest_entry(&queries, &key, "") {
+            if let Some(entry) = newest_entry(&queries, &key) {
                 unverified(&located, "no database URL is set", &entry);
                 return Ok((dialect, entry["analysis"].clone()));
             }
@@ -295,7 +295,7 @@ async fn postgres(located: &Located, queries: &Path, sql: &str, session: &mut Se
     // Out of reach: the entries are used as they are.
     let schema = match schema {
         Ok(schema) => schema,
-        Err(why) => return offline(located, queries, &statement, &server, &located.cannot_connect(&session.url, &why)),
+        Err(why) => return offline(located, queries, &statement, &server, false, &located.cannot_connect(&session.url, &why)),
     };
     let own = queries.join(format!("{statement}-{}.json", &sha256(&server)[..16]));
     if let Some(entry) = current(&own, &schema) {
@@ -303,7 +303,7 @@ async fn postgres(located: &Located, queries: &Path, sql: &str, session: &mut Se
     }
     let client = match postgres_client(&mut session.conn, &session.url).await {
         Ok(client) => client,
-        Err(Failure::Unreachable(why)) => return offline(located, queries, &statement, &server, &located.cannot_connect(&session.url, &why)),
+        Err(Failure::Unreachable(why)) => return offline(located, queries, &statement, &server, false, &located.cannot_connect(&session.url, &why)),
         Err(other) => return Err(other.to_string()),
     };
     let analysis = reylo_engine::clients::tokio_postgres::analyze(client, sql, &mut session.answers).await.map_err(|e| e.to_string())?;
@@ -314,6 +314,9 @@ async fn postgres(located: &Located, queries: &Path, sql: &str, session: &mut Se
 #[cfg(feature = "postgres")]
 async fn postgres_client<'c>(conn: &'c mut Option<Client>, url: &str) -> Result<&'c Client, Failure> {
     if conn.as_ref().map_or(true, Client::is_closed) {
+        if let Some(refusal) = reylo_engine::postgres::transaction_pooler(url) {
+            return Err(Failure::Error(refusal));
+        }
         *conn = Some(reylo_engine::postgres::open(url).await?.0);
     }
     Ok(conn.as_ref().expect("connected above"))
@@ -345,7 +348,7 @@ async fn mysql(located: &Located, queries: &Path, sql: &str, session: &mut Sessi
     };
     let schema = match schema {
         Ok(schema) => schema,
-        Err(why) => return offline(located, queries, &statement, &server, &located.cannot_connect(&session.url, &why)),
+        Err(why) => return offline(located, queries, &statement, &server, false, &located.cannot_connect(&session.url, &why)),
     };
     let own = queries.join(format!("{statement}-{}.json", &sha256(&server)[..16]));
     if let Some(entry) = current(&own, &schema) {
@@ -353,7 +356,7 @@ async fn mysql(located: &Located, queries: &Path, sql: &str, session: &mut Sessi
     }
     let conn = match mysql_conn(&mut session.conn, &session.url).await {
         Ok(conn) => conn,
-        Err(Failure::Unreachable(why)) => return offline(located, queries, &statement, &server, &located.cannot_connect(&session.url, &why)),
+        Err(Failure::Unreachable(why)) => return offline(located, queries, &statement, &server, false, &located.cannot_connect(&session.url, &why)),
         Err(other) => return Err(other.to_string()),
     };
     let analysis = reylo_engine::clients::mysql_async::analyze(conn, sql, &mut session.answers).await;
@@ -398,7 +401,7 @@ fn sqlite(located: &Located, queries: &Path, url: &str, sql: &str) -> Result<Val
     let server = path.to_string_lossy().to_string();
     // A file that is gone is a database that cannot be reached: the entries are used as they are.
     if !path.exists() {
-        return offline(located, queries, &statement, &server, &located.cannot_connect(url, "it does not exist"));
+        return offline(located, queries, &statement, &server, true, &located.cannot_connect(url, "it does not exist"));
     }
     let conn = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
     let rows = {
@@ -428,11 +431,28 @@ fn sqlite(located: &Located, queries: &Path, url: &str, sql: &str) -> Result<Val
 }
 
 /// Where the database cannot be reached (`found` says which, and why): this server's entry for the
-/// statement, else the newest.
-fn offline(located: &Located, queries: &Path, statement: &str, server: &str, found: &str) -> Result<Value, String> {
-    let entry = newest_entry(queries, statement, server).ok_or_else(|| format!("{}{}; {} has no analysis of this statement, so build once where the database can be reached.", found[..1].to_uppercase(), &found[1..], located.cache_name()))?;
+/// statement, else, where `others` allows, the newest of any. A URL that names a server and fails
+/// reads that server's entry alone, since another's says nothing of the database the URL asks for,
+/// and a mistyped host would otherwise build from whichever database was analyzed last. A database
+/// that is a file has no server to mistake: its project built elsewhere, as in a container, names
+/// the same file at another path (`#offlineEntry` in `src/analyze.ts`).
+fn offline(located: &Located, queries: &Path, statement: &str, server: &str, others: bool, found: &str) -> Result<Value, String> {
+    let entry = offline_entry(queries, statement, server, others).map_err(|next| format!("{}{}; {} {next}.", found[..1].to_uppercase(), &found[1..], located.cache_name()))?;
     unverified(located, found, &entry);
     Ok(entry["analysis"].clone())
+}
+
+/// The entry `offline` builds from, or what the cache holds instead and what to do about it.
+fn offline_entry(queries: &Path, statement: &str, server: &str, others: bool) -> Result<Value, &'static str> {
+    if let Some(entry) = read_entry(&queries.join(format!("{statement}-{}.json", &sha256(server)[..16]))) {
+        return Ok(entry);
+    }
+    match newest_entry(queries, statement) {
+        Some(entry) if others => Ok(entry),
+        // Another database's analysis is no answer for the one the URL names.
+        Some(_) => Err("has this statement's analysis from another database only, which a build reads where no database URL is set: build once where this database can be reached, or build with no URL"),
+        None => Err("has no analysis of this statement, so build once where the database can be reached"),
+    }
 }
 
 impl Located {
@@ -542,13 +562,8 @@ fn read_entry(file: &Path) -> Option<Value> {
     (entry["version"].as_u64() == Some(ENTRY_VERSION)).then_some(entry)
 }
 
-/// This server's entry for the statement, else the one written last for it by any server.
-fn newest_entry(queries: &Path, statement: &str, server_name: &str) -> Option<Value> {
-    if !server_name.is_empty() {
-        if let Some(entry) = read_entry(&queries.join(format!("{statement}-{}.json", &sha256(server_name)[..16]))) {
-            return Some(entry);
-        }
-    }
+/// The entry written last for the statement, by any server.
+fn newest_entry(queries: &Path, statement: &str) -> Option<Value> {
     let prefix = format!("{statement}-");
     fs::read_dir(queries)
         .ok()?
@@ -577,8 +592,26 @@ fn write_entry(cache: &Path, file: &Path, entry: &Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{old_lock, place, unverified_line, utc_day};
+    use super::{newest_entry, offline_entry, old_lock, place, sha256, unverified_line, utc_day, ENTRY_VERSION};
     use serde_json::json;
+
+    #[test]
+    fn an_unreachable_server_builds_from_its_own_entry_alone() {
+        let queries = std::env::temp_dir().join(format!("reylo-build-offline-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&queries);
+        std::fs::create_dir_all(&queries).unwrap();
+        let write = |server: &str, at: u64| std::fs::write(queries.join(format!("s-{}.json", &sha256(server)[..16])), json!({"version": ENTRY_VERSION, "at": at, "analysis": {"of": server}}).to_string()).unwrap();
+        assert_eq!(offline_entry(&queries, "s", "db.internal:5432/shop", false), Err("has no analysis of this statement, so build once where the database can be reached"));
+        write("other.internal:5432/shop", 2);
+        // Another server's entry answers a database that is a file, and never a server the URL names.
+        assert!(offline_entry(&queries, "s", "db.internal:5432/shop", false).is_err_and(|next| next.starts_with("has this statement's analysis from another database only, ")));
+        assert_eq!(offline_entry(&queries, "s", "/app/dev.db", true).unwrap()["analysis"]["of"], "other.internal:5432/shop");
+        // Its own entry, though another's is newer.
+        write("db.internal:5432/shop", 1);
+        assert_eq!(offline_entry(&queries, "s", "db.internal:5432/shop", false).unwrap()["analysis"]["of"], "db.internal:5432/shop");
+        assert_eq!(newest_entry(&queries, "s").unwrap()["analysis"]["of"], "other.internal:5432/shop");
+        std::fs::remove_dir_all(&queries).unwrap();
+    }
 
     #[test]
     fn a_build_from_the_cache_says_so_in_the_loaders_words() {

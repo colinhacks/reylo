@@ -109,6 +109,18 @@ test("postgres: every client gets an array for a SQL array parameter as its lite
   assert.deepEqual(seen.at(-1), [{ value: '{"1","3"}', type: 705 }, { value: "ada", type: 705 }, { value: '[1,{"a":"b"}]', type: 705 }]);
 });
 
+test("postgres: a Bun.sql client made with prepare: false, which sends an object as its String(), gets a JSON parameter as its JSON text", async () => {
+  const seen: unknown[][] = [];
+  const unsafe = async (_: string, values?: unknown[]) => (seen.push(values!), []);
+  const unprepared = { unsafe, commitDistributed: async () => {}, options: { prepare: false } };
+  const prepared = { unsafe, commitDistributed: async () => {}, options: { prepare: true } };
+  await execute(unprepared, typed, typedValues);
+  await execute(prepared, typed, typedValues);
+  assert.deepEqual(seen[0], ['{"1","3"}', "ada", '[1,{"a":"b"}]']);
+  assert.equal(JSON.stringify(seen[1]![2]), '[1,{"a":"b"}]');
+  assert.equal(typeof seen[1]![2], "object");
+});
+
 // Every kind of JSON value, null, and a jsonb[] parameter, whose elements are JSON values.
 const jsonQuery: QueryModule<"postgres"> = {
   dialect: "postgres",

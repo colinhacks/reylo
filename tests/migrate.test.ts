@@ -70,6 +70,16 @@ test("a migration that leaves a foreign key broken rolls back alone, as reylo mi
   assert.equal((s.db.prepare("select count(*) as n from users").get() as { n: number }).n, 1);
 });
 
+test("a rebuild that leaves every foreign key whole commits, though SQLite still counts its drop", () => {
+  const s = storage();
+  const POSTS = { name: "20261107120000_posts.sql", sql: "create table posts (id integer primary key, user_id integer references users (id) deferrable initially deferred); insert into users (name) values ('ada'); insert into posts (user_id) values (1);" };
+  // The drop counts the post's key as broken, and the rename that makes it whole again leaves the count.
+  const REBUILD = { name: "20261108120000_rebuild.sql", sql: "create table users_new (id integer primary key, name text not null check (length(name) > 0)); insert into users_new select * from users; drop table users; alter table users_new rename to users;" };
+  assert.deepEqual(runMigrations(s, [USERS, POSTS, REBUILD]), [USERS.name, POSTS.name, REBUILD.name]);
+  assert.equal((s.db.prepare("select count(*) as n from posts").get() as { n: number }).n, 1);
+  assert.throws(() => s.db.exec("insert into users (id, name) values (2, '')"), /CHECK constraint failed/);
+});
+
 test("a history the bundle doesn't continue is refused before anything runs, naming the migration", () => {
   const AGE = { name: "20261108120000_age.sql", sql: "alter table users add column age int;" };
   const history = (s: { db: DatabaseSync }) => (s.db.prepare("select name from __reylo_migrations order by rowid").all() as { name: string }[]).map((r) => r.name);

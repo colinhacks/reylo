@@ -492,6 +492,9 @@ async fn connect(config: &Config) -> Result<Client, String> {
     tokio::spawn(async move {
         let _ = connection.await;
     });
+    // As the engine's own connections do: a server built with JIT compiles the engine's catalog
+    // queries for seconds each, on every statement of every case. The oracle checks types, not plans.
+    let _ = client.batch_execute("set jit = off").await;
     Ok(client)
 }
 

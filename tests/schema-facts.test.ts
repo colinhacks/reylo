@@ -16,6 +16,14 @@ const int4 = (facts: object): EngineType => ({ kind: "integer", bits: 32, label:
 const varchar = (facts: object): EngineType => ({ kind: "text", label: "varchar", ...facts }) as EngineType;
 const output = (t: EngineType, inJson = false) => typeSchema(t, "postgres", false, inJson);
 
+test("a JSON document nested to the engine's bound has a schema", () => {
+  let nested: EngineType = int4({});
+  for (let depth = 0; depth < 495; depth++) nested = { kind: "struct", fields: [{ name: "a", type: nested }] } as EngineType;
+  let schema = output({ kind: "json", content: { type: nested } } as EngineType) as { type: string; properties: { a: unknown } };
+  for (let depth = 0; depth < 495; depth++) schema = schema.properties.a as typeof schema;
+  assert.equal(schema.type, "integer");
+});
+
 test("a text's size in code points and its pattern are written, and nothing else of a string", () => {
   assert.deepEqual(output(varchar({ size: { max: 20 } })), { type: "string", maxLength: 20 });
   assert.deepEqual(output(varchar({ size: { exact: 5 } })), { type: "string", minLength: 5, maxLength: 5 });

@@ -1750,7 +1750,7 @@ pub fn check_sqlite<D: SqliteDb + ?Sized>(db: &D, statements: &[(String, String,
                                     };
                                     let why = serde_json::from_value::<Type>(col["type"].clone()).ok().and_then(|ty| match &ty.kind {
                                         Kind::Enum(e) if matches!(e.ty.kind, Kind::Text(_)) => Some(format!("typed as one of {:?} holds the number {number}", e.values)),
-                                        _ => literal_contradiction(&ty, &number),
+                                        _ => literal_contradiction(&ty, &number).or_else(|| fact_contradiction(&ty, &number)),
                                     });
                                     if let Some(why) = why {
                                         found.push(format!("{file}: column {name} {why} with ({shown})"));

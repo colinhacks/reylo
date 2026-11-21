@@ -18,6 +18,10 @@ version="${version#v}"
 base="${4:-https://github.com/reylosql/reylo/releases/download/v$version}"
 base="${base%/}"
 
+# Homebrew reads a stable version from a release's URL, and its audit refuses one repeated beside it. It cuts a prerelease's tag short, and a run's own server has no version in its URL, so the formula names the version for both.
+version_line=""
+[[ "$base" == */download/v"$version" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || version_line=$'\n'"  version \"$version\""
+
 desc="Infer types for SQL queries from the database itself"
 
 sha() {
@@ -35,8 +39,7 @@ cat > "$out/Formula/reylo.rb" << EOF
 # Written by reylosql/reylo's release workflow (.github/scripts/channels.sh) for each release.
 class Reylo < Formula
   desc "$desc"
-  homepage "https://reylo.dev"
-  version "$version"
+  homepage "https://reylo.dev"$version_line
   license "MIT"
 
   on_macos do
