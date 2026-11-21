@@ -8,7 +8,7 @@ import { formatType, resultType } from '../../src/type-format.ts';
 /*
  * What the homepage shows (components/home-landing.tsx), read from the docs and the types
  * captured for them (lib/sql-modules.json), never typed by hand: the Inference section's cards
- * (content/sections/03-inference.mdx), the first of each h2, each with its statement and types in
+ * (content/sections/03-inference.mdx), each h2's first by its id and a later one by its id and place, each with its statement and types in
  * every dialect it has; the main page's schema in each dialect; and the intro's `get_author.sql`
  * with the type its import gives. Highlighted here, once, as lines of [text, colour] tokens, so the
  * page ships highlighted text and no highlighter. `virtual:home-examples` is all three.
@@ -137,7 +137,9 @@ export async function buildHomeData(site = process.cwd(), modules: Modules = rea
       } else if (child.type === 'paragraph' && node.type === 'root') {
         lede = firstSentence(textOf(child));
       } else if (child.type === 'mdxJsxFlowElement' && child.name === INFERENCE_CARD) {
-        if (!cards.some((c) => c.id === id)) cards.push({ card: child, title, id, lede });
+        // A section's first card is its id; a later one, its id and its place, as `subqueries:2`.
+        const n = cards.filter((c) => c.id === id || c.id.startsWith(`${id}:`)).length;
+        cards.push({ card: child, title, id: n ? `${id}:${n + 1}` : id, lede });
       } else walk(child);
     }
   };
