@@ -49,6 +49,26 @@ pub trait AsyncAnswerer<D> {
     fn query(&mut self, sql: &str, params: &[Value]) -> impl Future<Output = Result<Result<Vec<Vec<Value>>, DbError>, Self::Error>> + Send;
 }
 
+/// [`AsyncAnswerer`] for a client that takes several requests at once, as a tokio-postgres client
+/// pipelines the statements it is given together over its one connection. [`run_concurrent`] asks
+/// each round's needs together, so a round waits about one round trip to the server rather than one
+/// per need, which is most of an analysis's time on a server far from the host.
+pub trait ConcurrentAnswerer<D> {
+    /// As [`Answerer::Error`].
+    type Error;
+
+    /// As [`Answerer::describe`].
+    fn describe(&self, sql: &str) -> impl Future<Output = Result<Result<D, DbError>, Self::Error>> + Send;
+
+    /// As [`Answerer::query`].
+    fn query(&self, sql: &str, params: &[Value]) -> impl Future<Output = Result<Result<Vec<Vec<Value>>, DbError>, Self::Error>> + Send;
+
+    /// Whether `error` ended the session, so that nothing else asked on it can still finish. A round stops at such an error; after any other it lets what it already asked finish, since a request dropped halfway can leave its state on a session the host goes on using.
+    fn ends_session(&self, _error: &Self::Error) -> bool {
+        true
+    }
+}
+
 /// Why a replay ended without an analysis.
 #[derive(Debug)]
 pub enum ReplayError<E> {
@@ -217,6 +237,73 @@ pub async fn run_async<Db: Database, A: AsyncAnswerer<Db::Describe>>(sql: &str, 
     Err(ReplayError::Unsettled)
 }
 
+/// [`run_async`] for a [`ConcurrentAnswerer`]: the needs of a round that the cache does not answer
+/// are asked together, and each is kept in the cache as it would be one at a time.
+pub async fn run_concurrent<Db: Database, A: ConcurrentAnswerer<Db::Describe>>(sql: &str, answerer: &A, cache: &mut AnswerCache<Db::Describe>) -> Result<Analysis, ReplayError<A::Error>> {
+    let mut answers: Answers<Db::Describe> = HashMap::new();
+    for _ in 0..ROUNDS {
+        let needs = match round::<Db>(sql, &mut answers).map_err(ReplayError::Engine)? {
+            Round::Done(analysis) => return Ok(*analysis),
+            Round::Needs(needs) => needs,
+        };
+        let mut asked: Vec<Need> = Vec::new();
+        for need in needs {
+            match cache.get(&need).cloned() {
+                Some(known) => {
+                    answers.insert(id(&need).to_string(), known);
+                }
+                None if asked.iter().all(|other| id(other) != id(&need)) => asked.push(need),
+                None => {}
+            }
+        }
+        let asking = asked.iter().map(|need| async move {
+            match need {
+                Need::Describe { sql, .. } => answer(answerer.describe(sql).await),
+                Need::Query { sql, params, .. } => rows(answerer.query(sql, params).await),
+            }
+        });
+        let fresh = join_to_first_error(asking, |error| matches!(error, ReplayError::Host(host) if answerer.ends_session(host))).await;
+        for (need, fresh) in asked.iter().zip(fresh) {
+            let fresh = fresh?;
+            cache.put(need, &fresh);
+            answers.insert(id(need).to_string(), fresh);
+        }
+    }
+    Err(ReplayError::Unsettled)
+}
+
+/// The futures' outputs in their order, the futures polled together, up to and including the first error. Once every future before that error has settled, an error `stops` says stops the rest returns at once; after any other, the rest are polled to their end first.
+async fn join_to_first_error<T, E, F: Future<Output = Result<T, E>>>(futures: impl IntoIterator<Item = F>, stops: impl Fn(&E) -> bool) -> Vec<Result<T, E>> {
+    let mut futures: Vec<std::pin::Pin<Box<F>>> = futures.into_iter().map(Box::pin).collect();
+    let mut outputs: Vec<Option<Result<T, E>>> = futures.iter().map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        for (future, output) in futures.iter_mut().zip(outputs.iter_mut()) {
+            if output.is_none() {
+                if let std::task::Poll::Ready(value) = future.as_mut().poll(cx) {
+                    *output = Some(value);
+                }
+            }
+        }
+        let done = outputs.iter().all(Option::is_some);
+        match outputs.iter().find(|output| !matches!(output, Some(Ok(_)))) {
+            Some(Some(Err(error))) if stops(error) => std::task::Poll::Ready(()),
+            _ if done => std::task::Poll::Ready(()),
+            _ => std::task::Poll::Pending,
+        }
+    })
+    .await;
+    let mut settled = Vec::with_capacity(outputs.len());
+    for output in outputs {
+        let Some(output) = output else { break };
+        let failed = output.is_err();
+        settled.push(output);
+        if failed {
+            break;
+        }
+    }
+    settled
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +427,142 @@ mod tests {
             Err(ReplayError::Host(e)) => assert_eq!(e, "connection lost"),
             other => panic!("expected the host's error, got {:?}", other.map(|a| a.diagnostics)),
         }
+    }
+
+    /// Answers that come only once every need of Toy's round, its describe and its query, has been
+    /// asked: a host that waits on each answer before it asks the next never gets one.
+    #[derive(Default)]
+    struct Together {
+        asked: std::sync::atomic::AtomicUsize,
+        answered: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Together {
+        fn once_both_asked<'a, T: Send + 'a>(&'a self, value: T) -> impl Future<Output = T> + Send + 'a {
+            use std::sync::atomic::Ordering::SeqCst;
+            let mut value = Some(value);
+            let mut counted = false;
+            std::future::poll_fn(move |_| {
+                if !counted {
+                    counted = true;
+                    self.asked.fetch_add(1, SeqCst);
+                }
+                if self.asked.load(SeqCst) < 2 {
+                    return std::task::Poll::Pending;
+                }
+                self.answered.fetch_add(1, SeqCst);
+                std::task::Poll::Ready(value.take().expect("polled after it was ready"))
+            })
+        }
+    }
+
+    impl ConcurrentAnswerer<String> for Together {
+        type Error = String;
+        fn describe(&self, sql: &str) -> impl Future<Output = Result<Result<String, DbError>, String>> + Send {
+            self.once_both_asked(Ok(Ok(format!("described {sql}"))))
+        }
+        fn query(&self, _sql: &str, _params: &[Value]) -> impl Future<Output = Result<Result<Vec<Vec<Value>>, DbError>, String>> + Send {
+            self.once_both_asked(Ok(Ok(vec![vec![json!("18.0")]])))
+        }
+    }
+
+    /// Polls a future until it is ready, for answers that are ready once others have been asked.
+    fn settled<T>(future: impl Future<Output = T>) -> T {
+        let mut future = std::pin::pin!(future);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        for _ in 0..8 {
+            if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+                return value;
+            }
+        }
+        panic!("the replay waited on an answer that comes only once the round's other needs are asked")
+    }
+
+    #[test]
+    fn the_concurrent_replay_asks_a_rounds_needs_together() {
+        let host = Together::default();
+        let mut cache = AnswerCache::default();
+        let analysis = settled(run_concurrent::<Toy, _>("select 1", &host, &mut cache)).unwrap();
+        assert_eq!(said(&analysis), "described select 1 | \"18.0\"");
+        assert_eq!(host.answered.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // Both answers kept, as the one-at-a-time replay keeps them.
+        let mut counting = Counting::default();
+        ready(run_async::<Toy, _>("select 1", &mut counting, &mut cache)).unwrap();
+        assert_eq!((counting.describes, counting.queries), (0, 0));
+    }
+
+    /// A host that loses the connection on one of Toy's two needs: on the describe with the query never answered, or on the query after the describe is answered.
+    struct Lost {
+        on_describe: bool,
+    }
+
+    impl ConcurrentAnswerer<String> for Lost {
+        type Error = String;
+        fn describe(&self, sql: &str) -> impl Future<Output = Result<Result<String, DbError>, String>> + Send {
+            let answered = if self.on_describe { Err("connection lost".to_string()) } else { Ok(Ok(format!("described {sql}"))) };
+            async move { answered }
+        }
+        fn query(&self, _sql: &str, _params: &[Value]) -> impl Future<Output = Result<Result<Vec<Vec<Value>>, DbError>, String>> + Send {
+            let on_describe = self.on_describe;
+            async move {
+                if on_describe {
+                    std::future::pending::<()>().await;
+                }
+                Err("connection lost".to_string())
+            }
+        }
+    }
+
+    #[test]
+    fn a_lost_host_ends_the_concurrent_replay_without_waiting_for_the_round() {
+        let mut cache = AnswerCache::default();
+        match settled(run_concurrent::<Toy, _>("select 1", &Lost { on_describe: true }, &mut cache)) {
+            Err(ReplayError::Host(e)) => assert_eq!(e, "connection lost"),
+            other => panic!("expected the host's error, got {:?}", other.map(|a| a.diagnostics)),
+        }
+        // An answer before the lost one is kept.
+        let mut cache = AnswerCache::default();
+        assert!(matches!(settled(run_concurrent::<Toy, _>("select 1", &Lost { on_describe: false }, &mut cache)), Err(ReplayError::Host(_))));
+        let mut counting = Counting::default();
+        ready(run_async::<Toy, _>("select 1", &mut counting, &mut cache)).unwrap();
+        assert_eq!((counting.describes, counting.queries), (0, 1));
+    }
+
+    /// A host whose describe fails with an error the session survives, and whose query is still on its way.
+    #[derive(Default)]
+    struct Survives {
+        finished: std::sync::atomic::AtomicBool,
+    }
+
+    impl ConcurrentAnswerer<String> for Survives {
+        type Error = String;
+        fn describe(&self, _sql: &str) -> impl Future<Output = Result<Result<String, DbError>, String>> + Send {
+            async { Err("permission denied".to_string()) }
+        }
+        fn query(&self, _sql: &str, _params: &[Value]) -> impl Future<Output = Result<Result<Vec<Vec<Value>>, DbError>, String>> + Send {
+            let mut polled = false;
+            std::future::poll_fn(move |_| {
+                if !polled {
+                    polled = true;
+                    return std::task::Poll::Pending;
+                }
+                self.finished.store(true, std::sync::atomic::Ordering::SeqCst);
+                std::task::Poll::Ready(Ok(Ok(vec![vec![json!("18.0")]])))
+            })
+        }
+        fn ends_session(&self, _error: &String) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn an_error_the_session_survives_lets_the_round_finish() {
+        let host = Survives::default();
+        match settled(run_concurrent::<Toy, _>("select 1", &host, &mut AnswerCache::default())) {
+            Err(ReplayError::Host(e)) => assert_eq!(e, "permission denied"),
+            other => panic!("expected the host's error, got {:?}", other.map(|a| a.diagnostics)),
+        }
+        assert!(host.finished.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]
