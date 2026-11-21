@@ -14,6 +14,7 @@ pub mod mysql;
 pub mod mysql_collation;
 pub mod mysql_derived;
 pub mod mysql_keys;
+pub mod mysql_labels;
 pub mod mysql_literals;
 pub mod mysql_nulls;
 pub mod mysql_params;

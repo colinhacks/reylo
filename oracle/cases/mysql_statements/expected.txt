@@ -70,6 +70,6 @@ use_database.sql: many () -> {  } !! reylo6: This command is not supported in th
 user_variable_read.sql: at_most_one (id: int32) -> { x: unknown?, id: int }
 values_statement.sql: many () -> { column_0: bigint | int, column_1: varchar('a' | 'b') }
 window_named.sql: many () -> { id: int, r: bigint }
-with_recursive_cte.sql: many () -> { i: bigint | int? }
+with_recursive_cte.sql: many () -> { i: bigint | int }
 with_statement.sql: many () -> { id: int }
 wrong_group.sql: many () -> {  } !! reylo6: In aggregated query without GROUP BY, expression #1 of SELECT list contains nonaggregated column 'reylo_oracle_mysql_statements.users.id'; this is incompatible with sql_mode=only_full_group_by (ER_MIX_OF_GROUP_FUNC_AND_FIELDS)

@@ -1,0 +1,1 @@
+with recursive chain (id, title, score, depth) as (select id, title, score, 0 from posts where id = 1 union all select p.id, p.title, p.score, c.depth + 1 from posts p join chain c on p.id = c.id + 1 where c.depth < 5) select id, title, score, depth from chain

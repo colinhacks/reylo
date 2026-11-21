@@ -21,7 +21,7 @@
 //!   the proof through whatever reads the derived table, an outer join included.
 
 use crate::api::MysqlColumn;
-use sqlparser::ast::{Cte, JoinOperator, ObjectNamePart, OptimizerHint, OptimizerHintStyle, Query, Select, SelectItem, SetExpr, TableAlias, TableFactor, TableWithJoins, With};
+use sqlparser::ast::{Cte, JoinOperator, ObjectNamePart, OptimizerHint, OptimizerHintStyle, Query, Select, SelectItem, SetExpr, SetOperator, TableAlias, TableFactor, TableWithJoins, With};
 use std::collections::HashSet;
 
 /// The hint the copy's first query block carries: it holds for the whole statement.
@@ -177,6 +177,40 @@ fn each_block(q: &mut Query, f: &mut dyn FnMut(&mut Select)) {
     body(&mut q.body, f);
 }
 
+/// Whether a set operation of the query has an operand before its last that holds a WITH of its
+/// own, at any depth of parentheses. MySQL scopes such a WITH over that operand and every operand
+/// after it (measured on 8.4), so a name in a later operand may read it: `(with x as (…) select …
+/// from x) union all select … from x` reads the inner `x` on both sides. Nothing that follows a
+/// name to its WITH query reads such a statement.
+pub fn with_outlives_operand(q: &Query) -> bool {
+    fn holds_with(b: &SetExpr) -> bool {
+        match b {
+            SetExpr::Query(q) => q.with.is_some() || holds_with(&q.body),
+            SetExpr::SetOperation { left, right, .. } => holds_with(left) || holds_with(right),
+            _ => false,
+        }
+    }
+    fn body(b: &SetExpr) -> bool {
+        match b {
+            SetExpr::SetOperation { left, right, .. } => holds_with(left) || body(left) || body(right),
+            SetExpr::Query(q) => with_outlives_operand(q),
+            SetExpr::Select(select) => select.from.iter().any(from),
+            _ => false,
+        }
+    }
+    fn from(item: &TableWithJoins) -> bool {
+        factor(&item.relation) || item.joins.iter().any(|j| factor(&j.relation))
+    }
+    fn factor(t: &TableFactor) -> bool {
+        match t {
+            TableFactor::Derived { subquery, .. } => with_outlives_operand(subquery),
+            TableFactor::NestedJoin { table_with_joins, .. } => from(table_with_joins),
+            _ => false,
+        }
+    }
+    q.with.as_ref().is_some_and(|w| w.cte_tables.iter().any(|c| with_outlives_operand(&c.query))) || body(&q.body)
+}
+
 /// A derived table or a WITH query whose columns the statement reads.
 pub struct Target<'a> {
     pub query: &'a mut Query,
@@ -302,6 +336,189 @@ pub fn wrapper(q: &Query, columns: &[(String, Option<&str>)], listed: bool) -> S
     format!("SELECT {} FROM ({q}) AS reylo_derived ({})", items.join(", "), list.join(", "))
 }
 
+/// A WITH query of a RECURSIVE WITH as a UNION of its members: those that do not read it (its
+/// anchors, never none) and those that do (its recursive members), each as the text writes it.
+/// `None` for a query that is not only such a UNION, or that names itself anywhere but in a FROM
+/// item of a member, which the server refuses.
+pub fn members(cte: &Cte) -> Option<(Vec<&SetExpr>, Vec<&SetExpr>)> {
+    let q = &cte.query;
+    if q.with.is_some() || q.order_by.is_some() || q.fetch.is_some() || !q.locks.is_empty() {
+        return None;
+    }
+    // Which side reads the query is read off its name, which only a plain one settles.
+    if !plain_name(&cte.alias.name.value) || !q.to_string().is_ascii() {
+        return None;
+    }
+    fn sides<'a>(b: &'a SetExpr, out: &mut Vec<&'a SetExpr>) -> Option<()> {
+        match b {
+            SetExpr::SetOperation { op: SetOperator::Union, left, right, .. } => {
+                sides(left, out)?;
+                sides(right, out)
+            }
+            SetExpr::SetOperation { .. } => None,
+            other => {
+                out.push(other);
+                Some(())
+            }
+        }
+    }
+    let mut all = Vec::new();
+    sides(&q.body, &mut all)?;
+    let name = &cte.alias.name.value;
+    let (mut anchors, mut recursive) = (Vec::new(), Vec::new());
+    for side in all {
+        let SetExpr::Select(select) = side else { return None };
+        if select.from.iter().any(|item| from_names(item, name)) {
+            recursive.push(side);
+        } else if names_word(&side.to_string(), name) {
+            return None;
+        } else {
+            anchors.push(side);
+        }
+    }
+    (!anchors.is_empty()).then_some((anchors, recursive))
+}
+
+/// Whether a name is written the same way everywhere: ASCII letters, digits, `_` and `$`.
+fn plain_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+/// The WITH queries of `ctes` that `text` reads, and those they read in turn, in their order: a
+/// name anywhere in the text counts, which at most keeps one it does not read.
+pub fn read_by(ctes: &[Cte], text: &str) -> Vec<Cte> {
+    // The text writes a quote in a name doubled, and the server may fold a letter outside ASCII to
+    // one inside it: where either could hide a reference, every WITH query stays, since one left
+    // out would have its name read a table instead.
+    if !text.is_ascii() || !ctes.iter().all(|cte| plain_name(&cte.alias.name.value) && cte.query.to_string().is_ascii()) {
+        return ctes.to_vec();
+    }
+    let mut text = text.to_string();
+    let mut read = vec![false; ctes.len()];
+    // A WITH query reads only those before it, so one pass from the last finds them all.
+    for (i, cte) in ctes.iter().enumerate().rev() {
+        if names_word(&text, &cte.alias.name.value) {
+            read[i] = true;
+            text.push(' ');
+            text.push_str(&cte.query.to_string());
+        }
+    }
+    ctes.iter().zip(read).filter(|(_, read)| *read).map(|(cte, _)| cte.clone()).collect()
+}
+
+/// Whether a FROM item, inside its nested joins, names `name` as a table, in any case.
+fn from_names(item: &TableWithJoins, name: &str) -> bool {
+    let factor = |f: &TableFactor| match f {
+        TableFactor::Table { name: table, .. } => matches!(table.0.as_slice(), [ObjectNamePart::Identifier(t)] if t.value.eq_ignore_ascii_case(name)),
+        TableFactor::NestedJoin { table_with_joins, .. } => from_names(table_with_joins, name),
+        _ => false,
+    };
+    factor(&item.relation) || item.joins.iter().any(|j| factor(&j.relation))
+}
+
+/// Whether a text holds `name` as a word of its own, in any case.
+fn names_word(text: &str, name: &str) -> bool {
+    let (text, name) = (text.to_ascii_lowercase(), name.to_ascii_lowercase());
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '$');
+    text.match_indices(&name).any(|(i, _)| !word(text[..i].chars().next_back()) && !word(text[i + name.len()..].chars().next()))
+}
+
+/// The WITH query `name` of a recursive member's own statement, under the hypothesis that the
+/// columns given a filler are never NULL: the anchors' rows on the null-extended side of an outer
+/// join, so that every column is as NULL as the server can flag it, and those columns written
+/// `coalesce(column, filler)`. `columns` are the WITH query's column names.
+pub fn hypothesis(name: &str, columns: &[(String, Option<&str>)], anchors: &str) -> String {
+    let quote = |n: &str| format!("`{}`", n.replace('`', "``"));
+    let names: Vec<String> = columns.iter().map(|(n, _)| quote(n)).collect();
+    let items: Vec<String> = columns
+        .iter()
+        .enumerate()
+        .map(|(i, (_, filler))| match filler {
+            Some(filler) => format!("coalesce(reylo_derived.reylo_{i}, {filler})"),
+            None => format!("reylo_derived.reylo_{i}"),
+        })
+        .collect();
+    let list: Vec<String> = (0..columns.len()).map(|i| format!("reylo_{i}")).collect();
+    format!("{} ({}) AS (SELECT {} FROM (SELECT 1) AS reylo_one LEFT JOIN ({anchors}) AS reylo_derived ({}) ON TRUE)", quote(name), names.join(", "), items.join(", "), list.join(", "))
+}
+
+/// The query a reference to the recursive WITH query `name` reads in its place: its columns, those
+/// given a filler written `coalesce(column, filler)`.
+pub fn read_through(name: &str, columns: &[(String, Option<&str>)]) -> String {
+    let quote = |n: &str| format!("`{}`", n.replace('`', "``"));
+    let items: Vec<String> = columns
+        .iter()
+        .map(|(column, filler)| {
+            let read = format!("{}.{}", quote(name), quote(column));
+            match filler {
+                Some(filler) => format!("coalesce({read}, {filler}) AS {}", quote(column)),
+                None => format!("{read} AS {}", quote(column)),
+            }
+        })
+        .collect();
+    format!("SELECT {} FROM {}", items.join(", "), quote(name))
+}
+
+/// Read every reference to the `k`th WITH query of a query, `name` as the text writes it, outside
+/// its own query, through `through` instead (a derived table under the name the reference was
+/// read by): in the WITH queries after it, the body, and the derived tables of either, not past a
+/// WITH that names a query of its own `name`. Whether any was.
+pub fn reads_through(q: &mut Query, k: usize, name: &str, through: &Query) -> bool {
+    fn query(q: &mut Query, name: &str, through: &Query) -> bool {
+        if q.with.as_ref().is_some_and(|w| w.cte_tables.iter().any(|c| c.alias.name.value.eq_ignore_ascii_case(name) || !c.alias.name.value.is_ascii())) {
+            return false;
+        }
+        let mut any = false;
+        if let Some(with) = &mut q.with {
+            for cte in &mut with.cte_tables {
+                any |= query(&mut cte.query, name, through);
+            }
+        }
+        any | body(&mut q.body, name, through)
+    }
+    fn body(b: &mut SetExpr, name: &str, through: &Query) -> bool {
+        match b {
+            SetExpr::Select(select) => {
+                let mut any = false;
+                for item in &mut select.from {
+                    any |= from(item, name, through);
+                }
+                any
+            }
+            SetExpr::SetOperation { left, right, .. } => body(left, name, through) | body(right, name, through),
+            SetExpr::Query(q) => query(q, name, through),
+            _ => false,
+        }
+    }
+    fn from(item: &mut TableWithJoins, name: &str, through: &Query) -> bool {
+        let mut any = factor(&mut item.relation, name, through);
+        for join in &mut item.joins {
+            any |= factor(&mut join.relation, name, through);
+        }
+        any
+    }
+    fn factor(t: &mut TableFactor, name: &str, through: &Query) -> bool {
+        match t {
+            TableFactor::Table { name: table, alias, args: None, .. } if matches!(table.0.as_slice(), [ObjectNamePart::Identifier(n)] if n.value == name) => {
+                let Some(TableFactor::Derived { lateral, subquery: _, alias: Some(template), sample }) = derived_template() else { return false };
+                let alias = alias.take().unwrap_or(TableAlias { name: sqlparser::ast::Ident::with_quote('`', name), ..template });
+                *t = TableFactor::Derived { lateral, subquery: Box::new(through.clone()), alias: Some(alias), sample };
+                true
+            }
+            TableFactor::Derived { subquery, .. } => query(subquery, name, through),
+            TableFactor::NestedJoin { table_with_joins, .. } => from(table_with_joins, name, through),
+            _ => false,
+        }
+    }
+    let mut any = false;
+    if let Some(with) = &mut q.with {
+        for cte in with.cte_tables.iter_mut().skip(k + 1) {
+            any |= query(&mut cte.query, name, through);
+        }
+    }
+    any | body(&mut q.body, name, through)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,5 +612,76 @@ mod tests {
         assert_eq!(filler(&column(253, 255)), Some("''"));
         assert_eq!(filler(&column(252, 63)), Some("X''"));
         assert_eq!(filler(&column(245, 63)), None);
+    }
+
+    #[test]
+    fn a_with_in_an_operand_before_the_last_outlives_it() {
+        for sql in [
+            "(with x as (select 1 as a) select a from x) union all select a from x",
+            "((with x as (select 1 as a) select a from x)) union all select a from x",
+            "select 1 union all (with x as (select 1 as a) select a from x) union all select a from x",
+            "select d.a from ((with x as (select 1 as a) select a from x) union all select a from x) d",
+            "with y as ((with x as (select 1 as a) select a from x) union all select a from x) select a from y",
+        ] {
+            assert!(with_outlives_operand(&query(sql)), "{sql}");
+        }
+        for sql in ["with x as (select 1 as a) select a from x union all select a from x", "select 1 as a union all (with x as (select 2 as a) select a from x)", "select d.a from (with x as (select 1 as a) select a from x) d"] {
+            assert!(!with_outlives_operand(&query(sql)), "{sql}");
+        }
+    }
+
+    #[test]
+    fn a_recursive_with_query_is_its_anchors_and_its_recursive_members() {
+        let split = |sql: &str| {
+            let q = query(sql);
+            let cte = q.with.as_ref().unwrap().cte_tables[0].clone();
+            members(&cte).map(|(a, r)| (a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), r.iter().map(|s| s.to_string()).collect::<Vec<_>>()))
+        };
+        let (anchors, recursive) = split("with recursive r (n) as (select 1 union all select n + 1 from r where n < 3 union select n + 10 from posts p join R on R.n = p.id) select n from r").unwrap();
+        assert_eq!(anchors, ["SELECT 1"]);
+        assert_eq!(recursive.len(), 2);
+        assert_eq!(recursive[0], "SELECT n + 1 FROM r WHERE n < 3");
+        assert!(recursive[1].contains("JOIN R ON R.n = p.id"), "{recursive:?}");
+        // A member that names it outside a FROM item, a query that is not only a UNION, and one
+        // with no anchor are not split.
+        assert_eq!(split("with recursive r (n) as (select 1 union all select (select max(n) from r) from users) select n from r"), None);
+        assert_eq!(split("with recursive r (n) as (select 1 except select n from r) select n from r"), None);
+        assert_eq!(split("with recursive r (n) as (select n from r) select n from r"), None);
+    }
+
+    #[test]
+    fn a_probe_holds_only_the_with_queries_it_reads() {
+        let q = query("with a as (select 1 as x), b as (select x from a), c as (select 2 as y), d as (select 3 as z) select 1");
+        let names = |text: &str| read_by(&q.with.as_ref().unwrap().cte_tables, text).iter().map(|c| c.alias.name.value.clone()).collect::<Vec<_>>();
+        assert_eq!(names("SELECT x FROM b"), ["a", "b"]);
+        assert_eq!(names("SELECT y FROM c JOIN `d` ON true"), ["c", "d"]);
+        assert!(names("SELECT 1 FROM abc").is_empty());
+        // A quote in a name, or text outside ASCII, keeps every one.
+        let quoted = query("with `a``b` as (select 1 as x), c as (select 2 as y) select 1");
+        assert_eq!(read_by(&quoted.with.as_ref().unwrap().cte_tables, "SELECT x FROM `a``b`").len(), 2);
+        assert_eq!(read_by(&q.with.as_ref().unwrap().cte_tables, "SELECT 1 FROM \u{e9}").len(), 4);
+        let cte = query("with recursive `r``s` (n) as (select 1 union all select n + 1 from `r``s` where n < 3) select n from `r``s`").with.unwrap().cte_tables.remove(0);
+        assert!(members(&cte).is_none());
+    }
+
+    #[test]
+    fn a_recursive_with_query_is_read_through_its_proven_columns() {
+        let columns = [("n".to_string(), Some("0")), ("m".to_string(), None)];
+        assert_eq!(
+            hypothesis("r", &columns, "SELECT 1, 2"),
+            "`r` (`n`, `m`) AS (SELECT coalesce(reylo_derived.reylo_0, 0), reylo_derived.reylo_1 FROM (SELECT 1) AS reylo_one LEFT JOIN (SELECT 1, 2) AS reylo_derived (reylo_0, reylo_1) ON TRUE)"
+        );
+        let through = query(&read_through("r", &columns));
+        assert_eq!(through.to_string(), "SELECT coalesce(`r`.`n`, 0) AS `n`, `r`.`m` AS `m` FROM `r`");
+        let mut q = query("with recursive r (n, m) as (select 1, 2 union all select n + 1, m from r where n < 3), s as (select n from r) select x.n, d.n from r as x join (select n from r) d on true join s on true");
+        assert!(reads_through(&mut q, 0, "r", &through));
+        let text = q.to_string();
+        // The recursive member's own reference stays; every other one reads the derived table.
+        assert!(text.contains("SELECT n + 1, m FROM r WHERE n < 3"), "{text}");
+        assert_eq!(text.matches("FROM `r`) AS").count(), 3, "{text}");
+        assert!(text.contains("FROM `r`) AS x"), "{text}");
+        // Not past a WITH of its own that names a query `r`.
+        let mut q = query("with recursive r (n) as (select 1 union all select n + 1 from r where n < 3) select d.n from (with r (n) as (select null) select n from r) d");
+        assert!(!reads_through(&mut q, 0, "r", &through));
     }
 }
