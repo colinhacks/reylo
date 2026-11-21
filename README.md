@@ -58,7 +58,7 @@ Reylo is the perfect option for the agent era:
 - 🌵 **DRY** — no redundant hand-written types
 - 🎯 **Checked against your database** — a misspelled column is a type error
 - 🤖 **Agent-friendly** — DRY code is more maintainable for agents
-- 🧩 **Postgres, MySQL, SQLite and ClickHouse** — Neon, PlanetScale, Cloudflare D1, Turso and more
+- 🧩 **Postgres, MySQL and SQLite** — Neon, PlanetScale, Cloudflare D1, Turso and more
 - 🔌 **Bring your own driver** — `pg`, postgres.js, `mysql2`, `better-sqlite3` and [more](#supported-drivers)
 - ⚡ **No codegen** — no generated files, no watcher
 
@@ -68,7 +68,7 @@ To install Reylo, you'll need:
 
 - **TypeScript 7.1 (currently in nightly builds).** The first release with content mappers. The `tsconfig.json` entry below needs a nightly from 2026-11-12 or later.
 - **Node 24 or later.**
-- **A running dev database.** Postgres, MySQL 8.0.38 or later, ClickHouse 25.11 or later, or a SQLite file: Reylo reads your current schema from it.
+- **A running dev database.** Postgres, MySQL 8.0.38 or later, or a SQLite file: Reylo reads your current schema from it.
 
 Install Reylo, which brings its engine for your machine, and TypeScript 7.1:
 
@@ -163,10 +163,9 @@ Each has examples in [Inference](https://reylo.dev/#inference).
 
 Reylo is bring-your-own-driver. Pass `.run()` a client from any of these, or a Drizzle database or Knex instance over one:
 
-- **Postgres** — `pg`, postgres.js, `Bun.sql`, PGlite, Neon, `pg-promise`, `slonik`, `@vercel/postgres`, Drizzle's driver
+- **Postgres** — `pg`, postgres.js, `Bun.sql`, PGlite, Neon, `pg-promise`, `slonik`, `@vercel/postgres`, Drizzle Postgres
 - **MySQL** — `mysql2`, `mariadb`, PlanetScale, `Bun.sql`
 - **SQLite** — `better-sqlite3`, `node:sqlite`, `Bun.sql`, libSQL, Turso, SQLite Wasm, sql.js, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite`
-- **ClickHouse** — `@clickhouse/client`, `@clickhouse/client-web`
 
 ## Documentation
 

@@ -1,1 +1,0 @@
-SELECT {n:UInt46} AS n

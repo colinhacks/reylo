@@ -24,12 +24,6 @@ test("on SQLite the comment opens the statement, as it is written", () => {
   assert.equal(withSqlcommenter("-- the one\nselect 1", "queries/get_user.sql", "sqlite"), `${tag} -- the one\nselect 1`);
 });
 
-test("on ClickHouse the comment opens the statement too, since an INSERT's rows run to the statement's end", () => {
-  const tag = "/*file='queries%2Fadd_order.sql'*/";
-  assert.equal(withSqlcommenter("INSERT INTO orders VALUES ({id:UInt64})", "queries/add_order.sql", "clickhouse"), `${tag} INSERT INTO orders VALUES ({id:UInt64})`);
-  assert.equal(withSqlcommenter("SELECT 1;\n", "queries/add_order.sql", "clickhouse"), `${tag} SELECT 1;\n`);
-});
-
 test("each form runs on SQLite, its comment ignored and in no column's name", () => {
   const db = new DatabaseSync(":memory:");
   const name = (text: string) => Object.keys(db.prepare(text).get() as object);

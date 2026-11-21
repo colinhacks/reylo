@@ -11,7 +11,7 @@ Neon is Postgres, so everything on the [Postgres](/postgres) page holds for it.
 | --- | --- |
 | Dialect | Postgres |
 | The type check reads | The direct connection string, through [`direct_url`](/configuration#direct_url) |
-| Queries run on | `@neondatabase/serverless`, `pg` or postgres.js, through the pooled connection string |
+| Queries run on | `@neondatabase/serverless`, `pg`, postgres.js or Drizzle Postgres, through the pooled connection string |
 | Transactions | On a `Pool`'s client over a WebSocket, not on `neon()` over HTTP |
 | Branches | Each has connection strings of its own, to type against its schema |
 | Edge runtimes | Neon's driver, on the [Next.js edge runtime](/nextjs#the-edge-runtime) and in [Cloudflare Workers](/d1#setup) |
@@ -112,7 +112,7 @@ Transactions on Neon:
 
 ## TCP drivers
 
-Over TCP, pass a `pg` pool or a postgres.js client<Rust>, or in Rust an sqlx pool,</Rust> made with the pooled connection string:
+Over TCP, pass a `pg` pool, a postgres.js client or a Drizzle Postgres pool<Rust>, or in Rust an sqlx pool,</Rust> made with the pooled connection string:
 
 ```ts twoslash tab="pg"
 import pg from "pg";
@@ -130,6 +130,14 @@ const db = postgres(process.env.DATABASE_URL);
 const user = await getUser.run(db, { id: 1 });
 ```
 
+```ts twoslash tab="Drizzle Postgres"
+import { Pool } from "drizzle-orm/postgres/client";
+import getUser from "./get_user.sql";
+
+const db = new Pool({ url: process.env.DATABASE_URL });
+const user = await getUser.run(db, { id: 1 });
+```
+
 <Rust>
 ```rust tab="sqlx"
 #[reylo::query("select id, name, email from users where id = :id")]
@@ -141,7 +149,7 @@ let user = get_user::Query { id: 1 }.run(&db).await?;
 ```
 </Rust>
 
-Each runs a transaction its own way: on a client checked out of the pool with `pg`,<NoRust> and</NoRust> in `db.begin()` with postgres.js ([Drivers](/postgres#drivers))<Rust>, and in `db.begin()` with sqlx ([Rust](/rust#transactions))</Rust>.
+Each runs a transaction its own way: on a client checked out of the pool with `pg`, in `db.begin()` with postgres.js,<NoRust> and</NoRust> in `db.transaction()` with Drizzle Postgres ([Drivers](/postgres#drivers))<Rust>, and in `db.begin()` with sqlx ([Rust](/rust#transactions))</Rust>.
 
 ## Branches
 

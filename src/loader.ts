@@ -146,9 +146,7 @@ export function moduleCode(m: ModuleInput): string {
   // time gives each value (src/values.ts); and an array's delimiter where it is not a comma.
   const columns = analysis.columns.map((c) => {
     const kind = columnKind(c.type, dialect);
-    // A ClickHouse column's type as the server names it stands where a delimiter would, which it never has.
-    const beside = c.delimiter ?? c.described;
-    return beside === undefined ? [c.name, kind] : [c.name, kind, beside];
+    return c.delimiter === undefined ? [c.name, kind] : [c.name, kind, c.delimiter];
   });
   // Where each Postgres JSON column holds a float or a decimal that may be NaN or an infinity,
   // which the run time gives as that number, or a Postgres array it holds to one level (src/render.ts,
@@ -219,7 +217,7 @@ export function moduleCode(m: ModuleInput): string {
 }
 
 /** The define function from "reylo" a module of each dialect calls (src/index.ts). */
-export const DEFINE: Record<Dialect, string> = { postgres: "definePostgresQuery", mysql: "defineMysqlQuery", sqlite: "defineSqliteQuery", clickhouse: "defineClickhouseQuery" };
+export const DEFINE: Record<Dialect, string> = { postgres: "definePostgresQuery", mysql: "defineMysqlQuery", sqlite: "defineSqliteQuery" };
 
 /**
  * Each placeholder's place in `text`, the compiled statement, at JavaScript's offsets, in text
@@ -238,9 +236,7 @@ export async function marksOf(analysis: Analysis, text: string, dialect: Dialect
   for (const [, , start, end] of analysis.rewritten.spans) {
     const written = bytes.subarray(start, end);
     const region = written.toString("utf8");
-    // A ClickHouse placeholder is all the engine wrote there, `{name:Type}`, whose type the run time
-    // reads at its mark (src/decode-clickhouse.ts).
-    if (dialect === "clickhouse" ? region.startsWith("{") && region.endsWith("}") : dialect === "mysql" ? region === "?" : /^\$[0-9]+$/.test(region)) {
+    if (dialect === "mysql" ? region === "?" : /^\$[0-9]+$/.test(region)) {
       marks.push([utf16(text, start), utf16(text, end)]);
       continue;
     }

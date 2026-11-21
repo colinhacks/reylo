@@ -7,10 +7,9 @@
 //   nub run capture -- --schema mysql=f.sql  a dialect's schema, for a page that shows none
 //
 // For each page and dialect it builds the page's schema (the `schema.sql` blocks, one per
-// dialect, in the accordion near the top) in a scratch database: Postgres, MySQL and ClickHouse
-// `reylo_capture` (REYLO_CAPTURE_POSTGRES, REYLO_CAPTURE_MYSQL and REYLO_CAPTURE_CLICKHOUSE name
-// others; the database is dropped and made again, so its name must start with reylo_capture),
-// SQLite a temporary file. It
+// dialect, in the accordion near the top) in a scratch database: Postgres and MySQL
+// `reylo_capture` (REYLO_CAPTURE_POSTGRES and REYLO_CAPTURE_MYSQL name others; the database is
+// dropped and made again, so its name must start with reylo_capture), SQLite a temporary file. It
 // compiles the syntax the engine does not build yet (typed JSON parameters, `::` on MySQL and
 // SQLite), has the loader's own Session analyze each statement through the dialect's driver, and
 // renders the module exactly as src/mapper.ts does, with each typed JSON parameter's type computed
@@ -29,7 +28,6 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import postgres from 'postgres';
 import mysql from 'mysql2/promise';
-import { createClient } from '@clickhouse/client';
 import { Session } from '../../src/analyze.ts';
 import { ident, orNull, renderParamType, renderType } from '../../src/render.ts';
 import { docComment, leadingComment, statementAfter } from '../../src/doc-comment.ts';
@@ -47,7 +45,6 @@ const site = path.resolve(import.meta.dirname, '..');
 const URLS: Record<Exclude<Dialect, 'sqlite'>, string> = {
   postgres: process.env.REYLO_CAPTURE_POSTGRES ?? 'postgres://postgres@localhost:54329/reylo_capture',
   mysql: process.env.REYLO_CAPTURE_MYSQL ?? 'mysql://root@127.0.0.1:54336/reylo_capture',
-  clickhouse: process.env.REYLO_CAPTURE_CLICKHOUSE ?? 'http://127.0.0.1:54123/reylo_capture',
 };
 /** The scratch database an inference card's own schema is built in, on the same server: made again for each card. */
 const cardUrl = (url: string) => {
@@ -56,9 +53,9 @@ const cardUrl = (url: string) => {
   return u.href;
 };
 // The driver each scratch project names, whose defaults the types follow, as for a project with
-// that driver: postgres.js, mysql2, node:sqlite (no package) and @clickhouse/client.
-const DRIVER: Record<Dialect, string | undefined> = { postgres: 'postgres', mysql: 'mysql2', sqlite: undefined, clickhouse: '@clickhouse/client' };
-const ORDER: Dialect[] = ['postgres', 'mysql', 'sqlite', 'clickhouse'];
+// that driver: postgres.js, mysql2 and node:sqlite (no package).
+const DRIVER: Record<Dialect, string | undefined> = { postgres: 'postgres', mysql: 'mysql2', sqlite: undefined };
+const ORDER: Dialect[] = ['postgres', 'mysql', 'sqlite'];
 
 // ---- Arguments ----
 
@@ -71,7 +68,7 @@ for (let i = 0; i < args.length; i++) {
   const schema = /^--schema(?:=(.*))?$/.exec(arg);
   if (schema) {
     const value = schema[1] ?? args[++i];
-    const m = /^(postgres|mysql|sqlite|clickhouse)=(.+)$/.exec(value ?? '');
+    const m = /^(postgres|mysql|sqlite)=(.+)$/.exec(value ?? '');
     if (!m) fail(`--schema takes <dialect>=<file>, as in --schema mysql=schema.sql; got ${value ?? 'nothing'}`);
     schemaFiles[m[1] as Dialect] = readFileSync(path.resolve(m[2]!), 'utf8');
   } else if (arg.startsWith('-')) fail(`unknown option ${arg}`);
@@ -231,27 +228,6 @@ async function buildMysql(schema: string, url = URLS.mysql): Promise<string> {
   return url;
 }
 
-async function buildClickhouse(schema: string, url = URLS.clickhouse): Promise<string> {
-  const { db, admin } = scratch(url);
-  admin.pathname = '/';
-  const server = createClient({ url: admin.href });
-  try {
-    await server.command({ query: `DROP DATABASE IF EXISTS \`${db}\`` });
-    await server.command({ query: `CREATE DATABASE \`${db}\`` });
-  } finally {
-    await server.close();
-  }
-  const client = createClient({ url });
-  try {
-    // ClickHouse takes one statement a request: a `;` at a line's end parts two.
-    for (const statement of schema.split(/;[ \t]*$/m)) if (statement.trim()) await client.command({ query: statement });
-  } finally {
-    await client.close();
-  }
-  // A project names the database by this URL after `clickhouse+`.
-  return `clickhouse+${url}`;
-}
-
 /** A schema with a libSQL vector index is made on libSQL, through the `libsql` package `@libsql/client` opens files with: SQLite has no `libsql_vector_idx`. */
 function buildSqlite(dir: string, schema: string): string {
   const file = path.join(dir, 'capture.db');
@@ -360,7 +336,7 @@ try {
       const dir = project(root, dialect);
       let url: string;
       try {
-        url = dialect === 'postgres' ? await buildPostgres(schema) : dialect === 'mysql' ? await buildMysql(schema) : dialect === 'clickhouse' ? await buildClickhouse(schema) : buildSqlite(dir, schema);
+        url = dialect === 'postgres' ? await buildPostgres(schema) : dialect === 'mysql' ? await buildMysql(schema) : buildSqlite(dir, schema);
       } catch (e) {
         errors.push(`${shown}: the ${DIALECT_NAME[dialect]} ${SCHEMA_FILE} fails: ${(e as Error).message}`);
         continue;
@@ -410,7 +386,7 @@ try {
         const own = project(root, dialect, `${dialect}-card-${i}`);
         let cardDb: string;
         try {
-          cardDb = dialect === 'postgres' ? await buildPostgres(block.schema!, cardUrl(URLS.postgres)) : dialect === 'mysql' ? await buildMysql(block.schema!, cardUrl(URLS.mysql)) : dialect === 'clickhouse' ? await buildClickhouse(block.schema!, cardUrl(URLS.clickhouse)) : buildSqlite(own, block.schema!);
+          cardDb = dialect === 'postgres' ? await buildPostgres(block.schema!, cardUrl(URLS.postgres)) : dialect === 'mysql' ? await buildMysql(block.schema!, cardUrl(URLS.mysql)) : buildSqlite(own, block.schema!);
         } catch (e) {
           report(block, `the card's schema fails: ${(e as Error).message}`);
           continue;
@@ -435,7 +411,7 @@ function indent(text: string) {
 /** The module's parameters, row and row count on one line. */
 function summary(module: string): string {
   const m = /^declare const query: Query<(.*)> & \{$/m.exec(module);
-  return m ? m[1]!.replace(/, "(postgres|mysql|sqlite|clickhouse)", QueryError$/, '') : module;
+  return m ? m[1]!.replace(/, "(postgres|mysql|sqlite)", QueryError$/, '') : module;
 }
 
 for (const w of warnings) console.warn(`warning: ${w}`);
@@ -455,10 +431,8 @@ const before = existsSync(capturesFile) ? (JSON.parse(readFileSync(capturesFile,
 const keyOf = (c: { dialect: string; name: string; hash: string }) => `${c.dialect}\0${c.name}\0${c.hash}`;
 const rust = new Map<string, InferenceCapture['rust']>();
 const renderer = process.env.REYLO_DOCS_RUST;
-// The Rust crate types no ClickHouse statement, since sqlx has no ClickHouse driver.
-for (const c of inference) if (c.dialect === 'clickhouse') rust.set(keyOf(c), { error: 'The Rust crate has no ClickHouse support yet: sqlx has no ClickHouse driver.' });
 if (renderer) {
-  const input = inference.filter((c) => c.dialect !== 'clickhouse').map((c) => JSON.stringify({ key: keyOf(c), dialect: c.dialect, analysis: c.raw })).join('\n');
+  const input = inference.map((c) => JSON.stringify({ key: keyOf(c), dialect: c.dialect, analysis: c.raw })).join('\n');
   const run = spawnSync(renderer, [], { input, encoding: 'utf8', maxBuffer: 1 << 28 });
   if (run.status !== 0) fail(`REYLO_DOCS_RUST (${renderer}) exited ${run.status}: ${run.stderr}`);
   for (const line of run.stdout.split('\n').filter(Boolean)) {

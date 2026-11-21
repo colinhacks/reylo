@@ -9,37 +9,31 @@ import { DIALECTS, type DialectName } from '@/lib/dialects';
  */
 
 /**
- * `<DialectTabs>` shows a strip Postgres | MySQL | SQLite | ClickHouse above the panel of the chosen dialect.
+ * `<DialectTabs>` shows a strip Postgres | MySQL | SQLite above the panel of the chosen dialect.
  * `<DialectTabs follow>` shows no strip, only the chosen dialect's panel: it follows the choice
  * made elsewhere on the page, as the TypeScript under an example's SQL does (lib/remark-mapper.ts
  * writes those).
  */
-export function DialectTabs({ follow = false, dialects, children }: { follow?: boolean; dialects?: string; children: ReactNode }) {
-  // `dialects` names the strip's, comma-separated, where a panel exists for fewer than all of them.
-  const values = dialects ? DIALECTS.filter((d) => dialects.split(',').includes(d)) : DIALECTS;
+export function DialectTabs({ follow = false, children }: { follow?: boolean; children: ReactNode }) {
   return (
-    <VariantTabs group="dialect" values={values} follow={follow}>
+    <VariantTabs group="dialect" values={DIALECTS} follow={follow}>
       {children}
     </VariantTabs>
   );
 }
 
-/** One dialect's panel inside `<DialectTabs>`, or prose several dialects share: `value="Postgres,MySQL,SQLite"` is that panel for each of them. */
-export function Dialect({ value, children }: { value: DialectName | (string & {}); children: ReactNode }) {
-  return value.split(',').map((name) => (
-    <Variant key={name} value={name.trim()}>
-      {children}
-    </Variant>
-  ));
+/** One dialect's panel inside `<DialectTabs>`. */
+export function Dialect({ value, children }: { value: DialectName; children: ReactNode }) {
+  return <Variant value={value}>{children}</Variant>;
 }
 
 /**
- * Postgres | MySQL | SQLite | ClickHouse as a small switch at the right end of a code-tab strip: lib/remark-mapper.ts
+ * Postgres | MySQL | SQLite as a small switch at the right end of a code-tab strip: lib/remark-mapper.ts
  * puts one, marked `aside`, in each example whose statement differs per dialect, beside the tabs
  * `main.ts | <name>.sql`, whose panels follow the choice.
  */
 export function DialectSwitch({ dialects }: { aside?: boolean; dialects?: string }) {
-  // `dialects` names the group's, comma-separated, when it shows fewer than all of them.
+  // `dialects` names the group's, comma-separated, when it shows fewer than three.
   const values = dialects ? DIALECTS.filter((d) => dialects.split(',').includes(d)) : DIALECTS;
   // One database is no choice: a light gray label says which, as "Postgres only".
   if (values.length === 1) return <span className="reylo-dialect-only">{values[0]} only</span>;

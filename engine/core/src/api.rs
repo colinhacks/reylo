@@ -184,18 +184,12 @@ pub struct Column {
     /// run time reads the array's text with ([`Param::delimiter`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delimiter: Option<String>,
-    /// The column's type as the server names it, on one line (`DateTime64(3, 'UTC')`), where a
-    /// result carries its columns' types with its rows, as ClickHouse's does: the run time holds
-    /// each result's against it, since a setting of the session that runs the statement can change
-    /// a type the analysis read. The format's field leaves it out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub described: Option<String>,
 }
 
 impl Column {
     /// A column of `ty`, with nothing else known of it.
     pub fn new(name: impl Into<String>, ty: Type, nullable: bool) -> Column {
-        Column { name: name.into(), ty, nullable, comment: None, delimiter: None, described: None }
+        Column { name: name.into(), ty, nullable, comment: None, delimiter: None }
     }
 
     /// The column as the format writes it: a field of the result's record.

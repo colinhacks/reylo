@@ -37,14 +37,13 @@ To install Reylo, you'll need:
   - **Postgres** 14 to 19, including Neon and PGlite
   - **MySQL** 8.0.38 or later, including PlanetScale
   - **SQLite**, including Cloudflare D1 and Durable Objects, Turso and libSQL
-  - **ClickHouse** 25.11 or later
 
 A coding agent can set it up for you:
 
 <AgentPrompt>
 
 ```text
-Set up Reylo in this project. Reylo lets TypeScript import .sql files, with types inferred from the live database. Its docs are https://reylo.dev/docs, with a reference page for each database (https://reylo.dev/postgres, https://reylo.dev/mysql, https://reylo.dev/sqlite, https://reylo.dev/clickhouse), all served as Markdown at https://reylo.dev/llms.txt. Each step below links its section.
+Set up Reylo in this project. Reylo lets TypeScript import .sql files, with types inferred from the live database. Its docs are https://reylo.dev/docs, with a reference page for each database (https://reylo.dev/postgres, https://reylo.dev/mysql, https://reylo.dev/sqlite), all served as Markdown at https://reylo.dev/llms.txt. Each step below links its section.
 
 Each setup has a complete, working example project to copy, whose README's "How Reylo is wired in" lists every line Reylo needs. Install from npm, since the examples link local builds: https://github.com/reylosql/reylo/tree/main/examples
 
@@ -322,24 +321,19 @@ Each tab links a complete, working project that you or your agents can use as a 
 
 **Reylo requires a connection to a live dev database.** Reylo finds your dev database through the `DATABASE_URL` environment variable, and the URL's scheme tells it which database you use:
 
-```sh tab="Postgres" tab-group="dialect"
-# .env: postgres:// or postgresql://
+```sh title=".env" tab="Postgres" tab-group="dialect"
+# or postgresql://
 DATABASE_URL=postgres://localhost:5432/app
 ```
 
-```sh tab="MySQL" tab-group="dialect"
-# .env: mysql:// or mariadb://
+```sh title=".env" tab="MySQL" tab-group="dialect"
+# or mariadb://
 DATABASE_URL=mysql://root@localhost:3306/app
 ```
 
-```sh tab="SQLite" tab-group="dialect"
-# .env: file: or sqlite:, and the path starts at package.json
+```sh title=".env" tab="SQLite" tab-group="dialect"
+# or sqlite:; the path starts at package.json
 DATABASE_URL=file:./app.db
-```
-
-```sh tab="ClickHouse" tab-group="dialect"
-# .env: clickhouse+http:// or clickhouse+https://, the HTTP interface
-DATABASE_URL=clickhouse+http://default@localhost:8123/app
 ```
 
 Reylo reads `.env.local` and `.env`. To read other files, list them in `.reylo.yaml`:
@@ -373,7 +367,7 @@ echo "postgres://localhost:5432/$db"
 
 Hover over a query to see its types and the associated SQL statement.
 
-```sql tab="get_user.sql" dialect="postgres,mysql,sqlite" errors
+```sql tab="get_user.sql" dialect="all" errors
 select id, nmae, email
 from users
 where id = :id::int
@@ -390,7 +384,7 @@ const posts = await listPosts.run(db);
 for (const post of posts) console.log(post.body);
 ```
 
-```sql tab="list_posts.sql" dialect="postgres,mysql,sqlite"
+```sql tab="list_posts.sql" dialect="all"
 select id, title
 from posts
 order by id

@@ -1031,7 +1031,7 @@ impl<'a> Engine<'a> {
             };
             let comment = comments.columns.get(position).cloned().flatten();
             let delimiter = registry.delimiter(col.type_oid);
-            columns.push(Column { name: col.name.clone(), ty, nullable, comment, delimiter, described: None });
+            columns.push(Column { name: col.name.clone(), ty, nullable, comment, delimiter });
         }
         let params = lexed
             .params

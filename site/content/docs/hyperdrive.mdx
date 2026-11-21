@@ -9,14 +9,14 @@ Reylo runs in a Worker on Postgres and MySQL through Hyperdrive, Cloudflare's co
 
 | | |
 | --- | --- |
-| Postgres | `pg` or postgres.js, with the binding's connection string, and Drizzle over `pg` |
+| Postgres | `pg`, postgres.js or Drizzle Postgres, with the binding's connection string, and Drizzle over `pg` |
 | MySQL | `mysql2` or `mariadb`, with the binding's `host`, `port`, `user`, `password` and `database` |
 | The type check reads | Your development database, through [`direct_url`](/configuration#direct_url), never Hyperdrive |
-| Node's APIs | `pg`, postgres.js, `mysql2` and `mariadb` need a compatibility date from 2026-08-04 on, or the `nodejs_compat` flag |
+| Node's APIs | `pg`, postgres.js, Drizzle Postgres, `mysql2` and `mariadb` need a compatibility date from 2026-08-04 on, or the `nodejs_compat` flag |
 
 ## Postgres
 
-```ts title="worker.ts"
+```ts tab="pg"
 import { Client } from "pg";
 import getUser from "./get_user.sql";
 
@@ -24,6 +24,20 @@ export default {
   async fetch(request: Request, env: { HYPERDRIVE: Hyperdrive }, ctx: ExecutionContext) {
     const client = new Client({ connectionString: env.HYPERDRIVE.connectionString });
     await client.connect();
+    const user = await getUser.run(client, { id: 1 });
+    ctx.waitUntil(client.end());
+    return Response.json(user);
+  },
+};
+```
+
+```ts tab="Drizzle Postgres"
+import { connect } from "drizzle-orm/postgres/client";
+import getUser from "./get_user.sql";
+
+export default {
+  async fetch(request: Request, env: { HYPERDRIVE: Hyperdrive }, ctx: ExecutionContext) {
+    const client = await connect({ url: env.HYPERDRIVE.connectionString });
     const user = await getUser.run(client, { id: 1 });
     ctx.waitUntil(client.end());
     return Response.json(user);

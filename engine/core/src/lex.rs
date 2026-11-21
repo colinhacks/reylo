@@ -27,16 +27,6 @@
 //! anything else is two minus signs), a block comment ends at its first `*/`, and backquotes quote
 //! a name. The spans it skipped as text are returned as [`Lexed::opaque`], so a caller that looks
 //! for its own construct in the statement does not need a scanner of its own.
-//!
-//! ClickHouse writes a parameter with its type, `{name:Type}`, and has no other form: a `{` starts
-//! nothing else there, and the whole of it, braces included, is the placeholder. `:name` works too
-//! where a cast gives it its type, `:name::Type`, which is the only place it is read as one: a `?`
-//! is ClickHouse's conditional operator, whose `:` may stand before a name (`c ? a :b`), and a
-//! typed JSON path writes one too (`doc.a.:Int64`). Each use of a ClickHouse parameter declares its
-//! type, so a name may appear more than once there, and its engine holds the uses to one type. Its
-//! names have no dots. Its text is read its way: a backslash escapes in a string and in a name
-//! quoted with `"` or backquotes, `#` starts a line comment before a space or `!`, a block comment
-//! nests, and `$tag$…$tag$` quotes a string as on Postgres.
 
 use crate::dialect::Dialect;
 use serde::Serialize;
@@ -100,10 +90,6 @@ pub enum Target {
     /// [`Target::Dollar`], a gap closes (`$3` alone is `?1`): the binding order is `params` either
     /// way, and SQLite reads `?n` as position `n`.
     Numbered,
-    /// `{name}`, ClickHouse's own form less its type, which the driver binds by name: the
-    /// ClickHouse engine writes each one's type through [`rewrite_with`]. One entry of the binding
-    /// order per distinct name.
-    Braced,
 }
 
 /// A rewritten statement plus the map back to the author's text.
@@ -147,58 +133,6 @@ fn is_name_start(c: u8) -> bool {
 
 fn is_name_char(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_'
-}
-
-/// Whether a ClickHouse statement's code from `from`, where a conditional's `?` ends, up to `to`,
-/// where a `:` stands, is a whole operand: each parenthesis and bracket it opens is closed, and
-/// what it ends with ends an expression, as a name, a number, a string, a placeholder and a
-/// closing bracket do, and an operator, a comma, an opening bracket and a word that an operand
-/// follows do not. `None` where it closes a bracket it did not open: the `?` stands in brackets
-/// that end before the `:`.
-fn whole_operand(sql: &str, opaque: &[(usize, usize)], from: usize, to: usize) -> Option<bool> {
-    // The words an operand follows.
-    const BEFORE_AN_OPERAND: [&str; 21] = ["and", "or", "not", "in", "like", "ilike", "between", "is", "then", "else", "when", "case", "div", "mod", "select", "where", "having", "by", "on", "interval", "distinct"];
-    let b = sql.as_bytes();
-    let (mut at, mut depth, mut ended) = (from, 0usize, false);
-    while at < to {
-        // A comment is no part of the operand; a string, a quoted name and a heredoc end one.
-        if let Some(&(_, end)) = opaque.iter().find(|&&(start, _)| start == at) {
-            ended = ended || !(sql[at..].starts_with("--") || sql[at..].starts_with("/*") || sql[at..].starts_with('#'));
-            at = end;
-            continue;
-        }
-        let c = b[at];
-        match c {
-            _ if c.is_ascii_whitespace() => {}
-            _ if is_name_char(c) => {
-                // A name or a number, whole: a `$` is a character of a ClickHouse name past its first.
-                let end = (at..b.len()).find(|&i| !(is_name_char(b[i]) || b[i] == b'$')).unwrap_or(b.len());
-                ended = !BEFORE_AN_OPERAND.iter().any(|word| sql[at..end].eq_ignore_ascii_case(word));
-                at = end;
-                continue;
-            }
-            // A placeholder in braces, whole.
-            b'{' => match braces_end(b, at + 1) {
-                Some(close) if close < to => {
-                    ended = true;
-                    at = close + 1;
-                    continue;
-                }
-                _ => ended = false,
-            },
-            b'(' | b'[' => {
-                depth += 1;
-                ended = false;
-            }
-            b')' | b']' => {
-                depth = depth.checked_sub(1)?;
-                ended = true;
-            }
-            _ => ended = false,
-        }
-        at += 1;
-    }
-    Some(depth == 0 && ended)
 }
 
 fn prev_is_name_char(b: &[u8], i: usize) -> bool {
@@ -338,7 +272,6 @@ pub fn lex_mysql(sql: &str, named: Named, text: MysqlText) -> Result<Lexed, LexE
 fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Result<Lexed, LexError> {
     let sqlite_named = dialect == Dialect::Sqlite && named == Named::Dialect;
     let mysql = dialect == Dialect::Mysql;
-    let clickhouse = dialect == Dialect::Clickhouse;
     let b = sql.as_bytes();
     let mut i = 0usize;
     let mut last = Last::Other;
@@ -349,8 +282,6 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
     let mut largest = 0u64;
     // The span of the first named placeholder, whose prefix every later one repeats.
     let mut first_named: Option<(usize, usize)> = None;
-    // Where each `?` of a ClickHouse conditional that has not met its `:` ends.
-    let mut conditionals: Vec<usize> = Vec::new();
     let mut push = |name: String, start: usize, end: usize, params: &mut Vec<String>| {
         if !params.contains(&name) {
             params.push(name.clone());
@@ -368,14 +299,14 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
         match c {
             // A MySQL string, unless ANSI_QUOTES makes `"` a name's quote.
             b'\'' | b'"' if c == b'\'' || (mysql && !text.ansi_quotes) => {
-                let Some(end) = quoted_end(b, i, (mysql && text.backslash_escapes) || clickhouse) else {
+                let Some(end) = quoted_end(b, i, mysql && text.backslash_escapes) else {
                     return Err(LexError { message: "unterminated string literal".into(), offset: i });
                 };
                 opaque.push((i, end));
                 i = end;
                 last = Last::Other;
             }
-            b'E' | b'e' if b.get(i + 1) == Some(&b'\'') && !prev_is_name_char(b, i) && !mysql && !clickhouse => {
+            b'E' | b'e' if b.get(i + 1) == Some(&b'\'') && !prev_is_name_char(b, i) && !mysql => {
                 let start = i;
                 i += 2;
                 loop {
@@ -394,7 +325,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 last = Last::Other;
             }
             b'"' | b'`' => {
-                let Some(end) = quoted_end(b, i, clickhouse) else {
+                let Some(end) = quoted_end(b, i, false) else {
                     return Err(LexError { message: "unterminated quoted identifier".into(), offset: i });
                 };
                 opaque.push((i, end));
@@ -410,8 +341,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 }
                 opaque.push((start, i));
             }
-            // ClickHouse's `#` starts a comment only before a space or a `!`.
-            b'#' if mysql || (clickhouse && matches!(b.get(i + 1), Some(b' ' | b'!'))) => {
+            b'#' if mysql => {
                 let start = i;
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
@@ -456,29 +386,6 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                     last = Last::Operand;
                     continue;
                 }
-                // The `:` of a ClickHouse conditional, `c ? a : b`: the first after its `?` that
-                // a whole operand stands before. A name and a cast may follow it, and are no
-                // parameter (`c ? a :b::String`); a `:` inside the operand opens one
-                // (`c ? abs(:n::Int32) : 0`, `c ? 1 + :n::Int32 : 0`, `c ? :n::Int32 : 0`).
-                let mut separates = false;
-                while let Some(&after) = conditionals.last() {
-                    match whole_operand(sql, &opaque, after, i) {
-                        // The parentheses the `?` stands in closed before any `:`: it awaits none.
-                        None => {
-                            conditionals.pop();
-                        }
-                        Some(whole) => {
-                            separates = whole;
-                            break;
-                        }
-                    }
-                }
-                if separates {
-                    conditionals.pop();
-                    i += 1;
-                    last = Last::Other;
-                    continue;
-                }
                 match b.get(i + 1) {
                     // A colon that opens a Postgres subscript is a slice with no lower bound
                     // (`tags[:n]` is `tags[1:n]`), since no expression starts with a colon there,
@@ -488,22 +395,6 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                     _ if last == Last::Subscript && dialect == Dialect::Postgres => {
                         i += 1;
                         last = Last::Other;
-                    }
-                    // On ClickHouse a `:name` is a parameter only where a cast types it
-                    // (`:name::Type`): the `:` of its conditional operator may stand before a
-                    // name (`c ? a :b`), and so does a typed JSON path's (`doc.a.:Int64`).
-                    Some(&n) if is_name_start(n) && !prev_is_name_char(b, i) && clickhouse => {
-                        let end = name_end(b, i + 1);
-                        let cast = b.get(end) == Some(&b':') && b.get(end + 1) == Some(&b':') && b.get(end + 2).is_some_and(|&c| is_name_start(c));
-                        if cast && (i == 0 || b[i - 1] != b'.') {
-                            one_prefix(sql, &mut first_named, i, end)?;
-                            push(sql[i + 1..end].to_string(), i, end, &mut params);
-                            i = end;
-                            last = Last::Operand;
-                        } else {
-                            i += 1;
-                            last = Last::Other;
-                        }
                     }
                     Some(&n) if is_name_start(n) && !prev_is_name_char(b, i) => {
                         let end = dotted_name_end(b, i + 1);
@@ -518,33 +409,8 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                     }
                 }
             }
-            // ClickHouse's `{name:Type}`, the only thing a `{` starts there: the placeholder is the
-            // whole of it, to the `}` that closes it, past the parentheses and strings of its type
-            // (`{at:DateTime64(3, 'UTC')}`). One with no name, colon or type is left to the server,
-            // whose error says what it expects.
-            b'{' if clickhouse => {
-                let name_start = skip_spaces(b, i + 1);
-                // A ClickHouse name may hold a `$` past its first character.
-                let name_stop = if b.get(name_start).is_some_and(|&c| is_name_start(c)) { (name_start..b.len()).find(|&at| !(is_name_char(b[at]) || b[at] == b'$')).unwrap_or(b.len()) } else { name_start };
-                let colon = skip_spaces(b, name_stop);
-                let close = if name_stop > name_start && b.get(colon) == Some(&b':') && b.get(colon + 1) != Some(&b':') { braces_end(b, colon + 1) } else { None };
-                match close {
-                    Some(close) if !sql[colon + 1..close].trim().is_empty() => {
-                        one_prefix(sql, &mut first_named, i, close + 1)?;
-                        push(sql[name_start..name_stop].to_string(), i, close + 1, &mut params);
-                        i = close + 1;
-                        last = Last::Operand;
-                    }
-                    _ => {
-                        i += 1;
-                        last = Last::Other;
-                    }
-                }
-            }
             b'$' => {
-                // A `$` inside a ClickHouse name is the name's (`a$b$`), and opens no heredoc.
-                let named = clickhouse && (prev_is_name_char(b, i) || (i > 0 && b[i - 1] == b'$'));
-                if (dialect == Dialect::Postgres || clickhouse) && !named {
+                if dialect == Dialect::Postgres {
                     if let Some(tag_end) = dollar_tag_end(b, i) {
                         let tag = &b[i..tag_end];
                         match find_bytes(b, tag, tag_end) {
@@ -607,12 +473,6 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                     last = Last::Other;
                 }
             },
-            // ClickHouse's `?` is its conditional operator (`c ? a : b`), and it binds by name alone.
-            b'?' if clickhouse => {
-                i += 1;
-                conditionals.push(i);
-                last = Last::Other;
-            }
             b'?' if dialect != Dialect::Postgres => {
                 if b.get(i + 1).is_some_and(u8::is_ascii_digit) && dialect == Dialect::Mysql {
                     let end = digits_end(b, i + 1);
@@ -676,38 +536,6 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
     Ok(Lexed { params, placeholders, style, opaque })
 }
 
-/// The offset of the first byte at or after `i` that is no whitespace.
-fn skip_spaces(b: &[u8], mut i: usize) -> usize {
-    while i < b.len() && b[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    i
-}
-
-/// The offset of the `}` that closes a ClickHouse placeholder whose type starts at `from`: the
-/// first one outside the type's parentheses and its strings, in which a backslash escapes.
-fn braces_end(b: &[u8], from: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut j = from;
-    while j < b.len() {
-        match b[j] {
-            b'\'' | b'"' | b'`' => j = quoted_end(b, j, true)?,
-            b'(' => {
-                depth += 1;
-                j += 1;
-            }
-            b')' => {
-                depth = depth.checked_sub(1)?;
-                j += 1;
-            }
-            b'}' if depth == 0 => return Some(j),
-            b'{' | b'}' | b';' => return None,
-            _ => j += 1,
-        }
-    }
-    None
-}
-
 /// SQLite reads `:a`, `@a` and `$a` as three parameters, and a name here drops its prefix, so every
 /// named placeholder of a statement repeats the prefix of the first.
 fn one_prefix(sql: &str, first: &mut Option<(usize, usize)>, start: usize, end: usize) -> Result<(), LexError> {
@@ -717,11 +545,6 @@ fn one_prefix(sql: &str, first: &mut Option<(usize, usize)>, start: usize, end: 
             Ok(())
         }
         Some((s, _)) if sql.as_bytes()[s] == sql.as_bytes()[start] => Ok(()),
-        // ClickHouse's two forms, of which neither is the other with another prefix.
-        Some((s, e)) if sql.as_bytes()[s] == b'{' || sql.as_bytes()[start] == b'{' => Err(LexError {
-            message: format!("{} and {} are written two ways; write every parameter of a statement one way, as {{name:Type}} or as :name::Type", &sql[start..end], &sql[s..e]),
-            offset: start,
-        }),
         Some((s, e)) => Err(LexError {
             message: format!(
                 "{} and {} have different prefixes; write every named parameter of a statement with one prefix, here {}{}",
@@ -746,7 +569,6 @@ fn foreign(sql: &str, i: usize, dialect: Dialect) -> LexError {
     let fix = if digits { format!("?{}", &sql[i + 1..end]) } else { format!(":{}", &sql[i + 1..end]) };
     let message = match dialect {
         Dialect::Sqlite => format!("SQLite reads {written} as a parameter that Reylo does not bind; write {fix}"),
-        Dialect::Clickhouse => format!("{written} is not a placeholder on ClickHouse, which writes a parameter with its type; write {{{}:Type}}", if digits { format!("p{}", &sql[i + 1..end]) } else { sql[i + 1..end].to_string() }),
         _ => format!("{written} is not a placeholder here; Reylo's named placeholder is {fix}"),
     };
     LexError { message, offset: i }
@@ -826,7 +648,6 @@ pub fn rewrite_with(sql: &str, lexed: &Lexed, target: Target, decorate: &dyn Fn(
             }
             Target::Question => "?".to_string(),
             Target::Numbered => format!("?{}", lexed.params.iter().position(|q| q == &p.name).map_or(0, |i| i + 1)),
-            Target::Braced => format!("{{{}}}", p.name),
         };
         let rendered = decorate(&p.name, &rendered);
         out.push_str(&sql[last..p.start]);
@@ -976,45 +797,6 @@ mod tests {
         assert!(names("select @ -5, a$1, b$c from t", Dialect::Postgres).is_empty());
         // A `-- @returns one` line is a comment like any other.
         assert!(names("-- @returns one\nselect 1", Dialect::Postgres).is_empty());
-    }
-
-    #[test]
-    fn clickhouse_writes_a_parameter_with_its_type() {
-        let l = |sql: &str| lex(sql, Dialect::Clickhouse).unwrap();
-        // The placeholder is the whole of `{name:Type}`, past its type's parentheses and strings.
-        let sql = "SELECT {id:UInt64}, { since : DateTime64(3, 'UTC') }, {e:Enum8('}' = 1, 'it\\'s' = 2)} FROM t";
-        let found = l(sql);
-        assert_eq!(found.params, ["id", "since", "e"]);
-        assert_eq!(found.placeholders.iter().map(|p| &sql[p.start..p.end]).collect::<Vec<_>>(), ["{id:UInt64}", "{ since : DateTime64(3, 'UTC') }", "{e:Enum8('}' = 1, 'it\\'s' = 2)}"]);
-        assert_eq!(found.style, Style::Named);
-        // A name may be used again: each use carries its type.
-        assert_eq!(l("SELECT {a:UInt8} + {a:UInt8}").params, ["a"]);
-        assert_eq!(rewrite("SELECT {a:UInt8} + 1", &l("SELECT {a:UInt8} + 1"), Target::Braced).sql, "SELECT {a} + 1");
-        // `:name` is one only where a cast gives it its type.
-        assert_eq!(l("SELECT :id::UInt64, x::String FROM t WHERE n IN :ns::Array(UInt8)").params, ["id", "ns"]);
-        assert!(l("SELECT c ? a :b, doc.a.:Int64, m[:k], :bare FROM t").params.is_empty());
-        // Its `?` is an operator, and a `{` that opens no placeholder is the server's to refuse.
-        assert!(l("SELECT a ? 1 : 2, {x}, {1:UInt8}, {y:} FROM t").params.is_empty());
-        // The operator's `:` may stand before a name and a cast, which is no parameter; a
-        // parameter that is its operand has no operand before it.
-        assert!(l("SELECT c ? a :b::String, c ? 'x' /* or */ :d::String, c ? (d ? 1 :e::UInt8) :f::UInt8, c ? f(a) :g::String, c ? m['k'] :h::String FROM t").params.is_empty());
-        assert_eq!(l("SELECT c ? :a::UInt8 : 0, c ? 1 : :b::UInt8, :c::UInt8 FROM t").params, ["a", "b", "c"]);
-        // A parameter inside the operand is one: in a call, after an operator or a word that takes an operand, and in brackets.
-        assert_eq!(l("SELECT 1 ? abs(:n::Int32) : 0 AS v, c ? 1 + :m::Int32 : 0, c ? a AND :o::UInt8 : 0, c ? [:p::UInt8, 2] : [], (c ? 1 : 2) + :q::UInt8").params, ["n", "m", "o", "p", "q"]);
-        assert_eq!(l("SELECT c ? {r:UInt8} :s::UInt8, c ? {t:Decimal(9, 2)} + 1 : 0").params, ["r", "t"]);
-        // A name with a `$` in it is one name, whatever word it ends with.
-        assert!(l("SELECT 1 ? a$and :b::UInt8, 1 ? a$b$ :c::UInt8 FROM (SELECT 1 AS a$and, 2 AS b, 3 AS a$b$, 4 AS c)").params.is_empty());
-        // A `$` is a character of a name, a parameter's too, and opens a heredoc only where none stands before it.
-        assert_eq!(l("SELECT 1 AS a$b$, {p:UInt8} AS q, 2 AS c$b$, {x$y:UInt8}").params, ["p", "x$y"]);
-        // Its text: a backslash escapes in a string and a quoted name, `#` comments before a space
-        // or a `!`, block comments nest, and a heredoc quotes.
-        assert!(l("SELECT 'it\\'s {a:UInt8}', `{b:UInt8}\\``, \"{c:UInt8}\\\"\" # {d:UInt8}\n #! {e:UInt8}\n /* {f:UInt8} /* {g:UInt8} */ {h:UInt8} */, $q${i:UInt8}$q$ -- {j:UInt8}").params.is_empty());
-        assert_eq!(l("SELECT 1 #{k:UInt8}").params, ["k"]);
-        // One statement writes its parameters one way.
-        let e = lex("SELECT {a:UInt8}, :b::UInt8", Dialect::Clickhouse).unwrap_err();
-        assert_eq!(e.message, ":b and {a:UInt8} are written two ways; write every parameter of a statement one way, as {name:Type} or as :name::Type");
-        assert_eq!(lex("SELECT $1", Dialect::Clickhouse).unwrap_err().message, "$1 is not a placeholder on ClickHouse, which writes a parameter with its type; write {p1:Type}");
-        assert_eq!(lex("SELECT 'open", Dialect::Clickhouse).unwrap_err().message, "unterminated string literal");
     }
 
     #[test]

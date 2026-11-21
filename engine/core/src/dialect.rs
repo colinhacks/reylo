@@ -1,8 +1,7 @@
 //! The dialects the engine reads: the name a request carries, and the placeholder rules the lexer
 //! applies, which are settled before any database's parser runs. Each dialect is read by its own
 //! database's engine: Postgres with libpg_query, SQLite through SQLite's own resolved tree, MySQL
-//! from the server's prepare metadata and a `sqlparser` tree, ClickHouse from the server's own
-//! `DESCRIBE` of the statement and its plan.
+//! from the server's prepare metadata and a `sqlparser` tree.
 
 use crate::lex::Target;
 use serde::{Deserialize, Serialize};
@@ -13,7 +12,6 @@ pub enum Dialect {
     Postgres,
     Sqlite,
     Mysql,
-    Clickhouse,
 }
 
 impl Dialect {
@@ -22,7 +20,6 @@ impl Dialect {
             Dialect::Postgres => "postgres",
             Dialect::Sqlite => "sqlite",
             Dialect::Mysql => "mysql",
-            Dialect::Clickhouse => "clickhouse",
         }
     }
 
@@ -31,7 +28,6 @@ impl Dialect {
         match self {
             Dialect::Postgres => Target::Dollar,
             Dialect::Sqlite | Dialect::Mysql => Target::Question,
-            Dialect::Clickhouse => Target::Braced,
         }
     }
 }

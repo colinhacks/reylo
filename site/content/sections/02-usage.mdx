@@ -17,7 +17,7 @@ const db = postgres(process.env.DATABASE_URL);
 const user = await getUser.run(db, { id: 1 });
 ```
 
-```sql tab="get_user.sql" dialect="postgres,mysql,sqlite"
+```sql tab="get_user.sql" dialect="all"
 select id, name, email from users where id = :id::int
 ```
 
@@ -125,7 +125,7 @@ import getUser from "./get_user.sql";
 const user = await getUser.run(sql, { id: 1 });
 ```
 
-```ts twoslash tab="Drizzle's driver" dialect="postgres"
+```ts twoslash tab="Drizzle Postgres" dialect="postgres"
 import { Pool } from "drizzle-orm/postgres/client";
 import getUser from "./get_user.sql";
 
@@ -472,7 +472,7 @@ try {
 }
 ```
 
-```ts twoslash tab="Drizzle's driver" dialect="postgres"
+```ts twoslash tab="Drizzle Postgres" dialect="postgres"
 import { Pool } from "drizzle-orm/postgres/client";
 import createUser from "./create_user.sql";
 
@@ -798,23 +798,6 @@ await db.transaction(async (trx) => {
 });
 ```
 
-#### ClickHouse [#clickhouse-drivers]
-
-```ts twoslash dialect="clickhouse"
-import { createClient } from "@clickhouse/client";
-import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
-
-const db = createClient({ url: process.env.CLICKHOUSE_URL });
-
-const user = await getUser.run(db, { id: 1 });
-
-// ClickHouse has no transactions: each query is its own
-await createUser.run(db, { id: 2, name: "Ada" });
-```
-
-The web client, `@clickhouse/client-web`, takes the same queries ([ClickHouse](/clickhouse#client)).
-
 ### `.runSync()`
 
 For databases that support synchronous operations, you can use `.runSync()`.
@@ -885,35 +868,8 @@ if (result.error?.code === "SQLITE_CONSTRAINT_UNIQUE") {
 }
 ```
 
-```ts twoslash tab="main.ts (ClickHouse)" dialect="clickhouse"
-import createUser from "./create_user.sql";
-
-const result = await createUser.try(db, {
-  id: 1,
-  name: "Ada",
-});
-// the table has too many parts to merge: wait, then insert again
-if (result.error?.code === "TOO_MANY_PARTS") {
-  result.error.number;
-  //           ^?
-}
-```
-
-```sql tab="create_user.sql (Postgres)" file="create_user.sql" dialect="postgres"
+```sql tab="create_user.sql" dialect="all"
 insert into users (name, email) values (:name, :email)
-```
-
-```sql tab="create_user.sql (MySQL)" file="create_user.sql" dialect="mysql"
-insert into users (name, email) values (:name, :email)
-```
-
-```sql tab="create_user.sql (SQLite)" file="create_user.sql" dialect="sqlite"
-insert into users (name, email) values (:name, :email)
-```
-
-```sql tab="create_user.sql (ClickHouse)" file="create_user.sql" dialect="clickhouse"
-INSERT INTO users (id, name, email)
-VALUES ({id:UInt32}, {name:String}, {email:Nullable(String)})
 ```
 
 The error codes and types are specific to your database dialect, so TypeScript catches a misspelled code:
@@ -923,7 +879,6 @@ The error codes and types are specific to your database dialect, so TypeScript c
 | Postgres | `code`, the SQLSTATE, and `condition`, its name | `constraint`, `table`, `column`, `schema`, `detail`, `hint`, `position` |
 | MySQL | `code`, the error's name, `errno` and `sqlState` | `key`, `constraint`, `table`, `column` |
 | SQLite | `code`, the result code's name, and `errcode` | `table`, `columns`, `constraint` |
-| ClickHouse | `code`, the error's name, and `number` | |
 
 When the query runs none of your own code, such as a trigger or a function you wrote, Reylo also narrows each error to the names it can carry: a unique violation names one of the unique keys of the tables the query writes, as in the examples above. Your database's page says what it narrows.
 

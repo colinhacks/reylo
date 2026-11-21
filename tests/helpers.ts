@@ -1,4 +1,4 @@
-// What the loader's tests share: the test databases `REYLO_TEST_PG`, `REYLO_TEST_MYSQL` and `REYLO_TEST_CLICKHOUSE` name and a database of a test's own on each, the drivers `lab/drivers` installs, a statement written by hand compiled by the engine's lexer, and the content mapper run over its JSON-RPC protocol, as the type check runs it.
+// What the loader's tests share: the test databases `REYLO_TEST_PG` and `REYLO_TEST_MYSQL` name and a database of a test's own on each, the drivers `lab/drivers` installs, a statement written by hand compiled by the engine's lexer, and the content mapper run over its JSON-RPC protocol, as the type check runs it.
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -15,17 +15,12 @@ export const MAPPER = join(ROOT, "src", "mapper.ts");
 export const INDEX = pathToFileURL(join(ROOT, "src", "index.ts")).href;
 export const PG = process.env.REYLO_TEST_PG;
 export const MYSQL = process.env.REYLO_TEST_MYSQL;
-/** The HTTP interface of a throwaway ClickHouse, as `http://127.0.0.1:28123`, whose user may create databases. */
-export const CLICKHOUSE = process.env.REYLO_TEST_CLICKHOUSE;
 /** A Postgres that takes TLS and asks for a password (SCRAM), with the password in its URL, for the test of channel binding. */
 export const PG_TLS = process.env.REYLO_TEST_PG_TLS;
 /** Why a test of the live Postgres skips, or `false`. */
 export const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
 /** Why a test of the live MySQL skips, or `false`. */
 export const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : !existsSync(join(DRIVERS, "mysql2")) ? "lab/drivers is not installed" : false;
-
-/** Why a test of the live ClickHouse skips, or `false`. */
-export const clickhouseLive = !CLICKHOUSE ? "REYLO_TEST_CLICKHOUSE names no server" : !existsSync(join(DRIVERS, "@clickhouse", "client")) ? "lab/drivers is not installed" : false;
 
 /** A driver as `lab/drivers` installs it: an ES module's default export, as postgres.js 4's. */
 export function driver(name: string): any {
@@ -81,8 +76,7 @@ const handWrittenKept = new Map<string, HandWritten>();
  * reads its placeholders (the `lex` request, through the one-shot `reylo engine <database> call`,
  * so that a test can define a query at once), and each is written as its database binds it, `$n`
  * on Postgres, numbered once per name by `params` (by default the names in the order they first
- * appear), one `?` per placeholder on MySQL and SQLite, and on ClickHouse as it is written,
- * `{name:Type}`, the one form a statement defined by hand takes there. `text` is the statement the database
+ * appear), and one `?` per placeholder on MySQL and SQLite. `text` is the statement the database
  * receives, `order` the name each value binds, `marks` each placeholder's place in `text`, and
  * `params` the names, which spread into `defineQuery` beside `sql`.
  */
@@ -108,16 +102,14 @@ export function handWritten(sql: string, dialect: Dialect, params?: readonly str
   for (const p of lexed.placeholders) {
     if (dialect === "postgres" && !names.includes(p.name)) throw new Error(`${JSON.stringify(sql)}: its placeholder for ${p.name} is not one of ${JSON.stringify(names)}`);
     text += sql.slice(last, at(p.start));
-    const own = sql.slice(at(p.start), at(p.end));
-    if (dialect === "clickhouse" && !own.startsWith("{")) throw new Error(`${JSON.stringify(sql)}: a ClickHouse statement defined by hand is sent as written, so its placeholder for ${p.name} is written {${p.name}:Type}`);
-    const written = dialect === "clickhouse" ? own : dialect === "postgres" ? `$${names.indexOf(p.name) + 1}` : "?";
+    const written = dialect === "postgres" ? `$${names.indexOf(p.name) + 1}` : "?";
     marks.push([text.length, text.length + written.length]);
     text += written;
     order.push(p.name);
     last = at(p.end);
   }
   text += sql.slice(last);
-  const compiled = { sql, params: [...names], text, order: dialect === "postgres" || dialect === "clickhouse" ? [...names] : order, marks };
+  const compiled = { sql, params: [...names], text, order: dialect === "postgres" ? [...names] : order, marks };
   handWrittenKept.set(key, compiled);
   return compiled;
 }
@@ -172,31 +164,6 @@ export async function mysqlDatabase(prefix: string, setup?: string) {
       await db.end();
       await admin.query(`drop database if exists ${name}`);
       await admin.end();
-    },
-  };
-}
-
-/** A database of a test's own on the test ClickHouse, the URL a project names it by, the address of its HTTP interface, which a client takes, and a client of `@clickhouse/client` on it, with each statement of `setup` run first, a `;` at a line's end between two. */
-export async function clickhouseDatabase(prefix: string, setup?: string) {
-  const { createClient } = driver("@clickhouse/client");
-  const admin = createClient({ url: CLICKHOUSE! });
-  const name = `${prefix}_${process.pid}`;
-  await admin.command({ query: `DROP DATABASE IF EXISTS ${name}` });
-  await admin.command({ query: `CREATE DATABASE ${name}` });
-  const url = new URL(CLICKHOUSE!);
-  url.pathname = `/${name}`;
-  const client = createClient({ url: url.href });
-  for (const statement of (setup ?? "").split(/;[ \t]*$/m)) if (statement.trim()) await client.command({ query: statement });
-  return {
-    url: `clickhouse+${url.href}`,
-    address: url.href,
-    client,
-    /** Another client of the database, with `options` beside its URL. */
-    connect: (options: Record<string, unknown>) => createClient({ url: url.href, ...options }),
-    async drop() {
-      await client.close();
-      await admin.command({ query: `DROP DATABASE IF EXISTS ${name}` });
-      await admin.close();
     },
   };
 }

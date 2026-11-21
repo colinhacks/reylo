@@ -17,14 +17,6 @@ test("the engine's lexer answers alike through its long-lived child and its one-
     ["select 'C:\\', ?3, `:w`, ? -- :v\n /* :u */", "sqlite", ["3", "4"]],
     ["select 'C:\\', :x, \"\\\", :y -- :v\n", "sqlite", ["x", "y"]],
     ["select [a'b] as x, :p as p, [c'd?] as y, [n:m] from t where z = :z", "sqlite", ["p", "z"]],
-    ["SELECT {id:UInt64}, { since : DateTime64(3, 'UTC') }, {e:Enum8('}' = 1, 'it\\'s' = 2)}, c ? a :b, doc.a.:Int64, m[:k], {x}, {1:UInt8}, {id:UInt64} FROM t", "clickhouse", ["id", "since", "e"]],
-    ["SELECT :id::UInt64, x::String FROM t WHERE n IN :ns::Array(UInt8) AND s = :s::String AND :bare", "clickhouse", ["id", "ns", "s"]],
-    ["SELECT c ? a :b::String, c ? 'x' /* or */ :d::String, c ? (d ? 1 :e::UInt8) :f::UInt8, c ? :g::UInt8 : 0, c ? 1 : :h::UInt8, :i::UInt8 FROM t", "clickhouse", ["g", "h", "i"]],
-    ["SELECT 1 ? abs(:n::Int32) : 0 AS v, c ? 1 + :m::Int32 : 0, c ? a AND :o::UInt8 : 0, c ? [:p::UInt8, 2] : [], (c ? 1 : 2) + :q::UInt8, c ? f(a) :g::String, c ? m['k'] -- :x::UInt8\n :h::String, c ? $t$?$t$ :j::String FROM t", "clickhouse", ["n", "m", "o", "p", "q"]],
-    ["SELECT 1 AS a$b$, {p:UInt8} AS q, 2 AS c$b$, {x$y:UInt8}, $tag${no:UInt8}$tag$", "clickhouse", ["p", "x$y"]],
-    ["SELECT c ? {r:UInt8} :s::UInt8, c ? {t:Decimal(9, 2)} + 1 : 0", "clickhouse", ["r", "t"]],
-    ["SELECT 1 ? a$and :b::UInt8, 1 ? a$b$ :c::UInt8, :d::UInt8 FROM (SELECT 1 AS a$and, 2 AS b, 3 AS a$b$, 4 AS c)", "clickhouse", ["d"]],
-    ["SELECT 'it\\'s {a:UInt8}', `{b:UInt8}\\``, \"{c:UInt8}\\\"\" # {d:UInt8}\n #! {e:UInt8}\n /* {f:UInt8} /* {g:UInt8} */ {h:UInt8} */, $q${i:UInt8}$q$, {k:UInt8} -- {j:UInt8}", "clickhouse", ["k"]],
   ];
   for (const [sql, dialect, params] of statements) {
     // A text of its own for the one-shot form, so that neither answers from what the other kept.
