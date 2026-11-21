@@ -83,6 +83,11 @@ impl ConcurrentAnswerer<Describe> for Answers<'_> {
             Ok(Ok(rows.iter().map(|row| (0..row.len()).map(|i| cell(row, i)).collect()).collect()))
         }
     }
+
+    // A prepare dropped after its Parse is sent has no statement to close, so on a session that goes on it is left to finish.
+    fn ends_session(&self, error: &HostError) -> bool {
+        self.0.is_closed() || error.0.starts_with(ENDED) || error.0.starts_with("the describe did not reach the server")
+    }
 }
 
 /// One parameter of a catalog query, by the type the server inferred from the cast in its text.

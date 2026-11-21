@@ -62,6 +62,11 @@ pub trait ConcurrentAnswerer<D> {
 
     /// As [`Answerer::query`].
     fn query(&self, sql: &str, params: &[Value]) -> impl Future<Output = Result<Result<Vec<Vec<Value>>, DbError>, Self::Error>> + Send;
+
+    /// Whether `error` ended the session, so that nothing else asked on it can still finish. A round stops at such an error; after any other it lets what it already asked finish, since a request dropped halfway can leave its state on a session the host goes on using.
+    fn ends_session(&self, _error: &Self::Error) -> bool {
+        true
+    }
 }
 
 /// Why a replay ended without an analysis.
@@ -251,13 +256,13 @@ pub async fn run_concurrent<Db: Database, A: ConcurrentAnswerer<Db::Describe>>(s
                 None => {}
             }
         }
-        let fresh = join_to_first_error(asked.iter().map(|need| async move {
+        let asking = asked.iter().map(|need| async move {
             match need {
                 Need::Describe { sql, .. } => answer(answerer.describe(sql).await),
                 Need::Query { sql, params, .. } => rows(answerer.query(sql, params).await),
             }
-        }))
-        .await;
+        });
+        let fresh = join_to_first_error(asking, |error| matches!(error, ReplayError::Host(host) if answerer.ends_session(host))).await;
         for (need, fresh) in asked.iter().zip(fresh) {
             let fresh = fresh?;
             cache.put(need, &fresh);
@@ -267,8 +272,8 @@ pub async fn run_concurrent<Db: Database, A: ConcurrentAnswerer<Db::Describe>>(s
     Err(ReplayError::Unsettled)
 }
 
-/// The futures' outputs in their order, the futures polled together, up to and including the first error: it is returned once every future before it has settled, whatever the ones after it are still waiting on.
-async fn join_to_first_error<T, E, F: Future<Output = Result<T, E>>>(futures: impl IntoIterator<Item = F>) -> Vec<Result<T, E>> {
+/// The futures' outputs in their order, the futures polled together, up to and including the first error. Once every future before that error has settled, an error `stops` says stops the rest returns at once; after any other, the rest are polled to their end first.
+async fn join_to_first_error<T, E, F: Future<Output = Result<T, E>>>(futures: impl IntoIterator<Item = F>, stops: impl Fn(&E) -> bool) -> Vec<Result<T, E>> {
     let mut futures: Vec<std::pin::Pin<Box<F>>> = futures.into_iter().map(Box::pin).collect();
     let mut outputs: Vec<Option<Result<T, E>>> = futures.iter().map(|_| None).collect();
     std::future::poll_fn(|cx| {
@@ -279,9 +284,11 @@ async fn join_to_first_error<T, E, F: Future<Output = Result<T, E>>>(futures: im
                 }
             }
         }
+        let done = outputs.iter().all(Option::is_some);
         match outputs.iter().find(|output| !matches!(output, Some(Ok(_)))) {
-            Some(None) => std::task::Poll::Pending,
-            _ => std::task::Poll::Ready(()),
+            Some(Some(Err(error))) if stops(error) => std::task::Poll::Ready(()),
+            _ if done => std::task::Poll::Ready(()),
+            _ => std::task::Poll::Pending,
         }
     })
     .await;
@@ -519,6 +526,43 @@ mod tests {
         let mut counting = Counting::default();
         ready(run_async::<Toy, _>("select 1", &mut counting, &mut cache)).unwrap();
         assert_eq!((counting.describes, counting.queries), (0, 1));
+    }
+
+    /// A host whose describe fails with an error the session survives, and whose query is still on its way.
+    #[derive(Default)]
+    struct Survives {
+        finished: std::sync::atomic::AtomicBool,
+    }
+
+    impl ConcurrentAnswerer<String> for Survives {
+        type Error = String;
+        fn describe(&self, _sql: &str) -> impl Future<Output = Result<Result<String, DbError>, String>> + Send {
+            async { Err("permission denied".to_string()) }
+        }
+        fn query(&self, _sql: &str, _params: &[Value]) -> impl Future<Output = Result<Result<Vec<Vec<Value>>, DbError>, String>> + Send {
+            let mut polled = false;
+            std::future::poll_fn(move |_| {
+                if !polled {
+                    polled = true;
+                    return std::task::Poll::Pending;
+                }
+                self.finished.store(true, std::sync::atomic::Ordering::SeqCst);
+                std::task::Poll::Ready(Ok(Ok(vec![vec![json!("18.0")]])))
+            })
+        }
+        fn ends_session(&self, _error: &String) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn an_error_the_session_survives_lets_the_round_finish() {
+        let host = Survives::default();
+        match settled(run_concurrent::<Toy, _>("select 1", &host, &mut AnswerCache::default())) {
+            Err(ReplayError::Host(e)) => assert_eq!(e, "permission denied"),
+            other => panic!("expected the host's error, got {:?}", other.map(|a| a.diagnostics)),
+        }
+        assert!(host.finished.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]
