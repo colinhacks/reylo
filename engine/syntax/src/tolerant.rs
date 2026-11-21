@@ -419,7 +419,7 @@ fn lexemes(flavor: Flavor, text: &str) -> (Vec<Lexeme>, u32) {
             continue;
         }
         if kind == WORD {
-            let after_dot = out.last().is_some_and(|l| l.kind == DOT);
+            let after_dot = out.iter().rev().find(|l| l.kind != CONDITIONAL).is_some_and(|l| l.kind == DOT);
             if !after_dot && n <= 9 && is_clause(flavor, &text[at..at + n].to_ascii_uppercase()) {
                 kind = KEYWORD;
             }
@@ -504,9 +504,19 @@ impl Builder {
     }
 }
 
+/// The token after `i`, past the markers of a conditional comment, which stand between no two words of the SQL.
+fn next_code(tokens: &[Lexeme], i: usize) -> Option<&Lexeme> {
+    tokens[i + 1..].iter().find(|l| l.kind != CONDITIONAL)
+}
+
+/// The token before `i`, past those markers.
+fn previous_code(tokens: &[Lexeme], i: usize) -> Option<&Lexeme> {
+    tokens[..i].iter().rev().find(|l| l.kind != CONDITIONAL)
+}
+
 /// The next word's text after token `i`, in capitals, if the next token is one.
 fn next_word(tokens: &[Lexeme], text: &str, i: usize) -> Option<String> {
-    let n = tokens.get(i + 1)?;
+    let n = next_code(tokens, i)?;
     matches!(n.kind, WORD | KEYWORD).then(|| text[n.start as usize..n.end as usize].to_ascii_uppercase())
 }
 
@@ -540,8 +550,8 @@ pub fn parse(flavor: Flavor, text: &str) -> Tree<'_> {
             first_word = Some(upper.clone().unwrap_or_default());
         }
         if let Some(word) = upper.as_deref() {
-            let after_dot = i > 0 && tokens[i - 1].kind == DOT;
-            let before = i.checked_sub(1).map(|p| &tokens[p]).filter(|p| matches!(p.kind, WORD | KEYWORD)).map(|p| &text[p.start as usize..p.end as usize]);
+            let after_dot = previous_code(&tokens, i).is_some_and(|p| p.kind == DOT);
+            let before = previous_code(&tokens, i).filter(|p| matches!(p.kind, WORD | KEYWORD)).map(|p| &text[p.start as usize..p.end as usize]);
             if matches!(word, "PROCEDURE" | "FUNCTION" | "TRIGGER" | "EVENT") && first_word.as_deref() == Some("CREATE") {
                 stored = true;
             }
@@ -586,7 +596,7 @@ pub fn parse(flavor: Flavor, text: &str) -> Tree<'_> {
             }
             KEYWORD => {
                 // INSERT(…) and REPLACE(…) are functions.
-                let call = matches!(upper.as_deref(), Some("INSERT" | "REPLACE")) && tokens.get(i + 1).is_some_and(|n| n.kind == LPAREN);
+                let call = matches!(upper.as_deref(), Some("INSERT" | "REPLACE")) && next_code(&tokens, i).is_some_and(|n| n.kind == LPAREN);
                 let f = stack.last_mut().unwrap();
                 let only_paren = f.clause.len() == 1 && b.nodes[f.clause[0] as usize].kind == LPAREN;
                 if !call && !only_paren {
@@ -649,6 +659,7 @@ mod tests {
         assert_eq!(statements(Flavor::MYSQL, "create procedure p() begin a:begin select 1; end a; select 2; end; select 3"), 2);
         assert_eq!(statements(Flavor::MYSQL, "create function f() returns int language javascript as $$ return 1; $$; select 2"), 2);
         assert_eq!(statements(Flavor::MYSQL, "/*!50003 create procedure p() begin select 1; end */; select 2"), 2);
+        assert_eq!(statements(Flavor::MYSQL, "create procedure p() begin if 1 then select 1; end /*!80000 if */; select 2; end; select 3"), 2);
         assert_eq!(statements(Flavor::SqlServer, "begin select 1; select 2; end; select 3"), 2);
         assert_eq!(statements(Flavor::SqlServer, "begin tran; select 1; commit"), 3);
         assert_eq!(statements(Flavor::SqlServer, "select 1\nGO\nselect 2\ngo 5\nselect 3"), 3);
