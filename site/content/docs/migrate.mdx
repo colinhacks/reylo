@@ -958,6 +958,8 @@ if !status.is_current() {
 }
 ```
 
+A run holds a session, so a pool on a transaction pooler is refused, such as Neon's `-pooler` host or Supabase's port 6543. Connect this pool directly.
+
 The crate compiles again when a migration, the lock or `reylo/schema.sql` changes. The lock lists each new migration, so without one, have a build script watch the directory:
 
 ```rust title="build.rs"

@@ -456,7 +456,8 @@ fn host_start(rest: &str) -> usize {
 /// gives one (Neon's endpoint with `-pooler`, Supabase's pooler on port 6543), with the connection
 /// to use instead in `key`, the project file's setting that named it (`direct_url`, `shadow_url`). Such a pooler gives each transaction whichever server session is free, so a
 /// run's session lock outlives the run on the pooler's session and stops the next run that connects
-/// directly, and a setting a run makes for its session reaches the app's queries on it.
+/// directly, and a setting a run makes for its session reaches the app's queries on it. An empty
+/// `key` is a URL no project file names, as an app's own pool has.
 pub fn transaction_pooler(url: &str, key: &str) -> Option<String> {
     let (scheme, rest) = url.split_once("://")?;
     if !matches!(scheme, "postgres" | "postgresql") {
@@ -470,15 +471,19 @@ pub fn transaction_pooler(url: &str, key: &str) -> Option<String> {
     };
     let (first, domain) = host.split_once('.')?;
     let shown = shown_url(url);
-    let flag = if key == "direct_url" { " or with --url" } else { "" };
+    let place = match key {
+        "" => String::new(),
+        "direct_url" => ", in direct_url in .reylo.yaml or with --url".to_string(),
+        key => format!(", in {key} in .reylo.yaml"),
+    };
     if let Some(endpoint) = first.strip_suffix("-pooler").filter(|_| domain.ends_with("neon.tech")) {
         return Some(format!(
-            "{shown} is Neon's pooled connection, whose PgBouncer shares server sessions between clients, and a run of reylo migrate holds one: use the direct connection, host {endpoint}.{domain}, in {key} in .reylo.yaml{flag}"
+            "{shown} is Neon's pooled connection, whose PgBouncer shares server sessions between clients, and a run of reylo migrate holds one: use the direct connection, host {endpoint}.{domain}{place}"
         ));
     }
     if domain.ends_with("pooler.supabase.com") && port == Some(6543) {
         return Some(format!(
-            "{shown} is Supabase's transaction pooler, which shares server sessions between clients, and a run of reylo migrate holds one: use its session pooler, port 5432 on the same host, or the direct connection, in {key} in .reylo.yaml{flag}"
+            "{shown} is Supabase's transaction pooler, which shares server sessions between clients, and a run of reylo migrate holds one: use its session pooler, port 5432 on the same host, or the direct connection{place}"
         ));
     }
     None
@@ -1364,6 +1369,9 @@ mod url_tests {
         assert!(!neon.contains("secret"), "{neon}");
         let supabase = transaction_pooler("postgres://postgres.abc:secret@aws-1-us-east-1.pooler.supabase.com:6543/postgres", "shadow_url").expect("Supabase's transaction pooler");
         assert!(supabase.contains("port 5432") && supabase.ends_with("in shadow_url in .reylo.yaml") && !supabase.contains("secret"), "{supabase}");
+        // An app's own pool has no project file's key to name.
+        let pool = transaction_pooler("postgres://neondb_owner@ep-late-darkness-bb241gty-pooler.c-15.us-east-1.aws.neon.tech:5432/neondb", "").expect("Neon's pooled host");
+        assert!(pool.ends_with("host ep-late-darkness-bb241gty.c-15.us-east-1.aws.neon.tech"), "{pool}");
         // The direct connections, Supabase's session pooler and any other host are no transaction pooler.
         for url in [
             "postgresql://neondb_owner:secret@ep-late-darkness-bb241gty.c-15.us-east-1.aws.neon.tech/neondb?sslmode=require",

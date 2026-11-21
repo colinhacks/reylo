@@ -243,6 +243,25 @@ async fn postgres() {
     assert_eq!(held, 0);
 }
 
+/// A run holds a session, so neither call starts on a transaction pooler, and the pool never
+/// connects. The project is SQLite's, which needs no server: only its files are read.
+#[cfg(all(feature = "postgres", feature = "sqlite"))]
+#[tokio::test]
+async fn a_transaction_pooler_is_refused() {
+    let p = Project::new(Kind::Sqlite).await.expect("SQLite needs no server");
+    let migrator = p.migrator();
+    for (url, says) in [
+        ("postgres://app:secret@ep-late-darkness-bb241gty-pooler.c-15.us-east-1.aws.neon.tech/app?sslmode=require", "host ep-late-darkness-bb241gty.c-15.us-east-1.aws.neon.tech"),
+        ("postgres://app.abc:secret@aws-1-us-east-1.pooler.supabase.com:6543/app?sslmode=require", "port 5432"),
+    ] {
+        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect_lazy(url).unwrap();
+        let refused = [migrator.run(&pool).await.unwrap_err().to_string(), migrator.status(&pool).await.unwrap_err().to_string()];
+        for message in refused {
+            assert!(message.contains(says) && !message.contains("secret"), "{message}");
+        }
+    }
+}
+
 #[cfg(feature = "mysql")]
 #[tokio::test]
 async fn mysql() {

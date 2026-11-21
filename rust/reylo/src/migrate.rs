@@ -102,6 +102,11 @@ impl Migrator {
                 schema: self.schema.map(String::from),
             })),
         };
+        // A run holds a session, which a transaction pooler shares out: its lock would stay on
+        // whichever session the pooler gave it, and stop the next run.
+        if let Some(refusal) = reylo_migrate::db::transaction_pooler(&options.url, "") {
+            return Err(Error::new(format!("reylo::migrate!(): {refusal}")));
+        }
         let mut conn = pool.acquire().await.map_err(|e| Error::new(format!("reylo::migrate!() could not take a connection from the pool: {e}")))?;
         if command == Command::Deploy && DB::DIALECT != Dialect::Sqlite {
             conn.close_on_drop();
