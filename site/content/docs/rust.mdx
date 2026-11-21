@@ -17,12 +17,6 @@ let user = get_user::Query { id: 1 }.run(&pool).await?;
 
 The attribute fills the module with the statement's types: `Query`, its parameters, and `Row`, one row of its result. The query runs on sqlx, on your own pool, connection or transaction.
 
-<Callout title="Not on crates.io yet">
-
-The `reylo` and `reylo-build` crates aren't on crates.io yet.
-
-</Callout>
-
 ## Setup
 
 To use Reylo in Rust, you'll need:
