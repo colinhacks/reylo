@@ -165,6 +165,12 @@ fn identifier_from(b: &[u8], i: usize) -> Option<usize> {
     Some(j)
 }
 
+/// Where `{decinteger}{identifier}` ends, for the digits at `digits..end`. Flex takes the longest match over every way to split the text, and `_` starts an identifier, so `1_0$` is `1` and `_0$`.
+fn junk_after(b: &[u8], digits: usize, end: usize) -> Option<usize> {
+    let inside = (digits..end).find(|k| b[*k] == b'_').and_then(|k| identifier_from(b, k));
+    inside.max(identifier_from(b, end))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Number {
     Dec,
@@ -194,22 +200,24 @@ fn number(b: &[u8], i: usize) -> Option<(Number, usize)> {
     } else {
         None
     };
-    let exponent = |base: usize| -> (Option<usize>, Option<usize>) {
+    let exponent = |base: usize| -> (Option<usize>, Option<usize>, Option<usize>) {
         if !b.get(base).is_some_and(|c| matches!(c, b'e' | b'E')) {
-            return (None, None);
+            return (None, None, None);
         }
         let signed = b.get(base + 1).is_some_and(|c| matches!(c, b'-' | b'+'));
         let digits = base + 1 + signed as usize;
         let end = decinteger(b, digits);
-        (if end > digits { Some(end) } else { None }, if signed { Some(base + 2) } else { None })
+        let read = end > digits;
+        (read.then_some(end), signed.then_some(base + 2), if read { junk_after(b, digits, end) } else { None })
     };
-    let (mut real, mut real_fail) = (None::<usize>, None::<usize>);
+    let (mut real, mut real_fail, mut real_junk) = (None::<usize>, None::<usize>, None::<usize>);
     for base in [has_dec.then_some(dec), numeric].into_iter().flatten() {
-        let (r, f) = exponent(base);
+        let (r, f, j) = exponent(base);
         real = real.max(r);
         real_fail = real_fail.max(f);
+        real_junk = real_junk.max(j);
     }
-    let junk = |end: Option<usize>| end.and_then(|e| identifier_from(b, e));
+    let fraction = if has_dec { dec + 1 } else { i + 1 };
     let candidates = [
         (Number::Dec, has_dec.then_some(dec)),
         (Number::Hex, radix_integer(b, i, b'x', |c| c.is_ascii_hexdigit())),
@@ -222,9 +230,9 @@ fn number(b: &[u8], i: usize) -> Option<(Number, usize)> {
         (Number::NumericFail, (has_dec && b.get(dec) == Some(&b'.') && b.get(dec + 1) == Some(&b'.')).then_some(dec + 2)),
         (Number::Real, real),
         (Number::RealFail, real_fail),
-        (Number::IntegerJunk, junk(has_dec.then_some(dec))),
-        (Number::NumericJunk, junk(numeric)),
-        (Number::RealJunk, junk(real)),
+        (Number::IntegerJunk, has_dec.then(|| junk_after(b, i, dec)).flatten()),
+        (Number::NumericJunk, numeric.and_then(|end| junk_after(b, fraction, end))),
+        (Number::RealJunk, real_junk),
     ];
     let mut best: Option<(Number, usize)> = None;
     for (rule, end) in candidates {
@@ -890,4 +898,17 @@ fn deescape(s: &[u8], escape: u8) -> Result<Vec<u8>, String> {
         return Err(bad_pair());
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{parse_values, ParseError};
+
+    #[test]
+    fn a_number_runs_into_an_identifier_at_any_underscore() {
+        for (sql, junk) in [("select 1_000_00$", "1_000_00$"), ("select 100_000_0$0_000_000", "100_000_0$0_000_000"), ("select 1.0_0$", "1.0_0$"), ("select 1e1_0$", "1e1_0$"), ("select 1a", "1a")] {
+            let Err(ParseError::Syntax(message)) = parse_values(sql) else { panic!("{sql} parsed") };
+            assert!(message.starts_with("trailing junk after numeric literal") && message.ends_with(&format!("\"{junk}\"")), "{sql}: {message}");
+        }
+    }
 }
