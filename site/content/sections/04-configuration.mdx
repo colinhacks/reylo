@@ -25,24 +25,19 @@ The `package.json` it sits beside is the nearest one at or above the directory R
 
 The dev database Reylo reads your schema from. It defaults to `DATABASE_URL`, and its scheme names the dialect:
 
-```sh tab="Postgres" tab-group="dialect"
-# .env: postgres:// or postgresql://
+```sh title=".env" tab="Postgres" tab-group="dialect"
+# or postgresql://
 DATABASE_URL=postgres://localhost:5432/app
 ```
 
-```sh tab="MySQL" tab-group="dialect"
-# .env: mysql:// or mariadb://
+```sh title=".env" tab="MySQL" tab-group="dialect"
+# or mariadb://
 DATABASE_URL=mysql://root@localhost:3306/app
 ```
 
-```sh tab="SQLite" tab-group="dialect"
-# .env: file: or sqlite:, and the path starts at package.json
+```sh title=".env" tab="SQLite" tab-group="dialect"
+# or sqlite:; the path starts at package.json
 DATABASE_URL=file:./app.db
-```
-
-```sh tab="ClickHouse" tab-group="dialect"
-# .env: clickhouse+http:// or clickhouse+https://, the HTTP interface
-DATABASE_URL=clickhouse+http://default@localhost:8123/app
 ```
 
 Point it at a direct connection, not a pooler: describing a query through a pooler in transaction mode, such as PgBouncer's, can fail. You can interpolate other variables from your environment to construct a connection string.

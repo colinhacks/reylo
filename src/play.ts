@@ -152,7 +152,7 @@ async function databaseBackend(session: Session): Promise<Backend> {
   return {
     dialect,
     ...(project.notice ? { notice: project.notice } : {}),
-    label: `${dialect === "postgres" ? "Postgres" : dialect === "mysql" ? "MySQL" : dialect === "clickhouse" ? "ClickHouse" : "SQLite"} at ${session.where()} (${project.urlSource})`,
+    label: `${dialect === "postgres" ? "Postgres" : dialect === "mysql" ? "MySQL" : "SQLite"} at ${session.where()} (${project.urlSource})`,
     schema: (await schemaDdl(dialect, (sql) => session.query(sql))) ?? schemaText(dialect, cat),
     catalog: cat,
     async analyze(sql, width) {
@@ -172,7 +172,7 @@ async function databaseBackend(session: Session): Promise<Backend> {
 
 /**
  * The database's schema as statements that would make it, for the page's schema card: SQLite's own
- * stored statements, MySQL's and ClickHouse's \`SHOW CREATE\`, and on Postgres, which keeps no statement, one written
+ * stored statements, MySQL's \`SHOW CREATE\`, and on Postgres, which keeps no statement, one written
  * from its catalog (types, tables with their defaults and constraints, views, indexes) for the
  * schemas on the search path. Undefined where the database refuses, and the columns stand in.
  */
@@ -189,15 +189,6 @@ async function schemaDdl(dialect: Dialect, query: (sql: string) => Promise<unkno
         const [row] = await query(`show create ${type === "VIEW" ? "view" : "table"} \`${name.replace(/`/g, "``")}\``);
         // A table's next AUTO_INCREMENT value is its data's, not its schema's.
         out.push(`${String(row?.[1] ?? "").replace(/ AUTO_INCREMENT=\d+/, "")};`);
-      }
-      return out.join("\n\n");
-    }
-    if (dialect === "clickhouse") {
-      const tables = await query("SELECT name FROM system.tables WHERE database = currentDatabase() AND NOT is_temporary ORDER BY engine IN ('View', 'MaterializedView'), name");
-      const out: string[] = [];
-      for (const [name] of tables as [string][]) {
-        const [row] = await query(`SHOW CREATE TABLE \`${name.replace(/[\\`]/g, "\\$&")}\``);
-        out.push(`${String(row?.[0] ?? "").trim()};`);
       }
       return out.join("\n\n");
     }
@@ -247,7 +238,7 @@ select ddl from (
 
 /** The schema as the page shows it where the database refuses to give it: each table's columns, as a CREATE TABLE writes them. */
 function schemaText(dialect: Dialect, cat: Catalog): string {
-  const q = (name: string) => (/^[a-z_][a-z0-9_]*$/.test(name) ? name : dialect === "mysql" || dialect === "clickhouse" ? `\`${name}\`` : `"${name.replace(/"/g, '""')}"`);
+  const q = (name: string) => (/^[a-z_][a-z0-9_]*$/.test(name) ? name : dialect === "mysql" ? `\`${name}\`` : `"${name.replace(/"/g, '""')}"`);
   return cat.tables
     .map((t) => {
       const width = Math.max(...t.columns.map((c) => q(c.name).length));

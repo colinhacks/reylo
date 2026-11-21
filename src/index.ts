@@ -13,11 +13,10 @@ import type { QueryError } from "./query-error.ts";
 import { postgres } from "./decode.ts";
 import { mysql } from "./decode-mysql.ts";
 import { sqlite } from "./decode-sqlite.ts";
-import { clickhouse } from "./decode-clickhouse.ts";
 import { listening, type QueryTrace } from "./trace.ts";
 import { buildTime, type AnalyzeInput, type StatementDescriptor } from "./build-time.ts";
 
-export type { ClickhouseClient, ClientFor, Dialect, Inputs, MysqlClient, PostgresClient, SqliteClient, SyncClientFor } from "./execute.ts";
+export type { ClientFor, Dialect, Inputs, MysqlClient, PostgresClient, SqliteClient, SyncClientFor } from "./execute.ts";
 export type { QueryTrace } from "./trace.ts";
 export type { StandardQueryV1 } from "./standard-query.ts";
 export { checks } from "./checks.ts";
@@ -25,7 +24,7 @@ export { migrate, type MigrationStorage } from "./migrate.ts";
 export type { MigrateOptions } from "./build-time.ts";
 export type { AnalyzeInput } from "./build-time.ts";
 export type * as TypeDefs from "../spec/index.ts";
-export type { ClickhouseCode, ClickhouseErrorFields, ClickhouseQueryError, MysqlCode, MysqlErrorFields, MysqlNarrowing, MysqlQueryError, PostgresCode, PostgresCondition, PostgresErrorFields, PostgresNarrowing, PostgresQueryError, QueryError, SqliteCode, SqliteErrorFields, SqliteNarrowing, SqliteQueryError } from "./query-error.ts";
+export type { MysqlCode, MysqlErrorFields, MysqlNarrowing, MysqlQueryError, PostgresCode, PostgresCondition, PostgresErrorFields, PostgresNarrowing, PostgresQueryError, QueryError, SqliteCode, SqliteErrorFields, SqliteNarrowing, SqliteQueryError } from "./query-error.ts";
 
 /**
  * One statement's types as plain data that serializes to JSON, in Reylo Type Defs: its parameters and
@@ -219,7 +218,7 @@ function onlyValue(row: unknown): unknown {
 }
 
 /** Each dialect's half of the run time, for a query defined by hand, which names its dialect. */
-const RUNTIMES: { readonly [D in Dialect]: Runtime<D> } = { postgres, mysql, sqlite, clickhouse };
+const RUNTIMES: { readonly [D in Dialect]: Runtime<D> } = { postgres, mysql, sqlite };
 
 /**
  * A query, from its definition: a query defined by hand names its dialect. A module a build step
@@ -244,11 +243,6 @@ export function defineMysqlQuery<Params, Row, C extends Cardinality>(def: Omit<Q
 /** A SQLite query, as a module a build step writes defines one (`defineQuery`). */
 export function defineSqliteQuery<Params, Row, C extends Cardinality>(def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, "sqlite"> {
   return define(sqlite, def);
-}
-
-/** A ClickHouse query, as a module a build step writes defines one (`defineQuery`). */
-export function defineClickhouseQuery<Params, Row, C extends Cardinality>(def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, "clickhouse"> {
-  return define(clickhouse, def);
 }
 
 function define<Params, Row, C extends Cardinality, D extends Dialect>(runtime: Runtime<D>, def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, D> {
@@ -276,7 +270,6 @@ function define<Params, Row, C extends Cardinality, D extends Dialect>(runtime: 
     key: def.key,
     ordered: def.ordered,
     cardinality,
-    value: def.value,
     codecs: def.codecs,
     libraries: def.libraries,
     structured: def.structured,

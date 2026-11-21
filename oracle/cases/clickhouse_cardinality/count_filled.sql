@@ -1,1 +1,0 @@
-SELECT count() AS n FROM users ORDER BY n WITH FILL FROM 0 TO 5

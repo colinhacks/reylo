@@ -1,1 +1,0 @@
-SELECT id, (SELECT max(total) FROM orders) AS biggest, (SELECT name FROM users WHERE id = 99) AS nobody, id IN (SELECT user_id FROM orders) AS has_orders, exists(SELECT 1 FROM orders WHERE total > 5) AS any_big FROM users ORDER BY id, name

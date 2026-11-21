@@ -1,1 +1,0 @@
-SELECT id, id IN {ids:Array(UInt64)} AS found, id NOT IN ({a:UInt64}, {b:UInt64}) AS neither, (id, name) IN {pairs:Array(Tuple(UInt64, String))} AS paired, id IN (SELECT user_id FROM orders WHERE total > {least:Decimal(18, 2)}) AS ordered FROM users ORDER BY id, name

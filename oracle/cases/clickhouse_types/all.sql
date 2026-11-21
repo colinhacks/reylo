@@ -1,1 +1,0 @@
-SELECT * FROM every ORDER BY id

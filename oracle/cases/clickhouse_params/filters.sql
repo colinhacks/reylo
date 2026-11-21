@@ -1,1 +1,0 @@
-SELECT id, name FROM users WHERE id IN {ids:Array(UInt64)} AND name LIKE {pattern:String} AND created >= {since:DateTime64(3, 'UTC')} AND age BETWEEN {low:UInt8} AND {high:UInt8} AND role = {role:Enum8('admin' = 1, 'member' = 2)} AND has(tags, {tag:String}) ORDER BY id, name
