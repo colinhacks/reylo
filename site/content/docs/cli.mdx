@@ -5,7 +5,39 @@ description: Every command and flag of the reylo command, with where each is cov
 
 Every command and flag of `reylo`.
 
-Run it in your project with `npx reylo`. It reads the database your project names, as the type check does.
+In a JavaScript project, run it with `npx reylo`. Elsewhere, install the binary on its own:
+
+```bash tab="Homebrew"
+brew install reylosql/tap/reylo
+```
+
+```bash tab="curl"
+curl -fsSL https://reylo.dev/install.sh | sh
+```
+
+```powershell tab="PowerShell"
+irm https://reylo.dev/install.ps1 | iex
+```
+
+```bash tab="Scoop"
+scoop bucket add reylo https://github.com/reylosql/scoop-bucket
+scoop install reylo
+```
+
+```bash tab="Docker"
+docker run --rm -v "$PWD:/work" ghcr.io/reylosql/reylo migrate status
+```
+
+To pin a version in a project, name it in mise's `mise.toml`, which every developer and CI job then installs with `mise install`:
+
+```toml title="mise.toml"
+[tools]
+"github:reylosql/reylo" = "0.8.0"
+```
+
+The scripts take a version too, as `REYLO_VERSION=0.8.0`, and the image a tag, as `ghcr.io/reylosql/reylo:0.8.0`.
+
+Each command reads the database your project names, as the type check does:
 
 ```terminal
 Usage: reylo <command> [flags]
@@ -31,40 +63,6 @@ Flags:
   --version                Print the version
 ```
 
-## Install
-
-Outside a JavaScript project, install the command on its own. It is one binary, with no Node and nothing else to install beside it:
-
-```bash tab="Homebrew"
-brew install reylosql/tap/reylo
-```
-
-```bash tab="curl"
-curl -fsSL https://reylo.dev/install.sh | sh
-```
-
-```powershell tab="PowerShell"
-irm https://reylo.dev/install.ps1 | iex
-```
-
-```bash tab="Scoop"
-scoop bucket add reylo https://github.com/reylosql/scoop-bucket
-scoop install reylo
-```
-
-```bash tab="Docker"
-docker run --rm -v "$PWD:/work" ghcr.io/reylosql/reylo migrate status
-```
-
-Each installs the latest release, checked against its published checksums. To pin a version in a project, name it in mise's `mise.toml`, which every developer and CI job then installs with `mise install`:
-
-```toml title="mise.toml"
-[tools]
-"github:reylosql/reylo" = "0.8.0"
-```
-
-The scripts take a version too, as `REYLO_VERSION=0.8.0`, and the image a tag, as `ghcr.io/reylosql/reylo:0.8.0`.
-
 ## `reylo analyze`
 
 Prints what Reylo infers for each statement ([Inference](/inference)).
@@ -73,35 +71,50 @@ Prints what Reylo infers for each statement ([Inference](/inference)).
 
 Writes each `.sql` file's module for a language, as `#[reylo::query]` does for Rust. [Usage with Rust](/rust#codegen) covers it.
 
-## `reylo migrate` and `reylo db`
+## `reylo migrate`
 
-Write, check and run your migrations, and work on a development database. [Migrations](/migrate/docs#cli-reylo-migrate) covers each command:
+Write, check and run your migrations. [Reylo Migrate](/migrate/docs#cli-reylo-migrate) covers each command:
 
 ```terminal
-Usage: reylo <group> <command> [flags]
+Usage: reylo migrate <command> [flags]
 
 Commands:
-  migrate init             Start from this database
+  init                     Start from this database
     --schema <name>        A schema to read (Postgres; public by default)
-  migrate new <name>       Write the next migration, from schema.sql or this database
+  new <name>               Write the next migration, from schema.sql or this database
     --drop <names>         Accept what it drops: tables and columns
     --rename <old>=<new>   Say a table or column was renamed
     --blocking             Accept a statement that blocks writes while it reads every row
-  migrate dev              Take this database to the migrations, and lock them
-  migrate deploy           Run what the lock lists, with no shadow database
+  dev                      Take this database to the migrations, and lock them
+  deploy                   Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
-  migrate status           Check that this database and the files are in step
-  migrate lock             Write the lock from this database's history
-  migrate history push     Record the migrations this database's schema has
-  migrate history pull     Write the migrations this database ran into files
-  db push                  Take this database to schema.sql, unrecorded
+  status                   Check that this database and the files are in step
+  lock                     Write the lock from this database's history
+  history push             Record the migrations this database's schema has
+  history pull             Write the migrations this database ran into files
+
+Flags:
+  --url <url>              The database, in place of direct_url
+  --json                   Print the result as one JSON object
+  -h, --help               Print this help
+```
+
+## `reylo db`
+
+Push `schema.sql` to a development database, reset it, wipe it or read its schema. [Reylo Migrate](/migrate/docs#db-push) covers each command:
+
+```terminal
+Usage: reylo db <command> [flags]
+
+Commands:
+  push                     Take this database to schema.sql, unrecorded
     --drop <names>         Accept what it drops: tables and columns
     --rename <old>=<new>   Say a table or column was renamed
     --force                Accept everything it drops
     --watch                Push again on each save
-  db reset                 Rebuild this database from the migrations
-  db wipe                  Delete every row, keeping the schema
-  db introspect            Print this database's schema as SQL
+  reset                    Rebuild this database from the migrations
+  wipe                     Delete every row, keeping the schema
+  introspect               Print this database's schema as SQL
     --schema <name>        A schema to read (Postgres; public by default)
 
 Flags:
@@ -134,11 +147,4 @@ http://127.0.0.1:4983/?q=<sql>         the page, with a query in it
 GET  /api/analyze?q=<sql>               a query's Params, Returns and diagnostics
 POST /api/analyze  {"sql": "<sql>"}     the same
 GET  /api/schema                        the tables, their columns, functions and types
-```
-
-## Examples
-
-```sh
-# the playground, for an agent: no browser
-npx reylo play --no-open
 ```

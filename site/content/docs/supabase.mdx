@@ -45,13 +45,13 @@ DIRECT_URL=postgresql://postgres.<ref>:…@<pooler host>:5432/postgres
 Then point Reylo at the direct connection:
 
 ```yaml title=".reylo.yaml"
-# the direct connection or the session pooler, never port 6543
+# the direct connection or the session pooler, never the shared pooler's port 6543
 direct_url: ${DIRECT_URL:-${DATABASE_URL}}
 ```
 
 Why not the transaction pooler:
 
-- The type check prepares each query on its connection. The transaction pooler keeps nothing on a connection from one transaction to the next, so describing a query through it can fail.
+- The type check prepares each query on its session. The transaction pooler shares sessions between clients, so one client's prepared queries collide with another's, and the type check refuses the shared pooler's port 6543.
 - Copy each connection string from the Connect panel of your project's dashboard.
 - The direct connection is IPv6 only, unless your project has Supabase's IPv4 add-on. From a network without IPv6, use the session pooler.
 - With no TLS setting in the URL, the connection is encrypted, since Supabase offers TLS. To check its certificate too, download it from your project's database settings and name it in the URL ([TLS](/configuration#direct_url)).

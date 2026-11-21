@@ -105,6 +105,15 @@ test("the files a Postgres URL names are resolved from the working directory, as
   assert.equal((await hostUrl("mysql://root@h/d?ssl=true")).url, "mysql://root@h/d?ssl=true");
 });
 
+test("the engine refuses Supabase's transaction pooler before it connects, naming the session pooler, and keeps the password out of the message", async () => {
+  const [r] = await Promise.allSettled([(await engine("postgres")).open("postgresql://postgres.abc:secret@aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require")]);
+  assert.equal(r!.status, "rejected");
+  const e = (r as PromiseRejectedResult).reason as Error;
+  assert.ok(!(e instanceof Unreachable), `expected a refusal, got ${e}`);
+  assert.match(e.message, /^aws-1-us-east-1\.pooler\.supabase\.com:6543 is Supabase's transaction pooler, .*: point direct_url in \.reylo\.yaml at its session pooler, port 5432 on the same host, or at the direct connection$/);
+  assert.doesNotMatch(e.message, /secret/);
+});
+
 test("a URL that names a Unix socket is opened through a bridge, on Postgres and on MySQL", { skip: noUnixSockets || noPg || noMysql }, async () => {
   const pg = await socketFor(PG!, ".s.PGSQL.5432");
   const my = await socketFor(MYSQL!, "mysql.sock");

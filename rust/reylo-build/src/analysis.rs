@@ -313,6 +313,9 @@ async fn postgres(located: &Located, queries: &Path, sql: &str, session: &mut Se
 #[cfg(feature = "postgres")]
 async fn postgres_client<'c>(conn: &'c mut Option<Client>, url: &str) -> Result<&'c Client, Failure> {
     if conn.as_ref().map_or(true, Client::is_closed) {
+        if let Some(refusal) = reylo_engine::postgres::transaction_pooler(url) {
+            return Err(Failure::Error(refusal));
+        }
         *conn = Some(reylo_engine::postgres::open(url).await?.0);
     }
     Ok(conn.as_ref().expect("connected above"))

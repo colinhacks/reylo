@@ -947,7 +947,10 @@ async function runPostgres(c: Client, query: QueryModule<"postgres">, { text, va
   // parameter itself, so JSON text would be stored as a JSON string, and it types a boolean,
   // a number or an array of either by its JavaScript type ("cannot cast type boolean to
   // jsonb"): it gets an object whose toJSON() returns the value, which it binds as JSON and
-  // serializes to exactly its JSON text. So does an unsafe() client without typed().
+  // serializes to exactly its JSON text. So does an unsafe() client without typed(). A Bun.sql
+  // client made with `prepare: false`, as one behind a pooler in transaction mode is, learns no
+  // parameter's type and sends an object as its String() ("invalid input syntax for type json"),
+  // so it gets the JSON text, which the server reads as the parameter's type.
   const json = () => bound.map((v, i) => (isJsonParam(v, i) ? jsonText(v) : v));
   // Slonik before every other query(): its query() takes only its sql tag's queries.
   if (isSlonik(c)) return await slonik(c, text, marks, json().map(slonikParam), query.columns);
@@ -979,7 +982,9 @@ async function runPostgres(c: Client, query: QueryModule<"postgres">, { text, va
     // declared `unknown`, and postgres.js never learns its types. postgres.js 3 sends such a value
     // as it is either way. A query without inputs gets its values as they are, as on every driver.
     const bun = typeof c.commitDistributed === "function";
-    const mapped = bun ? bound.map((v, i) => (isJsonParam(v, i) ? { toJSON: () => jsonValue(v) } : v)) : query.inputs ? bound.map((v, i) => c.typed(postgresText(query, names[i]!, v), 705)) : bound;
+    // Each handle Bun.sql gives out, a transaction's, a savepoint's and a reserved connection's too, carries its client's options.
+    const bunJson = bun && c.options?.prepare === false ? jsonText : (v: unknown) => ({ toJSON: () => jsonValue(v) });
+    const mapped = bun ? bound.map((v, i) => (isJsonParam(v, i) ? bunJson(v) : v)) : query.inputs ? bound.map((v, i) => c.typed(postgresText(query, names[i]!, v), 705)) : bound;
     if (!bun) return await postgresJs(c, text, mapped, query.columns, query.row);
     return (await bunRaw(c, text, mapped, query.columns, query.row)) ?? bunRows(await c.unsafe(text, mapped), query.columns, true);
   }

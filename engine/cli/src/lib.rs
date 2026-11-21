@@ -42,7 +42,6 @@ const USAGE: &str = "Usage: reylo <command>
           [paths] [--out]   of #[reylo::query] (reylo generate --help)
   migrate <command>         Write, check and run migrations, and repair their history
   db <command>              Push schema.sql to a development database, reset, wipe or read it
-                            (reylo migrate --help lists both groups' commands)
   run \"<sql>\"… [--file <path>]…
                             Run SQL on the database as written; records nothing
   play [--port] [--no-open] Serve the playground on 127.0.0.1, against the project's database
@@ -74,30 +73,39 @@ Runs SQL on the database as written, outside any migration's history: inline tex
 --file names (-f), in the order given. The database is the type check's connection; --url names
 another.";
 
-const MIGRATE_USAGE: &str = "Usage: reylo <group> <command> [flags]
+const MIGRATE_USAGE: &str = "Usage: reylo migrate <command> [flags]
 
 Commands:
-  migrate init             Start from this database
+  init                     Start from this database
     --schema <name>        A schema to read (Postgres; public by default)
-  migrate new <name>       Write the next migration, from schema.sql or this database
+  new <name>               Write the next migration, from schema.sql or this database
     --drop <names>         Accept what it drops: tables and columns
     --rename <old>=<new>   Say a table or column was renamed
     --blocking             Accept a statement that blocks writes while it reads every row
-  migrate dev              Take this database to the migrations, and lock them
-  migrate deploy           Run what the lock lists, with no shadow database
+  dev                      Take this database to the migrations, and lock them
+  deploy                   Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
-  migrate status           Check that this database and the files are in step
-  migrate lock             Write the lock from this database's history
-  migrate history push     Record the migrations this database's schema has
-  migrate history pull     Write the migrations this database ran into files
-  db push                  Take this database to schema.sql, unrecorded
+  status                   Check that this database and the files are in step
+  lock                     Write the lock from this database's history
+  history push             Record the migrations this database's schema has
+  history pull             Write the migrations this database ran into files
+
+Flags:
+  --url <url>              The database, in place of direct_url
+  --json                   Print the result as one JSON object
+  -h, --help               Print this help";
+
+const DB_USAGE: &str = "Usage: reylo db <command> [flags]
+
+Commands:
+  push                     Take this database to schema.sql, unrecorded
     --drop <names>         Accept what it drops: tables and columns
     --rename <old>=<new>   Say a table or column was renamed
     --force                Accept everything it drops
     --watch                Push again on each save
-  db reset                 Rebuild this database from the migrations
-  db wipe                  Delete every row, keeping the schema
-  db introspect            Print this database's schema as SQL
+  reset                    Rebuild this database from the migrations
+  wipe                     Delete every row, keeping the schema
+  introspect               Print this database's schema as SQL
     --schema <name>        A schema to read (Postgres; public by default)
 
 Flags:
@@ -105,18 +113,27 @@ Flags:
   --json                   Print the result as one JSON object
   -h, --help               Print this help";
 
+/// A group's help: `reylo migrate`'s or `reylo db`'s.
+fn usage(group: &str) -> &'static str {
+    if group == "db" {
+        DB_USAGE
+    } else {
+        MIGRATE_USAGE
+    }
+}
+
 /// Every command of those groups, as it's typed.
 const COMMANDS: [&str; 12] = ["migrate init", "migrate new", "migrate dev", "migrate deploy", "migrate status", "migrate lock", "migrate history push", "migrate history pull", "db push", "db reset", "db wipe", "db introspect"];
 
 /// Names another tool gives these commands, and the one each is here.
 const ALSO_KNOWN_AS: [(&str, &str); 3] = [("create", "migrate new"), ("generate", "migrate new"), ("pull", "db introspect")];
 
-/// The help as a terminal shows it: its headings bold, each command cyan, each flag yellow and what
-/// it takes dim. Piped, it is the text alone.
-fn painted_usage() -> String {
+/// A group's help as a terminal shows it: its headings bold, each command cyan, each flag yellow and
+/// what it takes dim. Piped, it is the text alone.
+fn painted_usage(group: &str) -> String {
     use reylo_migrate::commands::paint;
     let name = regex::Regex::new(r"^(\s+)(--?[a-z-]+(?:, --[a-z-]+)?|[a-z][a-z -]*?)( <\S+)?(\s{2}.*)$").unwrap();
-    let lines = MIGRATE_USAGE.lines().map(|line| {
+    let lines = usage(group).lines().map(|line| {
         if let Some(rest) = line.strip_prefix("Usage: ") {
             return format!("{} {rest}", paint("bold", "Usage:"));
         }
@@ -252,7 +269,7 @@ fn group_command(group: &str, args: &[String]) -> Result<i32, String> {
 
 fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
     if args.is_empty() || args[0] == "help" || args.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) {
-        println!("{}", painted_usage());
+        println!("{}", painted_usage(group));
         return Ok(0);
     }
     // The words that name the command: `migrate history` takes one more.
@@ -555,17 +572,23 @@ pub fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{painted_usage, COMMANDS, MIGRATE_USAGE};
+    use super::{painted_usage, usage, COMMANDS};
 
     #[test]
     fn the_help_is_its_text_when_nothing_paints_it() {
-        assert_eq!(painted_usage(), MIGRATE_USAGE);
+        for group in ["migrate", "db"] {
+            assert_eq!(painted_usage(group), usage(group));
+        }
     }
 
     #[test]
-    fn the_help_lists_every_command() {
+    fn each_group_lists_its_own_commands() {
         for command in COMMANDS {
-            assert!(MIGRATE_USAGE.contains(&format!("  {command}  ")) || MIGRATE_USAGE.contains(&format!("  {command} <")), "{command}");
+            let (group, name) = command.split_once(' ').unwrap();
+            let help = usage(group);
+            assert!(help.contains(&format!("  {name}  ")) || help.contains(&format!("  {name} <")), "{command}");
+            let other = usage(if group == "db" { "migrate" } else { "db" });
+            assert!(!other.contains(&format!("  {name}  ")) && !other.contains(&format!("  {name} <")), "{command} is in the other group's help");
         }
     }
 }
