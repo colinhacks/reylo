@@ -125,7 +125,7 @@ import getUser from "./get_user.sql";
 const user = await getUser.run(sql, { id: 1 });
 ```
 
-```ts twoslash tab="Drizzle's driver" dialect="postgres"
+```ts twoslash tab="Drizzle Postgres" dialect="postgres"
 import { Pool } from "drizzle-orm/postgres/client";
 import getUser from "./get_user.sql";
 
@@ -472,7 +472,7 @@ try {
 }
 ```
 
-```ts twoslash tab="Drizzle's driver" dialect="postgres"
+```ts twoslash tab="Drizzle Postgres" dialect="postgres"
 import { Pool } from "drizzle-orm/postgres/client";
 import createUser from "./create_user.sql";
 
