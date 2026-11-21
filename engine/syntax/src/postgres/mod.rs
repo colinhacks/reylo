@@ -38,7 +38,7 @@ pub use pb::Node;
 pub use walk::{Context, NodeRef};
 
 /// How deep a tree [`parse`] reads, in messages.
-const PARSE_DEPTH: u32 = 1_000;
+const PARSE_DEPTH: u32 = 10_000;
 
 /// Why a statement has no tree.
 #[derive(Debug, Clone, PartialEq, Eq)]

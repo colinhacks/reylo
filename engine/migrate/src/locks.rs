@@ -576,6 +576,20 @@ mod tests {
     }
 
     #[test]
+    fn reads_an_index_on_a_deeply_nested_expression() {
+        // An unoptimized build's frames, a level each, need more than a test thread's stack.
+        let reads = std::thread::Builder::new().stack_size(64 << 20).spawn(|| {
+            let sum = vec!["n"; 521].join(" + ");
+            let index = format!("create index users_sum on users (({sum}))");
+            let files = lock_safe(&plan(&[index.as_str(), "alter table users add constraint n_pos check (n > 0)"]), &existing(&["users"])).expect("a lock-safe plan");
+            let all = files.concat();
+            assert!(all.iter().any(|s| s.starts_with("create index concurrently users_sum")));
+            assert!(all.iter().any(|s| s.contains("n_pos check (n > 0) not valid")));
+        });
+        reads.unwrap().join().unwrap();
+    }
+
+    #[test]
     fn repeats_session_settings_after_a_lone_file() {
         let files = lock_safe(&plan(&["set check_function_bodies = off", "create index i on users (n)", "create function f() returns int language sql as 'select 1'", "reset check_function_bodies"]), &existing(&["users"])).unwrap();
         assert_eq!(
