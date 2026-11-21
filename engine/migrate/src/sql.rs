@@ -470,9 +470,43 @@ re!(PG_ALONE, r"^(CREATE (UNIQUE )?INDEX CONCURRENTLY|DROP INDEX CONCURRENTLY|RE
 re!(SQLITE_ALONE, r"^(VACUUM|ATTACH|DETACH)\b");
 re!(PG_DETACH, r"^ALTER TABLE\b.*\bDETACH PARTITION\b.*\bCONCURRENTLY\b");
 re!(MYSQL_DATA, r"^(INSERT|UPDATE|DELETE|REPLACE|SELECT|WITH|DO|TABLE|VALUES|CALL|SET)\b");
-re!(MYSQL_SET_COMMITS, r"^SET (GLOBAL|PERSIST|PERSIST_ONLY|PASSWORD|DEFAULT ROLE)\b|^SET @ @ (GLOBAL|PERSIST)\b|^SET\b.*\bAUTOCOMMIT\b");
+re!(MYSQL_SET_COMMITS, r"^SET (PASSWORD|DEFAULT ROLE)\b|^SET\b.*\bAUTOCOMMIT\b");
 re!(TSQL_TRANSACTION_CONTROL, r"^(BEGIN (TRAN|TRANSACTION|DISTRIBUTED)|COMMIT|ROLLBACK|SAVE (TRAN|TRANSACTION))\b");
 re!(TSQL_ALONE, r"^((CREATE|ALTER|DROP) DATABASE|BACKUP|RESTORE|RECONFIGURE|(CREATE|ALTER|DROP) FULLTEXT (INDEX|CATALOG)|ALTER DATABASE)\b");
+
+/// The scopes of a MySQL `SET` that write the server's own settings: `GLOBAL` the running server's,
+/// `PERSIST` those and its `mysqld-auto.cnf`, `PERSIST_ONLY` the file alone.
+const MYSQL_SERVER_SCOPES: &[&str] = &["GLOBAL", "PERSIST", "PERSIST_ONLY"];
+
+/// Whether a MySQL `SET` assigns a setting of the server: a target of one of those scopes, as a
+/// keyword (`set global x`) or a prefix (`set @@global.x`), first or after a comma. A value that
+/// reads `@@global.x` assigns nothing.
+fn sets_server(statement: &Statement) -> bool {
+    let t = &statement.tokens;
+    if t.first().map(Token::upper).as_deref() != Some("SET") {
+        return false;
+    }
+    let scoped = |k: usize| t.get(k).is_some_and(|w| MYSQL_SERVER_SCOPES.contains(&w.upper().as_str()));
+    let symbol = |k: usize, text: &str| t.get(k).is_some_and(|s| s.kind == TokenKind::Symbol && s.text == text);
+    let (mut depth, mut target) = (0usize, true);
+    for k in 1..t.len() {
+        if symbol(k, "(") {
+            depth += 1;
+        } else if symbol(k, ")") {
+            depth = depth.saturating_sub(1);
+        } else if symbol(k, ",") && depth == 0 {
+            target = true;
+            continue;
+        }
+        if target {
+            if scoped(k) || (symbol(k, "@") && symbol(k + 1, "@") && scoped(k + 2) && symbol(k + 3, ".")) {
+                return true;
+            }
+            target = false;
+        }
+    }
+    false
+}
 
 /// How the statement runs on the dialect: inside the file's transaction, or not.
 pub fn kind_of(statement: &Statement, dialect: Dialect) -> Kind {
@@ -509,7 +543,7 @@ pub fn kind_of(statement: &Statement, dialect: Dialect) -> Kind {
         // transaction; every other one (DDL, account and table maintenance statements, and the SET
         // of a password, a server setting or autocommit) commits the transaction around it.
         Dialect::Mysql => {
-            if MYSQL_DATA.is_match(&h) && !MYSQL_SET_COMMITS.is_match(&h) {
+            if MYSQL_DATA.is_match(&h) && !MYSQL_SET_COMMITS.is_match(&h) && !sets_server(statement) {
                 Kind::Transactional
             } else {
                 Kind::Commits
@@ -618,7 +652,6 @@ re!(GRANT, r"^(GRANT|REVOKE)\b");
 re!(PG_GRANT_SERVER, r"\bON (DATABASE|TABLESPACE|PARAMETER)\b");
 re!(MYSQL_ACCOUNT, r"^(CREATE|ALTER|DROP|RENAME) (USER|ROLE)\b|^SET (DEFAULT ROLE|PASSWORD)\b");
 re!(MYSQL_SERVER, r"^(CREATE|ALTER|DROP) (DATABASE|SCHEMA|SERVER|TABLESPACE|LOGFILE|RESOURCE)\b");
-re!(MYSQL_SETTING, r"^SET (GLOBAL|PERSIST)\b|^SET @ @ (GLOBAL|PERSIST)\b");
 re!(MYSQL_ELSEWHERE, r"^(USE|INSTALL|UNINSTALL|FLUSH|KILL|PURGE|SHUTDOWN|RESTART|CHANGE)\b");
 re!(TSQL_SERVER, r"^(CREATE|ALTER|DROP) (LOGIN|DATABASE|ENDPOINT|CREDENTIAL|AVAILABILITY|SERVER)\b|^(USE|RECONFIGURE|SHUTDOWN|KILL|BACKUP|RESTORE)\b|^ALTER (DATABASE|SERVER|LOGIN)\b");
 
@@ -664,7 +697,7 @@ pub fn escapes_shadow(statement: &Statement, dialect: Dialect) -> Option<String>
             if MYSQL_SERVER.is_match(&h) {
                 return Some("it changes the server itself".into());
             }
-            if MYSQL_SETTING.is_match(&h) {
+            if sets_server(statement) {
                 return Some("it changes a server setting".into());
             }
             if MYSQL_ELSEWHERE.is_match(&h) {
@@ -1005,6 +1038,15 @@ mod tests {
         assert!(shadow_problem("call app.p()", Dialect::Mysql).is_some());
         assert!(shadow_problem("/*!50001 create table app.t (id int) */", Dialect::Mysql).is_some());
         assert_eq!(shadow_problem("insert t values (1); replace into t values (2); truncate t; rename table x to y, z to w; call p(); select replace(a.b, 'x', 'y') from a", Dialect::Mysql), None);
+        // A setting of the server, in each scope and spelling, first or after another assignment.
+        for set in ["set global max_connections = 10", "set persist max_connections = 10", "set persist_only max_connections = 10", "set @@global.max_connections = 10", "SET @@PERSIST_ONLY.max_connections = 10", "set sql_mode = '', global max_connections = 10", "set @a = (select 1, 2), @@persist.max_connections = 10"] {
+            assert!(shadow_problem(set, Dialect::Mysql).is_some_and(|why| why.ends_with("it changes a server setting")), "{set}");
+            assert!(atomicity_problem(&format!("{set}; insert into a values (1)"), Dialect::Mysql).is_some(), "{set}");
+        }
+        // The session's own, a user variable of a scope's name, and a value that reads the server's.
+        for set in ["set session sql_mode = ''", "set @@session.sql_mode = ''", "set @global = 1", "set @a = @@global.max_connections", "set @a = if(@b, 1, 2), @c = 3", "set names utf8mb4"] {
+            assert_eq!(shadow_problem(set, Dialect::Mysql), None, "{set}");
+        }
         // A server's database, tablespace or parameter, whose privileges belong to the server.
         assert!(shadow_problem("grant connect on database app to reporting", Dialect::Postgres).is_some());
         assert!(shadow_problem("revoke create on tablespace fast from app", Dialect::Postgres).is_some());

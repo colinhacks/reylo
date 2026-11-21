@@ -4475,8 +4475,10 @@ mod adversarial {
 
     pub async fn a_rebuild_keeps_every_row_where_foreign_keys_are_on(mut p: P) {
         // A parent, and tables that reference it every way: cascade, set null, none, at a second
-        // level, and itself; each with what a rebuild takes down and makes again.
-        let tables = |check: &str| {
+        // level, through a key that is a unique index of its own, one the plan keeps and one it
+        // renames, each naming its column's collation, and itself; each with what a rebuild takes
+        // down and makes again.
+        let tables = |check: &str, key: &str| {
             format!(
                 "create table parents (id integer primary key, boss integer references parents (id) on delete cascade, name text{check});
 create table kids (id integer primary key autoincrement, parent_id integer references parents (id) on delete cascade, note text);
@@ -4485,47 +4487,62 @@ create table pets (id integer primary key, parent_id integer references parents 
 create table chores (id integer primary key, kid_id integer references kids (id));
 create table toys (kid_id integer references kids (id) on delete cascade, name text);
 create table a_links (parent_id integer references parents (id), kid_id integer references kids (id));
+create table accounts (id integer primary key, parent_id integer references parents (id), email text not null collate nocase);
+create unique index {key} on accounts (email collate nocase);
+create table logins (id integer primary key, email text collate nocase references accounts (email) on delete cascade);
+create unique index logins_email on logins (email collate nocase);
+create table sessions (id integer primary key, email text references logins (email));
 create view kid_names as select kids.note, parents.name from kids join parents on parents.id = kids.parent_id;
 create trigger kids_note after insert on kids begin update parents set name = name where id = new.parent_id; end;"
             )
         };
-        p.schema(&tables(""));
-        p.file("20261027100000_t.sql", &tables(""));
+        p.schema(&tables("", "accounts_email"));
+        p.file("20261027100000_t.sql", &tables("", "accounts_email"));
         assert_eq!(p.dev().await, 0, "{}", p.peek());
-        p.exec("insert into parents values (1, null, 'a'), (2, 1, 'b'); insert into kids values (7, 1, 'x'), (8, 2, 'y'), (9, 2, 'z'); insert into pets values (1, 1), (2, 2); insert into chores values (1, 7), (2, 8); insert into toys values (9, 'ball'); insert into a_links values (1, 7)").await;
+        p.exec("insert into parents values (1, null, 'a'), (2, 1, 'b'); insert into kids values (7, 1, 'x'), (8, 2, 'y'), (9, 2, 'z'); insert into pets values (1, 1), (2, 2); insert into chores values (1, 7), (2, 8); insert into toys values (9, 'ball'); insert into a_links values (1, 7); insert into accounts values (1, 1, 'a@example.com'); insert into logins values (1, 'a@example.com'); insert into sessions values (1, 'a@example.com')").await;
         p.output();
-        // A check forces the parent's rebuild.
-        p.schema(&tables(", check (length(name) > 0)"));
-        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "check_name", &Default::default(), log).await).await, 0, "{}", p.peek());
-        p.output();
-        let made = p.files().into_iter().find(|f| f.ends_with("_check_name.sql")).unwrap();
-        let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
-        assert!(!sql.contains("pragma"), "{sql}");
-        // The file as any runner would run it: on a connection with foreign keys on, in a transaction.
-        let mut db = Db::connect(&p.url, &p.dir).await.unwrap();
-        assert_eq!(db.rows("pragma foreign_keys").await.unwrap()[0].first().map(|v| v.to_string()), Some("1".to_string()));
-        db.exec("begin").await.unwrap();
-        db.script(&sql).await.unwrap_or_else(|e| panic!("{e}\n{sql}"));
-        db.exec("commit").await.unwrap();
-        assert!(db.rows("pragma foreign_key_check").await.unwrap().is_empty());
-        let count = |name: String, rows: Vec<Row>| (name, rows[0].text("n").to_string());
-        for (table, n) in [("parents", "2"), ("kids", "3"), ("pets", "2"), ("chores", "2"), ("toys", "1"), ("a_links", "1")] {
-            let rows = db.rows(&format!("select count(*) as n from {table}")).await.unwrap();
-            assert_eq!(count(table.into(), rows), (table.to_string(), n.to_string()), "{sql}");
+        // A check forces the parent's rebuild, and one that names its table the rebuild that sets
+        // every row aside, since such a table can be made under no other name. Each time the key
+        // of accounts takes another name, so the plan drops it before the rebuild and makes it after.
+        for (check, name, next, key) in [(", check (length(name) > 0)", "check_name", "10", "accounts_email_2"), (", constraint named check (\"parents\".\"name\" <> '')", "check_named", "11", "accounts_email_3")] {
+            p.schema(&tables(check, key));
+            assert_eq!(p.run(async |o, log| reylo_migrate::create(o, name, &Default::default(), log).await).await, 0, "{}", p.peek());
+            p.output();
+            let made = p.files().into_iter().find(|f| f.ends_with(&format!("_{name}.sql"))).unwrap();
+            let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
+            // No pragma, and no temporary table, which a Durable Object refuses.
+            assert!(!sql.contains("pragma") && !sql.contains("temp table"), "{sql}");
+            // The file as any runner would run it: on a connection with foreign keys on, in a transaction.
+            let mut db = Db::connect(&p.url, &p.dir).await.unwrap();
+            assert_eq!(db.rows("pragma foreign_keys").await.unwrap()[0].first().map(|v| v.to_string()), Some("1".to_string()));
+            db.exec("begin").await.unwrap();
+            db.script(&sql).await.unwrap_or_else(|e| panic!("{e}\n{sql}"));
+            db.exec("commit").await.unwrap();
+            assert!(db.rows("pragma foreign_key_check").await.unwrap().is_empty());
+            let count = |name: String, rows: Vec<Row>| (name, rows[0].text("n").to_string());
+            for (table, n) in [("parents", "2"), ("kids", "3"), ("pets", "2"), ("chores", "2"), ("toys", "1"), ("a_links", "1"), ("accounts", "1"), ("logins", "1"), ("sessions", "1")] {
+                let rows = db.rows(&format!("select count(*) as n from {table}")).await.unwrap();
+                assert_eq!(count(table.into(), rows), (table.to_string(), n.to_string()), "{sql}");
+            }
+            assert_eq!(db.rows("select count(*) as n from pets where parent_id is null").await.unwrap()[0].text("n"), "0", "{sql}");
+            assert_eq!(db.rows("select count(*) as n from parents where boss = 1").await.unwrap()[0].text("n"), "1", "{sql}");
+            assert_eq!(db.rows("select count(*) as n from kid_names").await.unwrap()[0].text("n"), "3", "{sql}");
+            // AUTOINCREMENT's counter came along, and the keys still hold.
+            db.exec("insert into kids (parent_id, note) values (1, 'next')").await.unwrap();
+            assert_eq!(db.rows("select max(id) as n from kids").await.unwrap()[0].text("n"), next);
+            assert!(db.exec("insert into kids (parent_id) values (99)").await.is_err(), "the key to the new parents holds");
+            db.exec("delete from kids where note = 'next'").await.unwrap();
+            // The key that is an index stands under its own name, and nothing the rebuild made for itself is left.
+            assert!(db.exec("insert into logins values (2, 'nobody@example.com')").await.is_err(), "the key to the new accounts holds");
+            assert!(db.exec("insert into sessions values (2, 'nobody@example.com')").await.is_err(), "the key to the new logins holds");
+            assert_eq!(db.rows("select group_concat(name, ' ') as n from (select name from sqlite_master where type = 'index' and tbl_name in ('accounts', 'logins') order by name)").await.unwrap()[0].text("n"), format!("{key} logins_email"), "{sql}");
+            assert_eq!(db.rows("select count(*) as n from sqlite_master where name like 'new\\_%' escape '\\' or name like 'reylo\\_aside\\_%' escape '\\'").await.unwrap()[0].text("n"), "0", "{sql}");
+            db.close().await;
+            // The database reads as the file says, and as schema.sql does.
+            assert_eq!(p.dev().await, 0, "{}", p.peek());
+            p.output();
+            assert_eq!(p.dry_run().await, 0, "{}", p.peek());
         }
-        assert_eq!(db.rows("select count(*) as n from pets where parent_id is null").await.unwrap()[0].text("n"), "0", "{sql}");
-        assert_eq!(db.rows("select count(*) as n from parents where boss = 1").await.unwrap()[0].text("n"), "1", "{sql}");
-        assert_eq!(db.rows("select count(*) as n from kid_names").await.unwrap()[0].text("n"), "3", "{sql}");
-        // AUTOINCREMENT's counter came along, and the keys still hold.
-        db.exec("insert into kids (parent_id, note) values (1, 'next')").await.unwrap();
-        assert_eq!(db.rows("select max(id) as n from kids").await.unwrap()[0].text("n"), "10");
-        assert!(db.exec("insert into kids (parent_id) values (99)").await.is_err(), "the key to the new parents holds");
-        db.exec("delete from kids where note = 'next'").await.unwrap();
-        db.close().await;
-        // The database reads as the file says, and as schema.sql does.
-        assert_eq!(p.dev().await, 0, "{}", p.peek());
-        p.output();
-        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
 
     pub async fn a_rebuild_keeps_tables_that_reference_each_other(mut p: P) {

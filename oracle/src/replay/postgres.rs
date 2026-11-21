@@ -137,6 +137,8 @@ async fn open(url: &str, timeout_ms: u64) -> Result<Client, String> {
     tokio::spawn(connection);
     let settings = format!("SET statement_timeout = {timeout_ms}; SET timezone = 'America/Los_Angeles'; SET datestyle = 'Postgres, MDY'; SET intervalstyle = 'postgres_verbose'; SET lc_messages = 'C'; SET lc_monetary = 'C'; SET lc_numeric = 'C'; SET lc_time = 'C'; SET timezone_abbreviations = 'Default'");
     let _ = client.batch_execute(&settings).await;
+    // As the engine's own connections do, since JIT compiles its catalog queries for seconds each.
+    let _ = client.batch_execute("SET jit = off").await;
     Ok(client)
 }
 

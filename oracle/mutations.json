@@ -48,5 +48,6 @@
   { "check": "a column count that differs, on SQL Server", "statement": "sqlserver_nulls/left_join.sql", "pointer": "/columns", "value": [{ "name": "id", "type": { "kind": "integer", "bits": 32, "label": "int" } }], "problem": "typed with 1 column(s), returned 4" },
   { "check": "an integer outside its bounds, on SQL Server", "statement": "sqlserver_nulls/left_join.sql", "pointer": "/columns/0/type/max", "value": "0", "problem": "column id typed at most 0 holds" },
   { "check": "a JSON leaf of the wrong kind, on SQL Server", "statement": "sqlserver_json/object.sql", "pointer": "/columns/1/type/content/type/fields/0/type", "value": { "kind": "boolean" }, "problem": "at .id, typed as boolean" },
-  { "check": "a JSON value's null inside a document typed non-null, on SQL Server", "statement": "sqlserver_json/object.sql", "pointer": "/columns/1/type/content/type/fields/1/nullable", "value": false, "problem": "has a null at .nick, typed non-null" }
+  { "check": "a JSON value's null inside a document typed non-null, on SQL Server", "statement": "sqlserver_json/object.sql", "pointer": "/columns/1/type/content/type/fields/1/nullable", "value": false, "problem": "has a null at .nick, typed non-null" },
+  { "check": "an integer outside its bounds, on SQLite", "statement": "sqlite_row_counts/scan.sql", "pointer": "/columns/0/type/max", "value": "0", "problem": "column id typed at most 0 holds" }
 ]

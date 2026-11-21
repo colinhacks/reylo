@@ -723,6 +723,7 @@ What Reylo can't type on MySQL, and what to do instead:
 | Where in a query an error is, which MySQL doesn't say | None: the type check marks the whole query |
 | An `if` or a `case` that returns a `BIT` column, which MySQL sends as the column's bytes under a `DECIMAL` type, or as a number under a `BIT` one: it is typed `unknown` | Make the column a number first: `if(n > 0, enabled + 0, 0)` |
 | A `coalesce`, `ifnull`, `greatest`, `least` or `any_value` of `BIT` columns alone, which MySQL sends as the number's decimal digits under a `BIT` type, in a column or inside JSON: it is typed `unknown` | Make the column a number first: `coalesce(mask + 0, 0)` |
+| A `BIT` that a view, a derived table or a `WITH` query computes, which MySQL sends as bytes or as decimal digits by what computes it: read as a column, it is typed `unknown` | Make it a number where it is computed: `max(mask) + 0` |
 | A loadable function (`create function … soname`), which `information_schema` doesn't list, so `.readOnly` can't see one | Don't retry a query that calls one |
 | A query Reylo's parser can't read | None: it keeps MySQL's types, every column can be null, it returns `Row[]`, and its JSON is `Json` |
 | A query MySQL reads otherwise than Reylo's parser, by its `sql_mode` (`count (x)` without `IGNORE_SPACE`, `not` under `HIGH_NOT_PRECEDENCE`) or by a `SET_VAR` hint | None: Reylo keeps MySQL's types, every column can be null, and it has no row counts or JSON shapes |
