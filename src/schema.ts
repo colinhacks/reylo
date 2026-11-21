@@ -279,7 +279,6 @@ function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: bo
   if (codec === "geometry" && input) return { ...CODEC_SCHEMA.geometry, required: ["type"] };
   if (codec !== undefined) return CODEC_SCHEMA[codec];
   const name = bareName(t);
-  const kind = columnKind(t, dialect);
   // What the caller passes for a structured parameter: each key as a parameter of its type takes it.
   if (members !== undefined) {
     const record = t.kind === "struct" ? t : t.kind === "array" && t.element.type.kind === "struct" ? t.element.type : undefined;
@@ -327,7 +326,13 @@ function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: bo
       // A type Postgres writes as its text inside a document, or a client gets as its own (a
       // bit string, a vector), is no array here.
       // A segment and a polygon are arrays of their points outside JSON.
-      if (inJson ? (dialect === "postgres" && ["bit", "varbit", "vector", "halfvec", "sparsevec", "lseg", "polygon"].includes(name)) || (dialect === "mysql" && name === "bit") : !kind.endsWith("[]") && kind !== "lseg" && kind !== "polygon") break;
+      if (inJson) {
+        if ((dialect === "postgres" && ["bit", "varbit", "vector", "halfvec", "sparsevec", "lseg", "polygon"].includes(name)) || (dialect === "mysql" && name === "bit")) break;
+      } else {
+        // Read only here: a row's kind doubles in length with each level it nests, so a document, which may nest hundreds deep, never builds one.
+        const kind = columnKind(t, dialect);
+        if (!kind.endsWith("[]") && kind !== "lseg" && kind !== "polygon") break;
+      }
       // A result's elements may be null unless the statement shows they are not; a parameter's
       // are strict, but a structured parameter's member keeps them (src/render.ts).
       const each = typeSchema(t.element.type, dialect, input, inJson, inRow, undefined, codecs);
