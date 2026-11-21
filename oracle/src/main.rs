@@ -17,10 +17,15 @@
 //! right for it, the case's `expected-<series>.txt` (`expected-14.txt`, `expected-8.0.txt`) stands
 //! in for its `expected.txt` on that series, as `unchecked-<series>.txt` and `errors-<series>.txt`
 //! do for the others; `--bless` writes the file a run is compared with. A MySQL case's `sql_mode`
-//! file sets its sessions' `sql_mode`.
+//! file sets its sessions' `sql_mode`. A case whose `dialect` file says `clickhouse` runs in
+//! databases of its own on the ClickHouse server whose HTTP interface `--clickhouse-url` (or
+//! `ORACLE_CLICKHOUSE_URL`) names, a throwaway one too, which it refuses on ports 8123 and 8443;
+//! its `min_version` is the server's version as one number (260900 for 26.9) and its series the
+//! release (`26.9`); what its runs check is in `clickhouse.rs`.
 //!
 //!   cargo run -p reylo-oracle -- --url postgres://postgres@localhost:25432/postgres oracle/cases
 //!   cargo run -p reylo-oracle -- --mysql-url mysql://root@127.0.0.1:33411/mysql oracle/cases/mysql_types
+//!   cargo run -p reylo-oracle -- --clickhouse-url http://127.0.0.1:28123 oracle/cases/clickhouse_types
 //!   cargo run -p reylo-oracle -- --url … --bless oracle/cases/not_null   # rewrite expected.txt
 //!   cargo run -p reylo-oracle -- --url … --analyses old.json oracle/cases  # check other answers
 //!   cargo run -p reylo-oracle -- --url … --dump new.json oracle/cases      # write the answers
@@ -71,6 +76,7 @@
 //! and passes the validity rules of spec/README.md (`validity.rs`). A type that breaks one fails its
 //! case.
 
+mod clickhouse;
 mod errors;
 mod libsql;
 mod mysql;
@@ -101,6 +107,7 @@ fn main() -> ExitCode {
 async fn oracle() -> ExitCode {
     let mut url = std::env::var("ORACLE_URL").ok();
     let mut mysql_url = std::env::var("ORACLE_MYSQL_URL").ok();
+    let mut clickhouse_url = std::env::var("ORACLE_CLICKHOUSE_URL").ok();
     let mut bless = false;
     let mut keep = false;
     let mut strict_coverage = false;
@@ -116,6 +123,7 @@ async fn oracle() -> ExitCode {
         match arg.as_str() {
             "--url" => url = args.next(),
             "--mysql-url" => mysql_url = args.next(),
+            "--clickhouse-url" => clickhouse_url = args.next(),
             "--bless" => bless = true,
             "--keep" => keep = true,
             "--strict-coverage" => strict_coverage = true,
@@ -172,7 +180,7 @@ async fn oracle() -> ExitCode {
         return ExitCode::from(2);
     }
     if let Some(file) = mutate {
-        return mutations(&file, &cases, url.as_deref(), mysql_url.as_deref(), timeout_ms).await;
+        return mutations(&file, &cases, url.as_deref(), mysql_url.as_deref(), clickhouse_url.as_deref(), timeout_ms).await;
     }
     let mut failed = 0;
     let mut never_ran = 0;
@@ -180,6 +188,7 @@ async fn oracle() -> ExitCode {
     let mut dumped = Map::new();
     let mut admin: Option<(Client, Config, i32)> = None;
     let mut mysql_server: Option<mysql::Server> = None;
+    let mut clickhouse_server: Option<clickhouse::Server> = None;
     for case in &cases {
         let dialect = fs::read_to_string(case.join("dialect")).map(|s| s.trim().to_string()).unwrap_or_else(|_| "postgres".into());
         let timeout_ms = fs::read_to_string(case.join("timeout")).ok().and_then(|s| s.trim().parse::<u64>().ok()).filter(|ms| *ms > 0).unwrap_or(timeout_ms);
@@ -209,6 +218,28 @@ async fn oracle() -> ExitCode {
             let v = server.version as i32;
             on = On::new(case, format!("{}.{}", v / 10000, v / 100 % 100), v, statement_mins);
             mysql::run(case, server, keep, timeout_ms, &given, &mut dumped, on.statements(case)).await
+        } else if dialect == "clickhouse" {
+            if clickhouse_server.is_none() {
+                let Some(url) = clickhouse_url.as_deref() else {
+                    eprintln!("a ClickHouse case needs --clickhouse-url (or ORACLE_CLICKHOUSE_URL): a throwaway server, never a shared one");
+                    return ExitCode::from(2);
+                };
+                match clickhouse::connect(url) {
+                    Ok(server) => clickhouse_server = Some(server),
+                    Err(e) => {
+                        eprintln!("cannot connect to the ClickHouse server: {e}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            let server = clickhouse_server.as_mut().expect("connected above");
+            if server.version < min {
+                println!("{}: skipped (server {} < {min})", case.display(), server.version);
+                continue;
+            }
+            let v = server.version;
+            on = On::new(case, format!("{}.{}", v / 10000, v / 100 % 100), v, statement_mins);
+            clickhouse::run(case, server, keep, timeout_ms, &given, &mut dumped, on.statements(case))
         } else {
             if admin.is_none() {
                 let Some(url) = url.as_deref() else {
@@ -691,7 +722,7 @@ impl Mutation {
 
 /// Run each mutation of `file` whose case is among `cases`, and report whether the oracle reported
 /// its problem.
-async fn mutations(file: &Path, cases: &[PathBuf], url: Option<&str>, mysql_url: Option<&str>, timeout_ms: u64) -> ExitCode {
+async fn mutations(file: &Path, cases: &[PathBuf], url: Option<&str>, mysql_url: Option<&str>, clickhouse_url: Option<&str>, timeout_ms: u64) -> ExitCode {
     let entries = match Mutation::read(file) {
         Ok(entries) => entries,
         Err(e) => {
@@ -710,6 +741,7 @@ async fn mutations(file: &Path, cases: &[PathBuf], url: Option<&str>, mysql_url:
     let (mut caught, mut missed) = (0, 0);
     let mut admin: Option<(Client, Config, i32)> = None;
     let mut mysql_server: Option<mysql::Server> = None;
+    let mut clickhouse_server: Option<clickhouse::Server> = None;
     for case in cases {
         let name = case.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let mine: Vec<(usize, &Mutation)> = entries.iter().enumerate().filter(|(_, m)| m.case == name).map(|(i, m)| (i + 1, m)).collect();
@@ -735,6 +767,21 @@ async fn mutations(file: &Path, cases: &[PathBuf], url: Option<&str>, mysql_url:
                 }
             }
             mysql::mutate(case, mysql_server.as_mut().expect("connected above"), timeout_ms, &mine).await
+        } else if dialect == "clickhouse" {
+            if clickhouse_server.is_none() {
+                let Some(url) = clickhouse_url else {
+                    eprintln!("a ClickHouse case needs --clickhouse-url (or ORACLE_CLICKHOUSE_URL): a throwaway server, never a shared one");
+                    return ExitCode::from(2);
+                };
+                match clickhouse::connect(url) {
+                    Ok(server) => clickhouse_server = Some(server),
+                    Err(e) => {
+                        eprintln!("cannot connect to the ClickHouse server: {e}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            clickhouse::mutate(case, clickhouse_server.as_mut().expect("connected above"), timeout_ms, &mine)
         } else {
             if admin.is_none() {
                 let Some(url) = url else {

@@ -78,6 +78,8 @@ impl Dialect {
             "sqlite" | "file" => Ok(Dialect::Sqlite),
             // A libSQL server's database, Turso Cloud's among them, named as `@libsql/client` names it.
             "libsql" | "https" | "http" | "wss" | "ws" => Ok(Dialect::Sqlite),
+            // ClickHouse, whose statements Reylo types and whose schema it does not migrate.
+            "clickhouse+http" | "clickhouse+https" => Err(Error(format!("Reylo has no migrations for ClickHouse, which this URL names: {}", redact(url)))),
             // A bare path, or one on a Windows drive (`C:\app.db`): any other scheme names a database Reylo doesn't read.
             _ if scheme.len() <= 1 && (lower == ":memory:" || [".db", ".sqlite", ".sqlite3"].iter().any(|e| lower.ends_with(e))) => Ok(Dialect::Sqlite),
             _ => Err(Error(format!("no database for the URL's scheme: {}", redact(url)))),

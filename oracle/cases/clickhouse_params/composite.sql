@@ -1,0 +1,1 @@
+SELECT {ids:Array(UInt64)} AS ids, {holes:Array(Nullable(String))} AS holes, {deep:Array(Array(UInt8))} AS deep, {pair:Tuple(UInt64, String)} AS pair, {named:Tuple(n UInt8, s Nullable(String))} AS named, {counts:Map(String, UInt32)} AS counts, {rows:Array(Tuple(UInt64, Date))} AS rows

@@ -1,0 +1,30 @@
+{
+  "languages": {
+    "TypeScript": {
+      "language_servers": [
+        "typescript-ls",
+        "!vtsls",
+        "!typescript-language-server",
+        "..."
+      ]
+    },
+    "TSX": {
+      "language_servers": [
+        "typescript-ls",
+        "!vtsls",
+        "!typescript-language-server",
+        "..."
+      ]
+    }
+  },
+  "lsp": {
+    "typescript-ls": {
+      // the extension's own download is TypeScript 7.0, which has no content mappers
+      "binary": {
+        "path": "node_modules/typescript/bin/tsc",
+        "arguments": ["--lsp", "--stdio"]
+      },
+      "initialization_options": { "runExternalCode": true }
+    }
+  }
+}

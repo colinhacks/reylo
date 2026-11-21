@@ -31,7 +31,7 @@ version=${1:?the version to publish, as the tag names it without its v}
 agent="reylo-release (github.com/reylosql/reylo)"
 # Each crate after those it depends on. The parser crates keep their own versions, which change only
 # with what they copy.
-crates=(reylo-pg-query reylo-sqlparser reylo-engine-build reylo-engine-core reylo-engine-postgres reylo-engine-sqlite reylo-engine-mysql reylo-engine reylo-migrate reylo-build reylo-macros reylo reylo-cli)
+crates=(reylo-pg-query reylo-sqlparser reylo-engine-build reylo-engine-core reylo-engine-postgres reylo-engine-sqlite reylo-engine-mysql reylo-engine-clickhouse reylo-engine reylo-migrate reylo-build reylo-macros reylo reylo-cli)
 
 metadata=$(cargo metadata --no-deps --format-version 1 --locked)
 versions=$(python3 -c '

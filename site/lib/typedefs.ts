@@ -20,12 +20,12 @@ export const TYPEDEF = 'TypeDef';
 export const ANALYZED = 'Analyzed';
 
 /** The databases a card lists types for, in the order the docs name them. */
-export const DATABASES = ['postgres', 'mysql', 'sqlite'] as const;
+export const DATABASES = ['postgres', 'mysql', 'sqlite', 'clickhouse'] as const;
 export type Database = (typeof DATABASES)[number];
-export const DATABASE_NAMES: Record<Database, string> = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite' };
+export const DATABASE_NAMES: Record<Database, string> = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite', clickhouse: 'ClickHouse' };
 
-export type CardDialect = 'postgres' | 'mysql' | 'sqlite';
-const DIALECTS: CardDialect[] = ['postgres', 'mysql', 'sqlite'];
+export type CardDialect = 'postgres' | 'mysql' | 'sqlite' | 'clickhouse';
+const DIALECTS: CardDialect[] = ['postgres', 'mysql', 'sqlite', 'clickhouse'];
 
 export type TypeCard = {
   node: MdNode;
@@ -104,7 +104,7 @@ export function analyzedCards(tree: MdNode): AnalyzedCard[] {
     const file = attr(node, 'file');
     if (typeof file !== 'string' || !file.endsWith('.sql')) throw new Error(`${where} names its file="…sql"`);
     const dialect = (attr(node, 'dialect') ?? 'postgres') as CardDialect;
-    if (!DIALECTS.includes(dialect)) throw new Error(`${where} names dialect="${dialect}"; write postgres, mysql or sqlite`);
+    if (!DIALECTS.includes(dialect)) throw new Error(`${where} names dialect="${dialect}"; write postgres, mysql, sqlite or clickhouse`);
     const format = (attr(node, 'format') ?? 'yaml') as AnalyzedCard['format'];
     if (format !== 'yaml' && format !== 'json' && format !== 'types') throw new Error(`${where} names format="${format}"; write yaml, json or types`);
     const jq = attr(node, 'jq');

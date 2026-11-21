@@ -523,6 +523,40 @@ test("a vector is its typed array at every position outside JSON, and nothing bu
   assert.deepEqual(planOf(array(pg("vector")), "postgres", codecs), { array: "vector:float32" });
 });
 
+test("ClickHouse: a codec reaches a tuple's elements, by name and by place, an array's and a map's pairs", () => {
+  const codecs: Codecs = { decimal: "number" };
+  const decimal = { kind: "decimal", precision: 19, min_scale: 2, max_scale: 2, label: "Decimal" } as EngineType;
+  const text = { kind: "text", encoding: "UTF-8", ill_formed: true, label: "String" } as EngineType;
+  const named = { kind: "struct", fields: [{ name: "price", type: decimal }, { name: "label", type: text }] } as EngineType;
+  const unnamed = { kind: "tuple", elements: [{ type: text }, { type: decimal, nullable: true }] } as EngineType;
+  const pairs = { kind: "array", element: { type: unnamed } } as EngineType;
+  const map = { kind: "array", label: "Map", element: { type: { kind: "struct", fields: [{ name: "key", type: text }, { name: "value", type: decimal }] } } } as EngineType;
+  // One plan for a result's column and for a parameter: where in the value the decimals stand.
+  for (const param of [false, true]) {
+    assert.deepEqual(planOf(named, "clickhouse", codecs, param), { fields: { price: "decimal:number" } });
+    assert.deepEqual(planOf(unnamed, "clickhouse", codecs, param), { elements: [null, "decimal:number"] });
+    assert.deepEqual(planOf(pairs, "clickhouse", codecs, param), { array: { elements: [null, "decimal:number"] } });
+    assert.deepEqual(planOf(map, "clickhouse", codecs, param), { array: { fields: { value: "decimal:number" } } });
+  }
+  assert.equal(planOf({ kind: "tuple", elements: [{ type: text }] } as EngineType, "clickhouse", codecs), undefined);
+  // The declared types say the same.
+  assert.equal(renderType(named, false, "clickhouse", codecs), "{ price: number; label: string }");
+  assert.equal(renderType(unnamed, false, "clickhouse", codecs), "[string, number | null]");
+  assert.equal(renderType(pairs, false, "clickhouse", codecs), "([string, number | null])[]");
+  assert.equal(renderType(map, false, "clickhouse", codecs), "{ key: string; value: number }[]");
+  assert.equal(renderParamType(unnamed, "clickhouse", false, undefined, codecs), "[string, number | null]");
+  assert.equal(renderParamType(named, "clickhouse", false, undefined, codecs), "{ price: number; label: string }");
+  // A result's values, each where the plan says, and a tuple without names still the array it is.
+  assert.deepEqual(decodePlan(planOf(named, "clickhouse", codecs)!, { price: "12.34", label: "a" }, "c"), { price: 12.34, label: "a" });
+  assert.deepEqual(decodePlan(planOf(unnamed, "clickhouse", codecs)!, ["a", "1.5"], "c"), ["a", 1.5]);
+  assert.deepEqual(decodePlan(planOf(pairs, "clickhouse", codecs)!, [["a", "1.5"], ["b", null]], "c"), [["a", 1.5], ["b", null]]);
+  assert.deepEqual(decodePlan(planOf(map, "clickhouse", codecs)!, [{ key: "k", value: "3.5" }], "c"), [{ key: "k", value: 3.5 }]);
+  // A parameter's, back to the text its type reads.
+  assert.deepEqual(encodePlan(planOf(named, "clickhouse", codecs, true)!, { price: 0.25, label: "a" }, "p", "clickhouse"), { price: "0.25", label: "a" });
+  assert.deepEqual(encodePlan(planOf(pairs, "clickhouse", codecs, true)!, [["a", 1.5], ["b", null]], "p", "clickhouse"), [["a", "1.5"], ["b", null]]);
+  assert.throws(() => encodePlan(planOf(unnamed, "clickhouse", codecs, true)!, ["a", "1.5"], "p", "clickhouse"), /^TypeError: Parameter "p" takes a number, as js.codecs.decimal in the project file says; got "1.5"\.$/);
+});
+
 test("a vector's typed array holds the floats the server stores, and a parameter takes that typed array alone", () => {
   // pgvector prints each float32 as its shortest text, which reads back as the stored float.
   const read = decodeCodec("vector:float32", [0.1, 1.5, -2], "embedding") as Float32Array;

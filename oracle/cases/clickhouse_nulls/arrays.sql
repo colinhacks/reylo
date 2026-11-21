@@ -1,0 +1,1 @@
+SELECT [email, name] AS mixed, arrayMap(t -> if(t = 'a', NULL, t), tags) AS maybe_tags, arrayFilter(t -> t != '', tags) AS kept, tuple(email, age) AS pair, map(name, email) AS by_name, arrayJoin(tags) AS tag FROM users ORDER BY id, name, tag

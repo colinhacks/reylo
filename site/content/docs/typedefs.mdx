@@ -81,7 +81,7 @@ A truth value.
 
 A comparison's result is one on every database, though MySQL and SQLite deliver it as 1 or 0.
 
-<TypeDef holds={["true", "false"]} types={{"postgres": ["boolean"]}}>
+<TypeDef holds={["true", "false"]} types={{"postgres": ["boolean"], "clickhouse": ["Bool"]}}>
 
 ```jsonc
 // Any truth value
@@ -96,7 +96,7 @@ A whole number of a fixed width.
 
 Its range follows from `bits`, two's complement unless `unsigned`. A bound is always inclusive, since `x > 0` is `x >= 1`.
 
-<TypeDef holds={["-2147483648", "0", "2147483647"]} types={{"postgres": ["smallint", "integer", "bigint", "oid"], "mysql": ["tinyint", "smallint", "mediumint", "int", "bigint", "year", "boolean"], "sqlite": ["integer"]}}>
+<TypeDef holds={["-2147483648", "0", "2147483647"]} types={{"postgres": ["smallint", "integer", "bigint", "oid"], "mysql": ["tinyint", "smallint", "mediumint", "int", "bigint", "year", "boolean"], "sqlite": ["integer"], "clickhouse": ["Int8", "Int16", "Int32", "Int64", "Int128", "Int256", "UInt8", "UInt16", "UInt32", "UInt64", "UInt128", "UInt256"]}}>
 
 ```jsonc
 // A 32-bit integer
@@ -117,7 +117,7 @@ An [IEEE 754](https://en.wikipedia.org/wiki/IEEE_754) binary float.
 
 Its exponent and mantissa widths fix its range and precision, so a program picks the smallest float it has that holds both. It holds the infinities and NaN only where `infinity` and `nan` say so.
 
-<TypeDef holds={["1.5", "-0", "Infinity", "NaN"]} types={{"postgres": ["real", "double precision"], "mysql": ["float", "double"], "sqlite": ["real"]}}>
+<TypeDef holds={["1.5", "-0", "Infinity", "NaN"]} types={{"postgres": ["real", "double precision"], "mysql": ["float", "double"], "sqlite": ["real"], "clickhouse": ["Float32", "Float64", "BFloat16"]}}>
 
 ```jsonc
 // A double
@@ -138,7 +138,7 @@ An exact decimal.
 
 Its `precision` counts its digits, and its scale the digits after the point. A decimal is a number, so `1.5` and `1.50` are one value.
 
-<TypeDef holds={["1.50", "99999999.99", "NaN"]} types={{"postgres": ["numeric"], "mysql": ["decimal"]}}>
+<TypeDef holds={["1.50", "99999999.99", "NaN"]} types={{"postgres": ["numeric"], "mysql": ["decimal"], "clickhouse": ["Decimal"]}}>
 
 ```jsonc
 // Up to 10 digits, 2 after the point
@@ -154,7 +154,7 @@ Its `precision` counts its digits, and its scale the digits after the point. A d
 
 With no `encoding`, it's any valid Unicode text. An `encoding` names the character set its values are held in, from a [fixed list](#specification), and `ill_formed` lets them be any sequence of that set's code units, valid or not. `code_points` narrows the characters further. Its size counts code points unless its `unit` says otherwise, and a `pattern` is an [I-Regexp](https://www.rfc-editor.org/rfc/rfc9485) every value matches whole. A `format` names what the text is meant to be, by JSON Schema's format names or a source's own. It says nothing of the values, so a rule every value keeps is a `pattern`.
 
-<TypeDef holds={["\"ada@example.com\"", "\"happy\"", "\"\""]} types={{"postgres": ["text", "varchar", "char", "name"], "mysql": ["char", "varchar", "tinytext", "text", "mediumtext", "longtext"], "sqlite": ["text"]}}>
+<TypeDef holds={["\"ada@example.com\"", "\"happy\"", "\"\""]} types={{"postgres": ["text", "varchar", "char", "name"], "mysql": ["char", "varchar", "tinytext", "text", "mediumtext", "longtext"], "sqlite": ["text"], "clickhouse": ["String", "FixedString", "IPv4", "IPv6"]}}>
 
 ```jsonc
 // At most 255 code points
@@ -206,7 +206,7 @@ A 128-bit identifier.
 
 It holds any 128 bits, written in [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562)'s text form. Its `versions` say every value has one of those RFC 9562 versions: a UUID that `uuidv7()` or `gen_random_uuid()` makes, or a column whose `CHECK`s hold `uuid_extract_version` to one and keep it non-null. A column with a `default uuidv7()` has none, since an insert may write any UUID.
 
-<TypeDef holds={["019a6b2c-3d4e-7f80-9a1b-2c3d4e5f6071"]} types={{"postgres": ["uuid"]}}>
+<TypeDef holds={["019a6b2c-3d4e-7f80-9a1b-2c3d4e5f6071"]} types={{"postgres": ["uuid"], "clickhouse": ["UUID"]}}>
 
 ```jsonc
 // Any 128 bits
@@ -224,7 +224,7 @@ One of a list of values.
 
 Its `type` is the type of every value, and its `values` the list, each in that type's canonical text. One value makes a literal, which a constant the statement writes is: `select 'user' as kind` gives the enum of `"user"`.
 
-<TypeDef holds={["\"happy\"", "1"]} types={{"postgres": ["an enum", "a column a CHECK keeps to a list", "a constant"], "mysql": ["enum", "a constant"], "sqlite": ["a constant"]}}>
+<TypeDef holds={["\"happy\"", "1"]} types={{"postgres": ["an enum", "a column a CHECK keeps to a list", "a constant"], "mysql": ["enum", "a constant"], "sqlite": ["a constant"], "clickhouse": ["Enum8", "Enum16"]}}>
 
 ```jsonc
 // One of two strings
@@ -245,7 +245,7 @@ A calendar date.
 
 Its bounds are [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) text, with a sign and more than four digits where a year needs them. With no bounds, it runs from 0001-01-01 to 9999-12-31.
 
-<TypeDef holds={["2026-11-04", "-infinity"]} types={{"postgres": ["date"], "mysql": ["date"]}}>
+<TypeDef holds={["2026-11-04", "-infinity"]} types={{"postgres": ["date"], "mysql": ["date"], "clickhouse": ["Date", "Date32"]}}>
 
 ```jsonc
 // Any date from 0001 to 9999
@@ -296,7 +296,7 @@ A point on the timeline.
 
 It's the moment alone, as [Temporal](https://tc39.es/proposal-temporal/docs/instant.html)'s `Instant` is, written in UTC however a session prints it. Its bounds are in UTC.
 
-<TypeDef holds={["2026-11-04T17:30:00.123456Z"]} types={{"postgres": ["timestamptz"], "mysql": ["timestamp"]}}>
+<TypeDef holds={["2026-11-04T17:30:00.123456Z"]} types={{"postgres": ["timestamptz"], "mysql": ["timestamp"], "clickhouse": ["DateTime", "DateTime64"]}}>
 
 ```jsonc
 // To the microsecond, and infinity and -infinity too
@@ -347,7 +347,7 @@ Elements, in order.
 
 Each element is a slot of its own, so it says whether it may be null. An array is flat: a two-dimensional one is an array of arrays. A [pgvector](https://github.com/pgvector/pgvector) vector is an array of floats, and a set an array whose elements never repeat, `distinct`, as MySQL's `SET` is.
 
-<TypeDef holds={["[1, null, 3]", "[]"]} types={{"postgres": ["any array", "bit", "varbit", "lseg", "polygon", "vector", "halfvec"], "mysql": ["set", "bit"]}}>
+<TypeDef holds={["[1, null, 3]", "[]"]} types={{"postgres": ["any array", "bit", "varbit", "lseg", "polygon", "vector", "halfvec"], "mysql": ["set", "bit"], "clickhouse": ["Array", "Nested", "Map"]}}>
 
 ```jsonc
 // Integers, each of which may be null
@@ -368,7 +368,7 @@ Values in order, each of its own type, with no names.
 
 Its `elements` are always there. Its `optional_elements` may be missing from the end, and its `rest` takes any number after them.
 
-<TypeDef holds={["[1, \"a\"]", "[2, null]"]} types={{}}>
+<TypeDef holds={["[1, \"a\"]", "[2, null]"]} types={{"clickhouse": ["a Tuple without names", "Point"]}}>
 
 ```jsonc
 // An integer, then text that may be null
@@ -386,7 +386,7 @@ Named fields, in order.
 
 Each field is a slot with a `name`. It may be `optional`, its key left out, with a `default` the key takes when it is. A struct holds exactly its fields, unless `extra` lets it hold other keys too, each a value in its slot. A field may have a `title`.
 
-<TypeDef holds={["{ \"x\": 1, \"y\": 2 }"]} types={{"postgres": ["a composite type", "point", "line", "box", "path", "circle"]}}>
+<TypeDef holds={["{ \"x\": 1, \"y\": 2 }"]} types={{"postgres": ["a composite type", "point", "line", "box", "path", "circle"], "clickhouse": ["a Tuple with names"]}}>
 
 ```jsonc
 // A point
@@ -449,7 +449,7 @@ Rows of columns.
 
 It's what a statement returns, and its `cardinality` says how many rows: `one`, `at_most_one`, `many` or `none`. Each column is a field, never optional. Where there may be many rows, `unique` lists the sets of columns no two rows share, a table's primary key first, and `order` the columns the rows are sorted on.
 
-<TypeDef holds={["[{ \"id\": 1 }, { \"id\": 2 }]"]} types={{"postgres": ["a statement's result"], "mysql": ["a statement's result"], "sqlite": ["a statement's result"]}}>
+<TypeDef holds={["[{ \"id\": 1 }, { \"id\": 2 }]"]} types={{"postgres": ["a statement's result"], "mysql": ["a statement's result"], "sqlite": ["a statement's result"], "clickhouse": ["a statement's result"]}}>
 
 ```jsonc
 // Rows, unique by id, newest first
@@ -559,7 +559,7 @@ One of several alternatives, each named by a tag.
 
 Every value carries its tag beside the value, even where the value is null. Unlike a union's members, two alternatives may hold one type.
 
-<TypeDef holds={["{ \"tag\": \"num\", \"value\": 1 }"]} types={{}}>
+<TypeDef holds={["{ \"tag\": \"num\", \"value\": 1 }"]} types={{"clickhouse": ["Variant"]}}>
 
 ```jsonc
 // A number or text, each tagged
@@ -642,7 +642,7 @@ Always null.
 
 It stands in a nullable slot, for a value a statement always writes as null.
 
-<TypeDef holds={["null"]} types={{"postgres": ["a null the statement writes"], "mysql": ["a null the statement writes"]}}>
+<TypeDef holds={["null"]} types={{"postgres": ["a null the statement writes"], "mysql": ["a null the statement writes"], "clickhouse": ["a null the statement writes"]}}>
 
 ```jsonc
 // The field a json_build_object('a', null) writes

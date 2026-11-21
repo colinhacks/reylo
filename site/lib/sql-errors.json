@@ -53,5 +53,39 @@
         }
       ]
     }
+  },
+  "clickhouse": {
+    "ch_add_wide.sql": {
+      "eaae186fd3b928a2": [
+        {
+          "start": {
+            "line": 2,
+            "column": 37
+          },
+          "end": {
+            "line": 2,
+            "column": 59
+          },
+          "source": "reylo(10)",
+          "message": "{total:Decimal(18, 4)} is written to the column total, a Decimal(12, 2), and ClickHouse changes a value the column cannot hold into one it can, without an error. Declare the parameter as the column's type: {total:Decimal(12, 2)}."
+        }
+      ]
+    },
+    "ch_rounded.sql": {
+      "3189d1c7723c3c19": [
+        {
+          "start": {
+            "line": 1,
+            "column": 32
+          },
+          "end": {
+            "line": 1,
+            "column": 45
+          },
+          "source": "reylo(10)",
+          "message": "ClickHouse reads {scale:UInt8} as a constant here, and the result's types change with its value: column 1 (placed) has the type DateTime64(1, 'UTC') with 1 and DateTime64(2, 'UTC') with 2. Write the value in the statement."
+        }
+      ]
+    }
   }
 }

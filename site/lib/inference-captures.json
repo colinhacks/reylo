@@ -5756,5 +5756,61 @@
         }
       }
     }
+  },
+  "clickhouse": {
+    "get_user.sql": {
+      "93f8e7928d0434c8": {
+        "descriptor": {
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "integer",
+                "bits": 32,
+                "unsigned": true,
+                "label": "UInt32"
+              }
+            }
+          ],
+          "result": {
+            "kind": "table",
+            "cardinality": "at_most_one",
+            "columns": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "integer",
+                  "bits": 32,
+                  "unsigned": true,
+                  "label": "UInt32"
+                }
+              },
+              {
+                "name": "name",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "String"
+                }
+              },
+              {
+                "name": "email",
+                "type": {
+                  "kind": "text",
+                  "encoding": "UTF-8",
+                  "ill_formed": true,
+                  "label": "String"
+                },
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "rust": {
+          "error": "The Rust crate has no ClickHouse support yet: sqlx has no ClickHouse driver."
+        }
+      }
+    }
   }
 }

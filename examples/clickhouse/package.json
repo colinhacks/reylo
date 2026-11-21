@@ -1,0 +1,19 @@
+{
+  "name": "reylo-example-clickhouse",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "node --env-file-if-exists=.env setup.ts",
+    "typecheck": "tsc --noEmit --runExternalCode",
+    "start": "node --env-file-if-exists=.env --import reylo/register src/main.ts",
+    "test": "node --env-file-if-exists=.env --import reylo/register --test"
+  },
+  "dependencies": {
+    "@clickhouse/client": "^1.25.0",
+    "reylo": "link:../../dist/reylo"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.1",
+    "typescript": "7.1.0-beta"
+  }
+}

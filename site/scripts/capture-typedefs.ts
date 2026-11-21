@@ -14,6 +14,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import postgres from 'postgres';
 import mysql from 'mysql2/promise';
+import { createClient } from '@clickhouse/client';
 import { nativeBinary } from '../../src/native.ts';
 import { parsePage } from '../lib/remark-mapper.ts';
 import { analyzedCards, CAPTURES, keyOf, type AnalyzedCard, type Captures, type CardDialect } from '../lib/typedefs.ts';
@@ -23,6 +24,7 @@ const DB = 'reylo_capture_typedefs';
 const SERVERS = {
   postgres: process.env.REYLO_CAPTURE_POSTGRES ?? 'postgres://postgres@localhost:54329/reylo_capture',
   mysql: process.env.REYLO_CAPTURE_MYSQL ?? 'mysql://root@127.0.0.1:54336/reylo_capture',
+  clickhouse: process.env.REYLO_CAPTURE_CLICKHOUSE ?? 'http://127.0.0.1:54123/reylo_capture',
 };
 
 function fail(message: string): never {
@@ -31,7 +33,7 @@ function fail(message: string): never {
 }
 
 /** The server's URL with the scratch database in it, checked to be a capture's own. */
-function scratch(dialect: 'postgres' | 'mysql'): URL {
+function scratch(dialect: 'postgres' | 'mysql' | 'clickhouse'): URL {
   const u = new URL(SERVERS[dialect]);
   if (!decodeURIComponent(u.pathname.slice(1)).startsWith('reylo_capture')) fail(`${u.href} names no reylo_capture database; the capture drops and makes its databases again, so it only runs where the name says it may`);
   u.pathname = `/${DB}`;
@@ -72,6 +74,27 @@ async function build(dialect: CardDialect, schema: string, dir: string): Promise
       await conn.end();
     }
     return url.href;
+  }
+  if (dialect === 'clickhouse') {
+    const url = scratch('clickhouse');
+    const admin = new URL(url);
+    admin.pathname = '/';
+    const server = createClient({ url: admin.href });
+    try {
+      await server.command({ query: `DROP DATABASE IF EXISTS \`${DB}\`` });
+      await server.command({ query: `CREATE DATABASE \`${DB}\`` });
+    } finally {
+      await server.close();
+    }
+    const client = createClient({ url: url.href });
+    try {
+      // ClickHouse takes one statement a request: a `;` at a line's end parts two.
+      for (const statement of schema.split(/;[ \t]*$/m)) if (statement.trim()) await client.command({ query: statement });
+    } finally {
+      await client.close();
+    }
+    // A project names the database by this URL after `clickhouse+`.
+    return `clickhouse+${url.href}`;
   }
   const file = path.join(dir, `card-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
   const db = new DatabaseSync(file);

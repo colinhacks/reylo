@@ -11,6 +11,8 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@clickhouse/client": "^1.25.0",
+    "@clickhouse/client-web": "^1.25.0",
     "@cloudflare/workers-types": "^5.20260929.1",
     "@electric-sql/pglite": "^0.5.8",
     "@libsql/client": "^0.18.0",
