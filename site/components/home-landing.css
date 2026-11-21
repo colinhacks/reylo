@@ -219,6 +219,17 @@
   padding-bottom: 6rem;
 }
 
+/* On a wide window, the hero fills the window under the 4rem nav, its content centred, up to 60rem
+   tall, so a tall window doesn't spread it out. */
+@media (min-width: 1024px) {
+  .rh-hero-split {
+    min-height: min(calc(100svh - 4rem), 60rem);
+    padding-top: 4rem;
+    padding-bottom: 4rem;
+    align-content: center;
+  }
+}
+
 /* The install and "Read the docs" side by side, and the button under the command only where the
    column is too narrow for both. */
 .rh .ml-hero .ml-big {
