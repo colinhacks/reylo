@@ -86,7 +86,7 @@ impl ConcurrentAnswerer<Describe> for Answers<'_> {
 
     // A prepare dropped after its Parse is sent has no statement to close, so on a session that goes on it is left to finish.
     fn ends_session(&self, error: &HostError) -> bool {
-        self.0.is_closed() || error.0.starts_with(ENDED) || error.0.starts_with("the describe did not reach the server")
+        self.0.is_closed() || error.0.starts_with(ENDED)
     }
 }
 
