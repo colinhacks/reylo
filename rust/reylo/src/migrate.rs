@@ -104,7 +104,7 @@ impl Migrator {
         };
         // A run holds a session, which a transaction pooler shares out: its lock would stay on
         // whichever session the pooler gave it, and stop the next run.
-        if let Some(refusal) = reylo_migrate::db::transaction_pooler(&options.url, "") {
+        if let Some(refusal) = DB::transaction_pooler(&*pool.connect_options()) {
             return Err(Error::new(format!("reylo::migrate!(): {refusal}")));
         }
         let mut conn = pool.acquire().await.map_err(|e| Error::new(format!("reylo::migrate!() could not take a connection from the pool: {e}")))?;
@@ -177,6 +177,10 @@ mod private {
         /// The database's URL as a message shows it, with no password; for SQLite, the path the run
         /// lock is named after.
         fn url(options: &<Self::Connection as sqlx::Connection>::Options) -> String;
+        /// Why a run can't go through the endpoint these options connect to, read from their host and port.
+        fn transaction_pooler(_options: &<Self::Connection as sqlx::Connection>::Options) -> Option<String> {
+            None
+        }
         /// The connection, as the migrations' code runs statements on it.
         fn session(conn: sqlx::pool::PoolConnection<Self>) -> Box<dyn Session>;
     }
@@ -261,6 +265,10 @@ impl private::Hosted for sqlx::Postgres {
     const DIALECT: Dialect = Dialect::Postgres;
     fn url(o: &sqlx::postgres::PgConnectOptions) -> String {
         format!("postgres://{}@{}:{}/{}", o.get_username(), o.get_host(), o.get_port(), o.get_database().unwrap_or_default())
+    }
+    fn transaction_pooler(o: &sqlx::postgres::PgConnectOptions) -> Option<String> {
+        let shown = format!("postgres://{}:{}", o.get_host(), o.get_port());
+        reylo_migrate::db::transaction_pooler_at(o.get_host(), Some(o.get_port()), &shown, "")
     }
     fn session(conn: sqlx::pool::PoolConnection<sqlx::Postgres>) -> Box<dyn Session> {
         Box::new(Pooled(conn))

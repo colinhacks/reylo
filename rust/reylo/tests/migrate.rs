@@ -253,6 +253,8 @@ async fn a_transaction_pooler_is_refused() {
     for (url, says) in [
         ("postgres://app:secret@ep-late-darkness-bb241gty-pooler.c-15.us-east-1.aws.neon.tech/app?sslmode=require", "host ep-late-darkness-bb241gty.c-15.us-east-1.aws.neon.tech"),
         ("postgres://app.abc:secret@aws-1-us-east-1.pooler.supabase.com:6543/app?sslmode=require", "port 5432"),
+        ("postgres://app:secret@db.abc.supabase.co:6543/app?sslmode=require", "port 5432"),
+        ("postgres://ops%2Fbatch:secret@ep-late-darkness-bb241gty-pooler.c-15.us-east-1.aws.neon.tech/app?sslmode=require", "host ep-late-darkness-bb241gty.c-15.us-east-1.aws.neon.tech"),
     ] {
         let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect_lazy(url).unwrap();
         let refused = [migrator.run(&pool).await.unwrap_err().to_string(), migrator.status(&pool).await.unwrap_err().to_string()];
