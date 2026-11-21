@@ -375,6 +375,22 @@ pub fn members(cte: &Cte) -> Option<(Vec<&SetExpr>, Vec<&SetExpr>)> {
     (!anchors.is_empty()).then_some((anchors, recursive))
 }
 
+/// The WITH queries of `ctes` that `text` reads, and those they read in turn, in their order: a
+/// name anywhere in the text counts, which at most keeps one it does not read.
+pub fn read_by(ctes: &[Cte], text: &str) -> Vec<Cte> {
+    let mut text = text.to_string();
+    let mut read = vec![false; ctes.len()];
+    // A WITH query reads only those before it, so one pass from the last finds them all.
+    for (i, cte) in ctes.iter().enumerate().rev() {
+        if names_word(&text, &cte.alias.name.value) {
+            read[i] = true;
+            text.push(' ');
+            text.push_str(&cte.query.to_string());
+        }
+    }
+    ctes.iter().zip(read).filter(|(_, read)| *read).map(|(cte, _)| cte.clone()).collect()
+}
+
 /// Whether a FROM item, inside its nested joins, names `name` as a table, in any case.
 fn from_names(item: &TableWithJoins, name: &str) -> bool {
     let factor = |f: &TableFactor| match f {
@@ -616,6 +632,15 @@ mod tests {
         assert_eq!(split("with recursive r (n) as (select 1 union all select (select max(n) from r) from users) select n from r"), None);
         assert_eq!(split("with recursive r (n) as (select 1 except select n from r) select n from r"), None);
         assert_eq!(split("with recursive r (n) as (select n from r) select n from r"), None);
+    }
+
+    #[test]
+    fn a_probe_holds_only_the_with_queries_it_reads() {
+        let q = query("with a as (select 1 as x), b as (select x from a), c as (select 2 as y), d as (select 3 as z) select 1");
+        let names = |text: &str| read_by(&q.with.as_ref().unwrap().cte_tables, text).iter().map(|c| c.alias.name.value.clone()).collect::<Vec<_>>();
+        assert_eq!(names("SELECT x FROM b"), ["a", "b"]);
+        assert_eq!(names("SELECT y FROM c JOIN `d` ON true"), ["c", "d"]);
+        assert!(names("SELECT 1 FROM abc").is_empty());
     }
 
     #[test]

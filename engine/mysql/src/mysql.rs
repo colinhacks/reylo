@@ -1802,7 +1802,8 @@ fn through_derived(q: &Query, count: Option<usize>, views: &HashSet<String>, hos
 fn through_recursive(q: &Query, count: Option<usize>, views: &HashSet<String>, host: &Host, dialect: &SessionDialect, depth: usize) -> Lazy<Vec<usize>> {
     use crate::mysql_derived::{filler, hypothesis, members, read_through, reads_through};
     let Some(with) = q.with.as_ref().filter(|w| w.recursive) else { return Some(Vec::new()) };
-    if depth >= MAX_DERIVED_DEPTH || !crate::mysql_derived::is_materialized(q) || crate::mysql_derived::with_outlives_operand(q) {
+    // Each WITH query is proven by statements of its own, which may prove those it reads again.
+    if with.cte_tables.len() > MAX_DERIVED || depth >= MAX_DERIVED_DEPTH || !crate::mysql_derived::is_materialized(q) || crate::mysql_derived::with_outlives_operand(q) {
         return Some(Vec::new());
     }
     let query_of = |text: &str| match parse(dialect, text).ok().map(|mut v| (v.pop(), v.is_empty())) {
@@ -1813,8 +1814,10 @@ fn through_recursive(q: &Query, count: Option<usize>, views: &HashSet<String>, h
     let (mut copy, mut changed) = (q.clone(), false);
     for (k, cte) in with.cte_tables.iter().enumerate() {
         let Some((anchors, recursive)) = members(cte) else { continue };
-        // The WITH queries before it, which its members may read.
-        let earlier = (k > 0).then(|| ast::With { cte_tables: with.cte_tables[..k].to_vec(), ..with.clone() });
+        // The WITH queries before it that its members read.
+        let written = anchors.iter().chain(&recursive).map(|side| side.to_string()).collect::<Vec<_>>().join(" ");
+        let read = crate::mysql_derived::read_by(&with.cte_tables[..k], &written);
+        let earlier = (!read.is_empty()).then(|| ast::With { cte_tables: read, ..with.clone() });
         let anchored = anchors.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(" UNION ALL ");
         let Some(anchor) = query_of(&earlier.as_ref().map_or_else(|| anchored.clone(), |w| format!("{w} {anchored}"))) else { continue };
         let Some(proven) = prove(&anchor, None, views, host, dialect, depth + 1) else {

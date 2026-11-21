@@ -22,7 +22,7 @@ use crate::api::{MysqlColumn, MysqlDescribe};
 use crate::host::{as_str, Host, Lazy};
 use crate::mysql_params::TYPES_QUERY;
 use crate::types::Type;
-use sqlparser::ast::{Cte, Expr, ObjectNamePart, Query, Select, SelectItem, SetExpr, SetOperator, TableFactor, TableWithJoins, With};
+use sqlparser::ast::{Cte, Expr, ObjectNamePart, Query, Select, SelectItem, SelectItemQualifiedWildcardKind, SetExpr, SetOperator, TableFactor, TableWithJoins, With};
 
 /// How many derived tables, WITH queries and UNION sides deep a column is followed.
 const MAX_DEPTH: usize = 8;
@@ -54,6 +54,11 @@ impl Labels {
             (Labels::Set(a), Labels::Set(b)) => Some(Labels::Set(join(a, b))),
             _ => None,
         }
+    }
+
+    /// Whether the server's flags for a column say it is of this kind.
+    fn flagged(&self, flags: u32) -> bool {
+        flags & if matches!(self, Labels::Enum(_)) { ENUM } else { SET } != 0
     }
 
     fn of_all(all: Vec<Labels>) -> Option<Labels> {
@@ -191,6 +196,17 @@ fn reference_of(item: &SelectItem) -> Option<(Option<&str>, &str)> {
     }
 }
 
+/// The FROM item a select list of one qualified wildcard names.
+fn lone_qualifier(select: &Select) -> Option<String> {
+    match select.projection.as_slice() {
+        [SelectItem::QualifiedWildcard(SelectItemQualifiedWildcardKind::ObjectName(name), _)] => match name.0.as_slice() {
+            [ObjectNamePart::Identifier(qualifier)] => Some(qualifier.value.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// A FROM item of a query block, as the column references name it.
 enum Item {
     /// A base table or a view of the current schema, by its name.
@@ -253,9 +269,22 @@ fn items(q: &Query, select: &Select) -> Vec<(String, Item)> {
 /// The labels of the column at `position` of a query block: the column it references, in each
 /// FROM item that may hold it.
 fn select_column(q: &Query, select: &Select, position: usize, described: Option<&MysqlColumn>, host: &Host, depth: usize) -> Lazy<Option<Labels>> {
+    // The server's own description of the column, which says what the name resolved to: the
+    // catalog lists a table a TEMPORARY table of the same name hides from this session.
+    let column = match described {
+        Some(c) => c.clone(),
+        None => match host.describe(&q.to_string())? {
+            Ok(d) => match d.columns.get(position) {
+                Some(c) => c.clone(),
+                None => return Some(None),
+            },
+            Err(_) => return Some(None),
+        },
+    };
     let wildcards = select.projection.iter().any(|i| matches!(i, SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..)));
     // The column's qualifier and name: the item at its position, or behind a wildcard, which
-    // spreads no expression, the name the server gives as its origin, in any FROM item.
+    // spreads no expression, the name the server gives as its origin, in the one FROM item a lone
+    // `d.*` names, else in any.
     let (qualifier, name): (Option<String>, String) = if !wildcards {
         let Some((qualifier, name)) = select.projection.get(position).and_then(reference_of) else { return Some(None) };
         (qualifier.map(str::to_string), name.to_string())
@@ -263,20 +292,8 @@ fn select_column(q: &Query, select: &Select, position: usize, described: Option<
         if !select.projection.iter().all(|i| matches!(i, SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..)) || reference_of(i).is_some()) {
             return Some(None);
         }
-        let described = match described {
-            Some(c) => c.clone(),
-            None => match host.describe(&q.to_string())? {
-                Ok(d) => match d.columns.get(position) {
-                    Some(c) => c.clone(),
-                    None => return Some(None),
-                },
-                Err(_) => return Some(None),
-            },
-        };
-        match described.org_name.filter(|n| !n.is_empty()) {
-            Some(name) => (None, name),
-            None => return Some(None),
-        }
+        let Some(name) = column.org_name.clone().filter(|n| !n.is_empty()) else { return Some(None) };
+        (lone_qualifier(select), name)
     };
     let items = items(q, select);
     let candidates: Vec<&(String, Item)> = match &qualifier {
@@ -295,7 +312,7 @@ fn select_column(q: &Query, select: &Select, position: usize, described: Option<
         let labels = match item {
             Item::Unknown => return Some(None),
             Item::Table(table) => match table_column(table, &name, host) {
-                Some(Column::Labelled(labels)) => Some(Some(labels)),
+                Some(Column::Labelled(labels)) if labels.flagged(column.flags) => Some(Some(labels)),
                 Some(Column::Absent) if qualifier.is_none() => continue,
                 Some(_) => Some(None),
                 None => None,
@@ -383,6 +400,38 @@ mod tests {
         assert_eq!(Labels::of_all(vec![Labels::Set(s(&["x"])), Labels::Set(s(&["y"]))]), Some(Labels::Set(s(&["x", "y"]))));
         assert_eq!(Labels::of_all(vec![Labels::Enum(s(&["a"])), Labels::Set(s(&["a"]))]), None);
         assert_eq!(Labels::of_all(Vec::new()), None);
+    }
+
+    #[test]
+    fn a_table_lends_its_labels_only_to_a_column_the_server_flags() {
+        // As a session with a TEMPORARY `statuses` over a table of that name describes it: the
+        // catalog lists the table's ENUM, and the prepare reads the temporary VARCHAR.
+        let labelled = |shadowed: bool| {
+            let sql = "select val from statuses union all select val from statuses2";
+            let Some(sqlparser::ast::Statement::Query(q)) = sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::MySqlDialect {}, sql).unwrap().pop() else { panic!() };
+            let column = |ty: u32, flags: u32| serde_json::json!({ "name": "val", "type": ty, "flags": flags, "charset": 255 });
+            let raw: MysqlDescribe = serde_json::from_value(serde_json::json!({ "columns": [column(253, 1)], "params": [] })).unwrap();
+            let mut answers: std::collections::HashMap<String, crate::api::Answer> = Default::default();
+            for _ in 0..8 {
+                let host = Host::new(&answers);
+                if let Some(found) = columns(&q, &raw, &host) {
+                    return found[0].as_ref().map(Type::short);
+                }
+                for need in host.needs() {
+                    let (id, answer) = match need {
+                        crate::api::Need::Describe { id, sql } => {
+                            let described = if shadowed && sql == "SELECT val FROM statuses" { column(253, 1) } else { column(254, 257) };
+                            (id, serde_json::json!({ "mysql": { "columns": [described], "params": [] } }))
+                        }
+                        crate::api::Need::Query { id, params, .. } => (id, serde_json::json!({ "rows": [[params[0], "val", "enum", "enum('ready','done')", "", "", "utf8mb4"]] })),
+                    };
+                    answers.insert(id, serde_json::from_value(answer).unwrap());
+                }
+            }
+            panic!("the analysis never settled")
+        };
+        assert_eq!(labelled(false).as_deref(), Some("enum('ready' | 'done')"));
+        assert_eq!(labelled(true), None);
     }
 
     #[test]

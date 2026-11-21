@@ -6,6 +6,7 @@ derived_nested.sql: many () -> { r: enum('admin' | 'member') }
 derived_set.sql: many () -> { t: set{text('a' | 'b')}? }
 derived_swapped_names.sql: many () -> { b: enum('x' | 'y'), a: enum('p' | 'q') }
 derived_wildcard.sql: many () -> { id: int, role: enum('admin' | 'member'), tags: set{text('a' | 'b')}? }
+qualified_wildcard.sql: many () -> { val: enum('x' | 'y') }
 recursive_reads_enum.sql: many () -> { role: varchar }
 union_enum_and_set.sql: many () -> { role: varchar? }
 union_in_derived.sql: many () -> { r: enum('admin' | 'member' | 'draft' | 'published') }

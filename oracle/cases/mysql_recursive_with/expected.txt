@@ -17,5 +17,6 @@ shadowed_inside.sql: at_most_one () -> { n: bigint? }
 two_members.sql: many () -> { n: bigint | int, m: bigint | int? }
 two_recursive.sql: many () -> { m: bigint }
 unlisted.sql: many () -> { n: bigint | int }
+wide.sql: many () -> { n: int }
 with_in_middle_operand.sql: many () -> { n: bigint? }
 with_in_operand.sql: many () -> { n: int | bigint? }
