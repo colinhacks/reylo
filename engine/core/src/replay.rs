@@ -251,7 +251,7 @@ pub async fn run_concurrent<Db: Database, A: ConcurrentAnswerer<Db::Describe>>(s
                 None => {}
             }
         }
-        let fresh = join_all(asked.iter().map(|need| async move {
+        let fresh = join_to_first_error(asked.iter().map(|need| async move {
             match need {
                 Need::Describe { sql, .. } => answer(answerer.describe(sql).await),
                 Need::Query { sql, params, .. } => rows(answerer.query(sql, params).await),
@@ -267,28 +267,34 @@ pub async fn run_concurrent<Db: Database, A: ConcurrentAnswerer<Db::Describe>>(s
     Err(ReplayError::Unsettled)
 }
 
-/// Every future's output, in their order, the futures polled together until the last is ready.
-async fn join_all<F: Future>(futures: impl IntoIterator<Item = F>) -> Vec<F::Output> {
+/// The futures' outputs in their order, the futures polled together, up to and including the first error: it is returned once every future before it has settled, whatever the ones after it are still waiting on.
+async fn join_to_first_error<T, E, F: Future<Output = Result<T, E>>>(futures: impl IntoIterator<Item = F>) -> Vec<Result<T, E>> {
     let mut futures: Vec<std::pin::Pin<Box<F>>> = futures.into_iter().map(Box::pin).collect();
-    let mut outputs: Vec<Option<F::Output>> = futures.iter().map(|_| None).collect();
+    let mut outputs: Vec<Option<Result<T, E>>> = futures.iter().map(|_| None).collect();
     std::future::poll_fn(|cx| {
-        let mut pending = false;
         for (future, output) in futures.iter_mut().zip(outputs.iter_mut()) {
             if output.is_none() {
-                match future.as_mut().poll(cx) {
-                    std::task::Poll::Ready(value) => *output = Some(value),
-                    std::task::Poll::Pending => pending = true,
+                if let std::task::Poll::Ready(value) = future.as_mut().poll(cx) {
+                    *output = Some(value);
                 }
             }
         }
-        if pending {
-            std::task::Poll::Pending
-        } else {
-            std::task::Poll::Ready(())
+        match outputs.iter().find(|output| !matches!(output, Some(Ok(_)))) {
+            Some(None) => std::task::Poll::Pending,
+            _ => std::task::Poll::Ready(()),
         }
     })
     .await;
-    outputs.into_iter().map(|output| output.expect("every future is ready")).collect()
+    let mut settled = Vec::with_capacity(outputs.len());
+    for output in outputs {
+        let Some(output) = output else { break };
+        let failed = output.is_err();
+        settled.push(output);
+        if failed {
+            break;
+        }
+    }
+    settled
 }
 
 #[cfg(test)]
@@ -476,6 +482,43 @@ mod tests {
         let mut counting = Counting::default();
         ready(run_async::<Toy, _>("select 1", &mut counting, &mut cache)).unwrap();
         assert_eq!((counting.describes, counting.queries), (0, 0));
+    }
+
+    /// A host that loses the connection on one of Toy's two needs: on the describe with the query never answered, or on the query after the describe is answered.
+    struct Lost {
+        on_describe: bool,
+    }
+
+    impl ConcurrentAnswerer<String> for Lost {
+        type Error = String;
+        fn describe(&self, sql: &str) -> impl Future<Output = Result<Result<String, DbError>, String>> + Send {
+            let answered = if self.on_describe { Err("connection lost".to_string()) } else { Ok(Ok(format!("described {sql}"))) };
+            async move { answered }
+        }
+        fn query(&self, _sql: &str, _params: &[Value]) -> impl Future<Output = Result<Result<Vec<Vec<Value>>, DbError>, String>> + Send {
+            let on_describe = self.on_describe;
+            async move {
+                if on_describe {
+                    std::future::pending::<()>().await;
+                }
+                Err("connection lost".to_string())
+            }
+        }
+    }
+
+    #[test]
+    fn a_lost_host_ends_the_concurrent_replay_without_waiting_for_the_round() {
+        let mut cache = AnswerCache::default();
+        match settled(run_concurrent::<Toy, _>("select 1", &Lost { on_describe: true }, &mut cache)) {
+            Err(ReplayError::Host(e)) => assert_eq!(e, "connection lost"),
+            other => panic!("expected the host's error, got {:?}", other.map(|a| a.diagnostics)),
+        }
+        // An answer before the lost one is kept.
+        let mut cache = AnswerCache::default();
+        assert!(matches!(settled(run_concurrent::<Toy, _>("select 1", &Lost { on_describe: false }, &mut cache)), Err(ReplayError::Host(_))));
+        let mut counting = Counting::default();
+        ready(run_async::<Toy, _>("select 1", &mut counting, &mut cache)).unwrap();
+        assert_eq!((counting.describes, counting.queries), (0, 1));
     }
 
     #[test]
