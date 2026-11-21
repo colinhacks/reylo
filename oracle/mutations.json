@@ -39,5 +39,6 @@
   { "check": "a column a driver reads by another name, on SQLite", "statement": "sqlite_row_counts/scan.sql", "pointer": "/columns/1/name", "value": "label", "problem": "columns are declared [\"id\", \"label\", \"email\"]" },
   { "check": "a JSON leaf of the wrong kind, on SQLite", "statement": "sqlite_json/scalars.sql", "pointer": "/columns/0/type/content/type/fields/0/type", "value": { "kind": "text" }, "problem": "holds 1 at .i, typed text" },
   { "check": "a JSON value inside built JSON that is JSON's null, on SQLite", "statement": "sqlite_json/json_null.sql", "pointer": "/columns/0/type/content/type/fields/0/nullable", "value": false, "problem": "has a null at .k, typed non-null" },
-  { "check": "the empty state, on SQLite", "statement": "sqlite_lone_aggregate/whole_table.sql", "pointer": "/columns/1/nullable", "value": false, "problem": "column m typed non-null is NULL with (; every table empty)" }
+  { "check": "the empty state, on SQLite", "statement": "sqlite_lone_aggregate/whole_table.sql", "pointer": "/columns/1/nullable", "value": false, "problem": "column m typed non-null is NULL with (; every table empty)" },
+  { "check": "an integer outside its bounds, on SQLite", "statement": "sqlite_row_counts/scan.sql", "pointer": "/columns/0/type/max", "value": "0", "problem": "column id typed at most 0 holds" }
 ]

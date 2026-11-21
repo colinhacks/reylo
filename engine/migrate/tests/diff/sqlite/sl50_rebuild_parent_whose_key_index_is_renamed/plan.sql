@@ -1,0 +1,12 @@
+drop index users_email;
+create table new_users (id integer primary key, email text not null, name text check (length(name) > 0));
+create table new_logins (id integer primary key, email text references new_users (email));
+create unique index new_users_email on new_users (email);
+insert into new_users (id, email, name) select id, email, name from users;
+insert into new_logins (id, email) select id, email from logins;
+drop table logins;
+drop table users;
+alter table new_users rename to users;
+alter table new_logins rename to logins;
+drop index new_users_email;
+create unique index users_email_v2 on users (email);
