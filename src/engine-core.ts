@@ -7,7 +7,7 @@ import { Unreachable } from "./connection.ts";
 import type { EngineType } from "./engine-type.ts";
 
 export type { EngineType } from "./engine-type.ts";
-export type Dialect = "postgres" | "sqlite" | "mysql" | "clickhouse";
+export type Dialect = "postgres" | "sqlite" | "mysql";
 
 /** A diagnostic as Reylo's own tools read it: its place in UTF-8 bytes, Reylo's code, and the database's own code where the database raised it (`server_code`). */
 export type Diagnostic = { message: string; start: number; length: number; code: number; server_code?: string };
@@ -61,8 +61,7 @@ export type Analysis = {
   /** `cast`: a `::type` written on MySQL or SQLite, which the run time checks a value against (src/rows.ts). `members`: a structured parameter's column list as written, by field. `delimiter`: what separates an array's elements in its text, where it is not a comma. */
   /** `comment`: the comment the database keeps on the column a parameter is written to (or, on MySQL, compared with), and on the table column a result column reads as it is; the declaration prints it as the field's doc comment. */
   params: { name: string; type: EngineType; nullable?: boolean; optional?: boolean; comment?: string; schema?: import("./engine-type.ts").JsonSchema; cast?: string; delimiter?: string; members?: { written: string; schema?: import("./engine-type.ts").JsonSchema }[] }[];
-  /** `described`: a ClickHouse column's type as the server names it, which the run time holds each result's against (src/decode-clickhouse.ts). */
-  columns: { name: string; type: EngineType; nullable?: boolean; comment?: string; delimiter?: string; described?: string }[];
+  columns: { name: string; type: EngineType; nullable?: boolean; comment?: string; delimiter?: string }[];
   cardinality: "one" | "at_most_one" | "many" | "none";
   /** What running the statement may do, an upper bound (spec/index.ts, `Capabilities`); absent where nothing is said. */
   capabilities?: import("../spec/index.ts").Capabilities;

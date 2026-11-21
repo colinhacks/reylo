@@ -1,1 +1,0 @@
-ALTER TABLE orders ADD COLUMN z UInt8

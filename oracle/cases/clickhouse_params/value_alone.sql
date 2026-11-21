@@ -1,1 +1,0 @@
-SELECT {x:UInt8}

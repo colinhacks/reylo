@@ -347,7 +347,7 @@ jobs:
     environment: crates
     runs-on: ubuntu-latest
     name: Publish the Rust crates
-    # 14 crates, each waiting for crates.io's index to list the one before it, and its rate if it refuses one
+    # 13 crates, each waiting for crates.io's index to list the one before it, and its rate if it refuses one
     timeout-minutes: 90
     permissions:
       id-token: write

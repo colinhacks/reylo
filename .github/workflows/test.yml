@@ -64,8 +64,8 @@ jobs:
           # the docs claim.
           everything() {
             echo engine=true
-            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine-clickhouse -p reylo-engine -p reylo-migrate -p reylo-cli -p reylo-oracle -p reylo-build -p reylo --features reylo/mysql,reylo/sqlite'
-            echo "shards=[\"postgres\",\"sqlite\",\"mysql-1\",\"mysql-2\",\"mysql-slow\",\"clickhouse\"${1-}]"
+            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-migrate -p reylo-cli -p reylo-oracle -p reylo-build -p reylo --features reylo/mysql,reylo/sqlite'
+            echo "shards=[\"postgres\",\"sqlite\",\"mysql-1\",\"mysql-2\",\"mysql-slow\"${1-}]"
             echo playground=true
           }
           if [ "$SCOPE" = changed ]; then
@@ -87,13 +87,12 @@ jobs:
             everything >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          postgres=false mysql=false sqlite=false clickhouse=false binary=false rust=false
+          postgres=false mysql=false sqlite=false binary=false rust=false
           while read -r file; do
             case "$file" in
               engine/postgres/*) postgres=true ;;
               engine/mysql/* | oracle/cases/mysql_*) mysql=true ;;
               engine/sqlite/* | oracle/cases/sqlite_*) sqlite=true ;;
-              engine/clickhouse/* | oracle/cases/clickhouse_*) clickhouse=true ;;
               engine/cli/*) binary=true ;;
               # The migrations, which the Rust crate's reylo::migrate!() runs from an app too.
               engine/migrate/*) binary=true rust=true ;;
@@ -106,7 +105,6 @@ jobs:
           $postgres && { tests="$tests -p reylo-engine-postgres"; shards="$shards,\"postgres\""; }
           $sqlite && { tests="$tests -p reylo-engine-sqlite"; shards="$shards,\"sqlite\""; }
           $mysql && { tests="$tests -p reylo-engine-mysql"; shards="$shards,\"mysql-1\",\"mysql-2\",\"mysql-slow\""; }
-          $clickhouse && { tests="$tests -p reylo-engine-clickhouse"; shards="$shards,\"clickhouse\""; }
           # The binary's own crates, the migrations and the command line, which link every database.
           $binary && tests="$tests -p reylo-migrate -p reylo-cli"
           # The Rust crate on each of its databases, whose own tests (tests/migrate.rs) run on all three.
@@ -163,7 +161,7 @@ jobs:
     needs: binary
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Throwaway servers for the tests that run statements, on ports clear of the defaults and below Linux's ephemeral range (32768 to 60999), where a connection made before a server starts can take its port: the loader's tests skip each database whose URL is unset, and this job fails on any skip. Postgres 18 is pgvector's image of it, Postgres 18 with the extension installed, which a spec example's statement reads (spec/examples.ts). ClickHouse is 26.8, its long-term-support release, reached over HTTP; the image opens its default user to the network only with a password.
+    # Throwaway servers for the tests that run statements, on ports clear of the defaults and below Linux's ephemeral range (32768 to 60999), where a connection made before a server starts can take its port: the loader's tests skip each database whose URL is unset, and this job fails on any skip. Postgres 18 is pgvector's image of it, Postgres 18 with the extension installed, which a spec example's statement reads (spec/examples.ts).
     services:
       postgres:
         image: pgvector/pgvector:pg18
@@ -187,22 +185,9 @@ jobs:
           --health-interval 2s
           --health-timeout 5s
           --health-retries 60
-      clickhouse:
-        image: clickhouse/clickhouse-server:26.8
-        env:
-          CLICKHOUSE_PASSWORD: reylo
-        ports:
-          - 28123:8123
-        options: >-
-          --health-cmd "clickhouse-client --password reylo --query 'SELECT 1'"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 60
-          --ulimit nofile=262144:262144
     env:
       REYLO_TEST_PG: postgres://postgres@127.0.0.1:25432/postgres
       REYLO_TEST_MYSQL: mysql://root@127.0.0.1:23306
-      REYLO_TEST_CLICKHOUSE: http://default:reylo@127.0.0.1:28123
       REYLO_TEST_PG_TLS: postgres://postgres:reylo@127.0.0.1:25434/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -213,7 +198,7 @@ jobs:
         run: |
           read -r low high < /proc/sys/net/ipv4/ip_local_port_range
           echo "ephemeral range: $low to $high"
-          for port in 25432 23306 25434 28123; do
+          for port in 25432 23306 25434; do
             [ "$port" -lt "$low" ] || { echo "::error::port $port is inside the ephemeral range $low to $high"; exit 1; }
           done
       # A Postgres that takes TLS and asks for a password, as a hosted one does, for the test of channel
@@ -424,7 +409,7 @@ jobs:
 
   # The soundness oracle (oracle/): every statement of oracle/cases is analyzed by the engine's sources and
   # run on live servers over seeded edge values, and a value that contradicts its inferred type or row count
-  # fails the case. The cases run in shards side by side: Postgres's, SQLite's, ClickHouse's, and MySQL's in three, one of
+  # fails the case. The cases run in shards side by side: Postgres's, SQLite's, and MySQL's in three, one of
   # them mysql_types alone, which takes as long as half the others together. Where no change is being checked
   # (scope above), two more run every case of a database on the oldest version the docs claim, Postgres 14
   # and MySQL 8.0.38, skipping what a case's min_version says that version lacks. Postgres runs on the
@@ -455,19 +440,6 @@ jobs:
           --health-interval 2s
           --health-timeout 5s
           --health-retries 60
-      clickhouse:
-        # No container for a shard without ClickHouse's cases.
-        image: ${{ matrix.shard == 'clickhouse' && 'clickhouse/clickhouse-server:26.8' || '' }}
-        env:
-          CLICKHOUSE_PASSWORD: reylo
-        ports:
-          - 28123:8123
-        options: >-
-          --health-cmd "clickhouse-client --password reylo --query 'SELECT 1'"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 60
-          --ulimit nofile=262144:262144
     env:
       PG_MAJOR: ${{ matrix.shard == 'postgres-14' && '14' || '18' }}
       PG_BIN: /usr/lib/postgresql/${{ matrix.shard == 'postgres-14' && '14' || '18' }}/bin
@@ -549,14 +521,14 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
         run: |
-          # A case's database is its name's prefix (`mysql_`, `sqlite_`, `clickhouse_`, Postgres's none), as its `dialect` file says.
+          # A case's database is its name's prefix (`mysql_`, `sqlite_`, Postgres's none), as its `dialect` file says.
           cases='' n=0
           for dir in oracle/cases/*/; do
             name=${dir%/}
             name=${name##*/}
-            case "$name" in mysql_*) dialect=mysql ;; sqlite_*) dialect=sqlite ;; clickhouse_*) dialect=clickhouse ;; *) dialect=postgres ;; esac
+            case "$name" in mysql_*) dialect=mysql ;; sqlite_*) dialect=sqlite ;; *) dialect=postgres ;; esac
             case "$SHARD" in
-              postgres | sqlite | clickhouse) [ "$dialect" != "$SHARD" ] || cases="$cases ${dir%/}" ;;
+              postgres | sqlite) [ "$dialect" != "$SHARD" ] || cases="$cases ${dir%/}" ;;
               postgres-14) [ "$dialect" != postgres ] || cases="$cases ${dir%/}" ;;
               mysql-8.0) [ "$dialect" != mysql ] || cases="$cases ${dir%/}" ;;
               mysql-slow) [ "$name" != mysql_types ] || cases="$cases ${dir%/}" ;;
@@ -571,7 +543,6 @@ jobs:
           case "$SHARD" in
             postgres*) servers="--url postgres://postgres@localhost:25432/postgres" ;;
             sqlite) servers='' ;;
-            clickhouse) servers="--clickhouse-url http://default:reylo@127.0.0.1:28123" ;;
             *) servers="--mysql-url mysql://root@127.0.0.1:23306" ;;
           esac
           echo "cases=$cases" >> "$GITHUB_OUTPUT"
@@ -620,18 +591,6 @@ jobs:
           --health-interval 2s
           --health-timeout 5s
           --health-retries 60
-      clickhouse:
-        image: clickhouse/clickhouse-server:26.8
-        env:
-          CLICKHOUSE_PASSWORD: reylo
-        ports:
-          - 28123:8123
-        options: >-
-          --health-cmd "clickhouse-client --password reylo --query 'SELECT 1'"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 60
-          --ulimit nofile=262144:262144
     env:
       PG_BIN: /usr/lib/postgresql/19/bin
       # Postgres 19, and the libraries the cached PostGIS links at run time, GEOS, PROJ and json-c, which the
@@ -642,7 +601,6 @@ jobs:
       CARGO_INCREMENTAL: "0"
       REYLO_TEST_PG: postgres://postgres@127.0.0.1:25432/postgres
       REYLO_TEST_MYSQL: mysql://root@127.0.0.1:23306
-      REYLO_TEST_CLICKHOUSE: http://default:reylo@127.0.0.1:28123
       REYLO_TEST_PG_TLS: postgres://postgres:reylo@127.0.0.1:25434/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -716,7 +674,7 @@ jobs:
         run: |
           cases=''
           for dir in oracle/cases/*/; do
-            case "${dir%/}" in */mysql_* | */sqlite_* | */clickhouse_*) ;; *) cases="$cases ${dir%/}" ;; esac
+            case "${dir%/}" in */mysql_* | */sqlite_*) ;; *) cases="$cases ${dir%/}" ;; esac
           done
           # shellcheck disable=SC2086
           cargo run -q -p reylo-oracle -- --url postgres://postgres@localhost:25432/postgres --strict-coverage $cases

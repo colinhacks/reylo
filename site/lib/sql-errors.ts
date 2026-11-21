@@ -14,7 +14,7 @@ import { hashOf } from './remark-mapper.ts';
 // import, and the capture refuses one that has no error.
 
 /** lib/sql-errors.json: dialect, then file name, then the hash of the block's text, then its errors as the editor places them. */
-export type Errors = Partial<Record<'postgres' | 'mysql' | 'sqlite' | 'clickhouse', Record<string, Record<string, Diagnostic[]>>>>;
+export type Errors = Partial<Record<'postgres' | 'mysql' | 'sqlite', Record<string, Record<string, Diagnostic[]>>>>;
 
 /** A `sql` block whose meta says `errors`: an example of a statement that fails. */
 export const isErrorExample = (node: { lang?: string | null; meta?: string | null }) => (node.lang ?? 'sql') === 'sql' && /(?:^|\s)errors(?:\s|$)/.test(node.meta ?? '');
@@ -32,7 +32,7 @@ export const withErrors = (text: string, errors: Diagnostic[]) => [...errors.map
 type Node = { type: string; name?: string | null; lang?: string | null; meta?: string | null; value?: string; attributes?: { type: string; name?: string; value?: unknown }[]; data?: Record<string, unknown>; children?: Node[] };
 type Example = { node: Node & { value: string }; parent: Node; name: string | undefined; dialect: keyof Errors; hash: string; line: number };
 
-const DIALECT_NAME = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite', clickhouse: 'ClickHouse' } as const;
+const DIALECT_NAME = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite' } as const;
 
 const jsx = (name: string, attributes: [string, string | null][], children: Node[]): Node => ({
   type: 'mdxJsxFlowElement',
@@ -99,7 +99,7 @@ const metaOf = (meta: string, name: string) => new RegExp(`(?:^|\\s)${name}="([^
 function exampleMarkdown(fence: string, meta: string, text: string, captured: Errors): string {
   const name = metaOf(meta, 'tab') ?? metaOf(meta, 'file') ?? metaOf(meta, 'title');
   const dialect = metaOf(meta, 'dialect') ?? 'postgres';
-  const dialects = (dialect === 'all' ? Object.keys(DIALECT_NAME) : dialect.split(',').map((d) => d.trim())) as (keyof Errors)[];
+  const dialects = (dialect === 'all' ? Object.keys(DIALECT_NAME) : [dialect]) as (keyof Errors)[];
   const hash = hashOf(text);
   const lines: { dialects: string[]; text: string }[] = [];
   for (const d of dialects) {

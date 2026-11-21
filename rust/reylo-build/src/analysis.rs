@@ -153,7 +153,6 @@ impl Dialect {
             "postgres" | "postgresql" => Ok(Dialect::Postgres),
             "sqlite" | "file" => Ok(Dialect::Sqlite),
             "mysql" => Ok(Dialect::Mysql),
-            "clickhouse+http" | "clickhouse+https" => Err("the Rust crate runs its queries on sqlx, which has no ClickHouse driver: type ClickHouse's statements with the npm package `reylo`".into()),
             other => Err(format!("cannot tell the database from the URL's scheme {other:?}: reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs")),
         }
     }

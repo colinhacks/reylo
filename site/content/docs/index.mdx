@@ -115,33 +115,6 @@ create table events (
 ) strict;
 ```
 
-```sql file="schema.sql" tab="ClickHouse" tab-group="dialect"
-CREATE TABLE users (
-  id UInt32,                             -- no unique key: say LIMIT 1
-  name String,                           -- name: string
-  email Nullable(String),                -- email: string | null
-  role Enum8('admin' = 1, 'member' = 2)  -- role: "admin" | "member"
-    DEFAULT 'member',
-  tags Array(String),                    -- tags: string[]
-  created_at DateTime64(3, 'UTC')        -- created_at: string
-    DEFAULT now64(3)
-) ENGINE = MergeTree ORDER BY id;
-
-CREATE TABLE posts (
-  id UInt32,
-  user_id UInt32,
-  title String,
-  body Nullable(String),
-  published_at Nullable(DateTime64(3, 'UTC'))
-) ENGINE = MergeTree ORDER BY id;
-
-CREATE TABLE events (
-  id UInt32,
-  kind Enum8('click' = 1, 'key' = 2),    -- kind: "click" | "key"
-  payload String                         -- payload: string, JSON text
-) ENGINE = MergeTree ORDER BY id;
-```
-
 ```sql title="get_author.sql"
 select u.id, u.name, count(p.id)::int as post_count
 from users u
@@ -172,11 +145,7 @@ Reylo infers type information about both the parameters and the return types. Th
 
 <InferenceCard>
 
-```sql file="get_user.sql" dialect="clickhouse"
-SELECT id, name, email FROM users WHERE id = {id:UInt32} LIMIT 1
-```
-
-```sql file="get_user.sql" dialect="postgres,mysql,sqlite"
+```sql file="get_user.sql" dialect="all"
 select id, name, email from users where id = :id::int
 ```
 
@@ -190,8 +159,8 @@ Reylo gets type information about a query by sending it to a *live dev database*
 - 🌵 **DRY** — no redundant hand-written types
 - 🎯 **Checked against your database** — a misspelled column is a compile error
 - 🤖 **Agent-friendly** — DRY code is more maintainable for agents
-- 🧩 **Postgres, MySQL, SQLite and ClickHouse** — Neon, PlanetScale, Cloudflare D1, Turso and more
-- 🔌 **Your own driver** — `pg`, postgres.js, `mysql2`, `better-sqlite3`, `@clickhouse/client` and [more](/typescript#run) in TypeScript<Rust>, sqlx in Rust</Rust>
+- 🧩 **Postgres, MySQL and SQLite** — Neon, PlanetScale, Cloudflare D1, Turso and more
+- 🔌 **Your own driver** — `pg`, postgres.js, `mysql2`, `better-sqlite3` and [more](/typescript#run) in TypeScript<Rust>, sqlx in Rust</Rust>
 
 </div>
 

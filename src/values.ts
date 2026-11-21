@@ -28,7 +28,7 @@
 // reached through `globalThis` where one exists.
 import { bareName, isMysqlSet, type EngineType } from "./engine-type.ts";
 
-export type Dialect = "postgres" | "mysql" | "sqlite" | "clickhouse";
+export type Dialect = "postgres" | "mysql" | "sqlite";
 
 /** A scalar value's representation. */
 export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "money" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "hstore" | Geometric | "enum" | "set" | "geometry" | "unknown";
@@ -47,7 +47,7 @@ export function given(from: Record<string, unknown>, name: string): unknown {
 
 /** A column's kind as a module carries it: a scalar kind, `k[]` for an array of `k`, `a|b` for either, `(…)` for a Postgres row value of the fields it lists, `range:k` and `multirange:k` for a range of `k` and a multirange. */
 export type Kind = string;
-/** The output columns a module carries, in the statement's order; an array's `delimiter` where it is not a comma, or on ClickHouse, which has none, the column's type as the server names it. */
+/** The output columns a module carries, in the statement's order; an array's `delimiter` where it is not a comma. */
 export type Columns = readonly (readonly [name: string, kind: Kind, delimiter?: string])[];
 
 /**

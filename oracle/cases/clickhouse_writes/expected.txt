@@ -1,8 +1,0 @@
-alter_delete.sql: none (before: Date) -> {  }
-alter_update.sql: none (note: String(UTF-8, ill-formed)?, id: UInt64) -> {  }
-delete_where.sql: none (id: UInt64) -> {  }
-insert_from_array.sql: none (rows: (UInt64, UInt64, Decimal(18,2))[]) -> {  }
-insert_select.sql: none (offset: UInt64, least: Decimal(18,2)) -> {  }
-insert_several.sql: none (a: UInt64, b: UInt64) -> {  }
-insert_values.sql: none (id: UInt64, user: UInt64, total: Decimal(18,2), note: String(UTF-8, ill-formed)?, placed: Date) -> {  }
-read_back.sql: many () -> { id: UInt64, user_id: UInt64, total: Decimal(19,2), note: String(UTF-8, ill-formed)? }

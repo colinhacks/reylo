@@ -1,6 +1,6 @@
 # Reylo examples
 
-One complete, working project for each setup the [docs](https://reylo.dev/#setup) describe, and one on ClickHouse, whose parameters and client are its own. Each imports `.sql` files as typed queries, type-checks them against a live database, and runs them in every mode its tool has: a dev server, a production build, a bundle, a test runner. They are the models to copy when you set Reylo up in a project of your own, and each README's "How Reylo is wired in" section lists every line Reylo needs.
+One complete, working project for each setup the [docs](https://reylo.dev/#setup) describe. Each imports `.sql` files as typed queries, type-checks them against a live database, and runs them in every mode its tool has: a dev server, a production build, a bundle, a test runner. They are the models to copy when you set Reylo up in a project of your own, and each README's "How Reylo is wired in" section lists every line Reylo needs.
 
 | Example | Setup | Database and driver | What runs |
 | --- | --- | --- | --- |
@@ -14,9 +14,8 @@ One complete, working project for each setup the [docs](https://reylo.dev/#setup
 | [rspack](./rspack) | `reylo/webpack` ([Rspack](https://reylo.dev/#setup-rspack)) | Postgres, pg | an HTTP server, bundled into one ES module |
 | [jest](./jest) | `reylo/jest` ([Jest](https://reylo.dev/#setup-jest)) | SQLite, better-sqlite3 | Jest, in an ES module run and a CommonJS run |
 | [cloudflare-workers](./cloudflare-workers) | `reylo/vite` beside the Cloudflare Vite plugin | SQLite, Cloudflare D1 (the local database wrangler keeps) and a Durable Object's own database | a Worker in workerd: `vite dev`, the build and `vite preview`, Vitest inside workerd, and `wrangler deploy --dry-run`, all without a Cloudflare account |
-| [clickhouse](./clickhouse) | `node --import reylo/register`, on [ClickHouse](https://reylo.dev/clickhouse) | ClickHouse, `@clickhouse/client` | a script, and tests with Node's test runner |
 
-Every example has the same two tables, `users` and `posts`, and the same three queries: `get_user.sql` (a row or `null`), `list_posts.sql` (an array) and `create_post.sql` (an insert). The ClickHouse example has a fourth, `delete_post.sql`, which removes what its tests insert where the others roll a transaction back. Every one also carries the editor settings of [Editors](https://reylo.dev/#editors) for VS Code, Cursor and Zed.
+Every example has the same two tables, `users` and `posts`, and the same three queries: `get_user.sql` (a row or `null`), `list_posts.sql` (an array) and `create_post.sql` (an insert). Every one also carries the editor settings of [Editors](https://reylo.dev/#editors) for VS Code, Cursor and Zed.
 
 ## Using one in your own project
 

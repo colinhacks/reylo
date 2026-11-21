@@ -40,14 +40,5 @@
   { "check": "a JSON leaf of the wrong kind, on SQLite", "statement": "sqlite_json/scalars.sql", "pointer": "/columns/0/type/content/type/fields/0/type", "value": { "kind": "text" }, "problem": "holds 1 at .i, typed text" },
   { "check": "a JSON value inside built JSON that is JSON's null, on SQLite", "statement": "sqlite_json/json_null.sql", "pointer": "/columns/0/type/content/type/fields/0/nullable", "value": false, "problem": "has a null at .k, typed non-null" },
   { "check": "the empty state, on SQLite", "statement": "sqlite_lone_aggregate/whole_table.sql", "pointer": "/columns/1/nullable", "value": false, "problem": "column m typed non-null is NULL with (; every table empty)" },
-  { "check": "an integer outside its bounds, on SQLite", "statement": "sqlite_row_counts/scan.sql", "pointer": "/columns/0/type/max", "value": "0", "problem": "column id typed at most 0 holds" },
-  { "check": "a type a value contradicts, on ClickHouse", "statement": "clickhouse_nulls/left_join.sql", "pointer": "/columns/1/type", "value": { "kind": "enum", "type": { "kind": "text" }, "values": ["z"] }, "problem": "column name typed as one of [\"z\"] holds" },
-  { "check": "a column typed non-null that is NULL, on ClickHouse", "statement": "clickhouse_nulls/left_join.sql", "pointer": "/columns/3/nullable", "value": false, "problem": "column note holds NULL, typed non-null" },
-  { "check": "a row count beyond one, on ClickHouse", "statement": "clickhouse_nulls/left_join.sql", "pointer": "/cardinality", "value": "one", "problem": "row(s), typed one" },
-  { "check": "a row count beyond at_most_one, on ClickHouse", "statement": "clickhouse_nulls/left_join.sql", "pointer": "/cardinality", "value": "at_most_one", "problem": "rows, typed at most one" },
-  { "check": "none that returns a row, on ClickHouse", "statement": "clickhouse_nulls/left_join.sql", "pointer": "/cardinality", "value": "none", "problem": "row(s), typed none" },
-  { "check": "a column count that differs, on ClickHouse", "statement": "clickhouse_nulls/left_join.sql", "pointer": "/columns", "value": [], "problem": "returned 5 column(s), typed 0" },
-  { "check": "a column the server names otherwise, on ClickHouse", "statement": "clickhouse_nulls/left_join.sql", "pointer": "/columns/1/name", "value": "label", "problem": "column name is typed as \"label\"" },
-  { "check": "a column whose type the server names otherwise, on ClickHouse", "statement": "clickhouse_nulls/left_join.sql", "pointer": "/columns/1/described", "value": "UInt8", "problem": "column name came back as a String, typed UInt8" },
-  { "check": "the empty state, on ClickHouse", "statement": "clickhouse_nulls/aggregates.sql", "pointer": "/columns/6/nullable", "value": false, "problem": "column last_or_null holds NULL, typed non-null (with than = 0; every table empty)" }
+  { "check": "an integer outside its bounds, on SQLite", "statement": "sqlite_row_counts/scan.sql", "pointer": "/columns/0/type/max", "value": "0", "problem": "column id typed at most 0 holds" }
 ]
