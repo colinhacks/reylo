@@ -49,6 +49,21 @@ pub trait AsyncAnswerer<D> {
     fn query(&mut self, sql: &str, params: &[Value]) -> impl Future<Output = Result<Result<Vec<Vec<Value>>, DbError>, Self::Error>> + Send;
 }
 
+/// [`AsyncAnswerer`] for a client that takes several requests at once, as a tokio-postgres client
+/// pipelines the statements it is given together over its one connection. [`run_concurrent`] asks
+/// each round's needs together, so a round waits about one round trip to the server rather than one
+/// per need, which is most of an analysis's time on a server far from the host.
+pub trait ConcurrentAnswerer<D> {
+    /// As [`Answerer::Error`].
+    type Error;
+
+    /// As [`Answerer::describe`].
+    fn describe(&self, sql: &str) -> impl Future<Output = Result<Result<D, DbError>, Self::Error>> + Send;
+
+    /// As [`Answerer::query`].
+    fn query(&self, sql: &str, params: &[Value]) -> impl Future<Output = Result<Result<Vec<Vec<Value>>, DbError>, Self::Error>> + Send;
+}
+
 /// Why a replay ended without an analysis.
 #[derive(Debug)]
 pub enum ReplayError<E> {
@@ -217,6 +232,65 @@ pub async fn run_async<Db: Database, A: AsyncAnswerer<Db::Describe>>(sql: &str, 
     Err(ReplayError::Unsettled)
 }
 
+/// [`run_async`] for a [`ConcurrentAnswerer`]: the needs of a round that the cache does not answer
+/// are asked together, and each is kept in the cache as it would be one at a time.
+pub async fn run_concurrent<Db: Database, A: ConcurrentAnswerer<Db::Describe>>(sql: &str, answerer: &A, cache: &mut AnswerCache<Db::Describe>) -> Result<Analysis, ReplayError<A::Error>> {
+    let mut answers: Answers<Db::Describe> = HashMap::new();
+    for _ in 0..ROUNDS {
+        let needs = match round::<Db>(sql, &mut answers).map_err(ReplayError::Engine)? {
+            Round::Done(analysis) => return Ok(*analysis),
+            Round::Needs(needs) => needs,
+        };
+        let mut asked: Vec<Need> = Vec::new();
+        for need in needs {
+            match cache.get(&need).cloned() {
+                Some(known) => {
+                    answers.insert(id(&need).to_string(), known);
+                }
+                None if asked.iter().all(|other| id(other) != id(&need)) => asked.push(need),
+                None => {}
+            }
+        }
+        let fresh = join_all(asked.iter().map(|need| async move {
+            match need {
+                Need::Describe { sql, .. } => answer(answerer.describe(sql).await),
+                Need::Query { sql, params, .. } => rows(answerer.query(sql, params).await),
+            }
+        }))
+        .await;
+        for (need, fresh) in asked.iter().zip(fresh) {
+            let fresh = fresh?;
+            cache.put(need, &fresh);
+            answers.insert(id(need).to_string(), fresh);
+        }
+    }
+    Err(ReplayError::Unsettled)
+}
+
+/// Every future's output, in their order, the futures polled together until the last is ready.
+async fn join_all<F: Future>(futures: impl IntoIterator<Item = F>) -> Vec<F::Output> {
+    let mut futures: Vec<std::pin::Pin<Box<F>>> = futures.into_iter().map(Box::pin).collect();
+    let mut outputs: Vec<Option<F::Output>> = futures.iter().map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        let mut pending = false;
+        for (future, output) in futures.iter_mut().zip(outputs.iter_mut()) {
+            if output.is_none() {
+                match future.as_mut().poll(cx) {
+                    std::task::Poll::Ready(value) => *output = Some(value),
+                    std::task::Poll::Pending => pending = true,
+                }
+            }
+        }
+        if pending {
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(())
+        }
+    })
+    .await;
+    outputs.into_iter().map(|output| output.expect("every future is ready")).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +414,68 @@ mod tests {
             Err(ReplayError::Host(e)) => assert_eq!(e, "connection lost"),
             other => panic!("expected the host's error, got {:?}", other.map(|a| a.diagnostics)),
         }
+    }
+
+    /// Answers that come only once every need of Toy's round, its describe and its query, has been
+    /// asked: a host that waits on each answer before it asks the next never gets one.
+    #[derive(Default)]
+    struct Together {
+        asked: std::sync::atomic::AtomicUsize,
+        answered: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Together {
+        fn once_both_asked<'a, T: Send + 'a>(&'a self, value: T) -> impl Future<Output = T> + Send + 'a {
+            use std::sync::atomic::Ordering::SeqCst;
+            let mut value = Some(value);
+            let mut counted = false;
+            std::future::poll_fn(move |_| {
+                if !counted {
+                    counted = true;
+                    self.asked.fetch_add(1, SeqCst);
+                }
+                if self.asked.load(SeqCst) < 2 {
+                    return std::task::Poll::Pending;
+                }
+                self.answered.fetch_add(1, SeqCst);
+                std::task::Poll::Ready(value.take().expect("polled after it was ready"))
+            })
+        }
+    }
+
+    impl ConcurrentAnswerer<String> for Together {
+        type Error = String;
+        fn describe(&self, sql: &str) -> impl Future<Output = Result<Result<String, DbError>, String>> + Send {
+            self.once_both_asked(Ok(Ok(format!("described {sql}"))))
+        }
+        fn query(&self, _sql: &str, _params: &[Value]) -> impl Future<Output = Result<Result<Vec<Vec<Value>>, DbError>, String>> + Send {
+            self.once_both_asked(Ok(Ok(vec![vec![json!("18.0")]])))
+        }
+    }
+
+    /// Polls a future until it is ready, for answers that are ready once others have been asked.
+    fn settled<T>(future: impl Future<Output = T>) -> T {
+        let mut future = std::pin::pin!(future);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        for _ in 0..8 {
+            if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+                return value;
+            }
+        }
+        panic!("the replay waited on an answer that comes only once the round's other needs are asked")
+    }
+
+    #[test]
+    fn the_concurrent_replay_asks_a_rounds_needs_together() {
+        let host = Together::default();
+        let mut cache = AnswerCache::default();
+        let analysis = settled(run_concurrent::<Toy, _>("select 1", &host, &mut cache)).unwrap();
+        assert_eq!(said(&analysis), "described select 1 | \"18.0\"");
+        assert_eq!(host.answered.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // Both answers kept, as the one-at-a-time replay keeps them.
+        let mut counting = Counting::default();
+        ready(run_async::<Toy, _>("select 1", &mut counting, &mut cache)).unwrap();
+        assert_eq!((counting.describes, counting.queries), (0, 0));
     }
 
     #[test]
