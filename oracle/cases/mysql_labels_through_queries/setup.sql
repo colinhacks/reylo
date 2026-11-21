@@ -13,3 +13,5 @@ create table e3 (a enum('p') not null, b enum('q') not null);
 create table e4 (a enum('r') not null, b enum('s') not null);
 insert into e3 values ('p', 'q');
 insert into e4 values ('r', 's');
+create table `a\?b` (v enum('x', 'y') not null);
+insert into `a\?b` values ('x');

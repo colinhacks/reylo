@@ -377,7 +377,16 @@ enum Column {
 /// A column as the session's own `SHOW COLUMNS` has it, which reads the table the name resolves to:
 /// `information_schema` lists a table a TEMPORARY table of the same name hides.
 fn table_column(table: &str, column: &str, host: &Host) -> Lazy<Column> {
+    // A host writes a value at each `?` of a catalog query, so a name holding one cannot be asked about.
+    if table.contains('?') {
+        return Some(Column::Unknown);
+    }
     let sql = format!("SHOW COLUMNS FROM `{}`", table.replace('`', "``"));
+    // A host stops the analysis on a catalog query the server refuses, and answers a prepare with
+    // the error: what the server will not show leaves the column's labels unread.
+    if host.describe(&sql)?.is_err() {
+        return Some(Column::Unknown);
+    }
     let Ok(rows) = host.query(&sql, Vec::new(), Scope::Statement)? else { return Some(Column::Unknown) };
     if rows.is_empty() {
         return Some(Column::Unknown);
