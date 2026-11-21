@@ -323,6 +323,11 @@ pub struct Plan {
     /// Columns kept whose change of type can lose what their values hold without failing, each the
     /// column's id and what it loses ("changes from … to …, which …"), for `--drop` to accept.
     pub narrowings: Vec<(String, String)>,
+    /// Columns it drops while adding one to the same table, alone there, of another family of types
+    /// (text to a date): never renamed unless `--rename` says so, but as much a question as a rename
+    /// it guesses. Each the old column's id, the new one's name, what else changes (`text → date`),
+    /// and what a rename's change of type would lose, where it loses something.
+    pub pairs: Vec<(String, String, String, Option<String>)>,
 }
 
 /// A statement of a plan that commits the transaction and begins the next: what follows uses what
@@ -748,12 +753,18 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     // times…): renamed, its type changed as the new one's (a change that loses values still needs
     // --drop). Across families (text to a date), they are two columns unless --rename says so.
     let tables: BTreeSet<&String> = gone.iter().map(|(_, (t, _))| t).filter(|t| to.objects.contains_key(*t)).collect();
+    // Across families, the one that goes and the one that comes, which the person settles.
+    let mut across: Vec<(String, String)> = Vec::new();
     for table in tables {
         let paired_old: BTreeSet<&String> = decided.values().map(|(old, _)| old).collect();
         let left: Vec<&String> = gone.iter().filter(|(id, (t, _))| t == table && !dropped.contains(id) && !stated.contains(id) && !paired_old.contains(id)).map(|(id, _)| id).collect();
         let came: Vec<&String> = come.iter().filter(|(id, (t, _))| t == table && !decided.contains_key(id)).map(|(id, _)| id).collect();
-        if left.len() == 1 && came.len() == 1 && family(&from.objects[left[0]].def) == family(&to.objects[came[0]].def) {
-            decided.insert(came[0].clone(), (left[0].clone(), false));
+        if left.len() == 1 && came.len() == 1 {
+            if family(&from.objects[left[0]].def) == family(&to.objects[came[0]].def) {
+                decided.insert(came[0].clone(), (left[0].clone(), false));
+            } else if parent_of(&from.objects[table.as_str()]).is_none() {
+                across.push((left[0].clone(), came[0].clone()));
+            }
         }
     }
     follow(&mut decided, &mut followers);
@@ -1661,6 +1672,13 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     }
 
     let mut plan = Plan::default();
+    // A pair across families, where a rename could change the column's type in place.
+    for (old_id, new_id) in &across {
+        let (a, b) = (&from.objects[old_id], &to.objects[new_id]);
+        if alterer.alter(a, b).is_some() {
+            plan.pairs.push((old_id.clone(), last_written(new_id), definition_change(&a.def, &b.def), alterer.narrows(a, b)));
+        }
+    }
     // A column kept, or renamed, whose type changes so that values are lost without failing.
     for (id, a) in from.objects.iter().filter(|(_, o)| o.kind == Some(Kind::Column)) {
         let to_id = renames.iter().find(|(_, (old, _))| old == id).map(|(new, _)| new).unwrap_or(id);
