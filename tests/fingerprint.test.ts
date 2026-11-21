@@ -74,8 +74,8 @@ function sourceHash(crate: string): bigint {
   return hash;
 }
 
-/** The crates of its own a database's engine builds on, whose hashes its fingerprint combines after its own: MySQL's copy of `sqlparser`. */
-const BUILDS_ON: Record<string, string[]> = { mysql: ["mysql/vendor/sqlparser"] };
+/** The crates of its own a database's engine builds on, whose hashes its fingerprint combines after its own: Postgres's parser and MySQL's copy of `sqlparser`. */
+const BUILDS_ON: Record<string, string[]> = { postgres: ["syntax"], mysql: ["mysql/vendor/sqlparser"] };
 
 /** `reylo_engine_core::fingerprint::combine` of core's hash, the database crate's and each crate it builds on: FNV-1a over their little-endian bytes. */
 function fingerprint(database: string): string {

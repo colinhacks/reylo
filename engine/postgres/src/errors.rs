@@ -376,7 +376,7 @@ pub fn calls_nothing_volatile(body: &str, host: &Host) -> Lazy<bool> {
 }
 
 fn only_reads(sql: &str, volatile_reads: &[&str], host: &Host) -> Lazy<bool> {
-    use pg_query::protobuf::node::Node as N;
+    use syntax::postgres::protobuf::node::Node as N;
     let Ok(parsed) = analyze::analyze(sql) else { return Some(false) };
     let Ok(tree) = crate::stack::parse(sql) else { return Some(false) };
     let Some(N::SelectStmt(select)) = tree.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) else { return Some(false) };

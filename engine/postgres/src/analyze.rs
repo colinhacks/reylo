@@ -1,11 +1,11 @@
-//! Statement analysis over the real parse tree (libpg_query). Statement kind, locking,
+//! Statement analysis over Postgres's parse tree. Statement kind, locking,
 //! read/write sets, called functions, and the columns each parameter is written to whole.
 //!
 //! The parse tree is walked as generic JSON (the protobuf types serialize), so every
 //! clause — including LIMIT, VALUES, and ON CONFLICT — is reached; the crate's own typed
 //! traversal covers only a subset of node types.
 
-use pg_query::protobuf::{self, node::Node as NodeEnum};
+use syntax::postgres::protobuf::{self, node::Node as NodeEnum};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -629,16 +629,16 @@ pub fn relation_name(schema: &str, relname: &str) -> String {
 fn relations(tree: &protobuf::ParseResult) -> (Vec<String>, Vec<String>) {
     let nodes = tree.nodes();
     let ctes: Vec<&String> = nodes.iter().filter_map(|(node, ..)| match node {
-        pg_query::NodeRef::CommonTableExpr(c) => Some(&c.ctename),
+        syntax::postgres::NodeRef::CommonTableExpr(c) => Some(&c.ctename),
         _ => None,
     }).collect();
     let (mut read, mut written): (Vec<String>, Vec<String>) = Default::default();
     for (node, _, context, _) in &nodes {
         match node {
-            pg_query::NodeRef::RangeVar(v) => {
+            syntax::postgres::NodeRef::RangeVar(v) => {
                 let list = match *context {
-                    pg_query::Context::Select if !(v.schemaname.is_empty() && ctes.contains(&&v.relname)) => &mut read,
-                    pg_query::Context::DML => &mut written,
+                    syntax::postgres::Context::Select if !(v.schemaname.is_empty() && ctes.contains(&&v.relname)) => &mut read,
+                    syntax::postgres::Context::DML => &mut written,
                     _ => continue,
                 };
                 list.push(relation_name(&v.schemaname, &v.relname));
@@ -705,7 +705,7 @@ fn direct_param_number(wrapper: &Value) -> Option<i32> {
     None
 }
 
-/// libpg_query error strings carry a location suffix worth keeping, but strip the noisy prefix.
+/// Parser error strings carry a location suffix worth keeping, but strip the noisy prefix.
 fn clean_parse_error(msg: &str) -> String {
     msg.trim_start_matches("Error { message: \"").trim_end_matches("\" }").to_string()
 }

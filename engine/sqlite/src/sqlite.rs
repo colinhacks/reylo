@@ -2979,7 +2979,7 @@ impl Analyzer<'_> {
     }
 
     /// The proof for one SELECT arm, its set operation aside: the closure of [`Self::determined`],
-    /// as `cardinality` proves it over libpg_query's tree. Every FROM item determined is one row
+    /// as `cardinality` proves it over Postgres's tree. Every FROM item determined is one row
     /// at most; one group at most when every GROUP BY expression is pinned; one row at most from
     /// a DISTINCT over pinned values.
     fn arm_at_most_one(&self, sel: &Sel) -> Result<(), String> {

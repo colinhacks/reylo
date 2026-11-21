@@ -6,26 +6,16 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Reylo's analysis engine for Postgres: libpg_query's parse tree, the type registry, the expression rules, the row-count proof, the nested JSON shapes and the handshake with a server-side extension, over the core's protocol."
+description = "Reylo's analysis engine for Postgres: Postgres's parse tree, the type registry, the expression rules, the row-count proof, the nested JSON shapes and the handshake with a server-side extension, over the core's protocol."
 
 [lib]
 name = "reylo_engine_postgres"
 
 [build-dependencies]
 reylo-engine-build.workspace = true
-bindgen = "0.72"
-cc = "1"
 
 [dependencies]
 reylo-engine-core.workspace = true
-pg_query.workspace = true
-prost = { version = "0.13", features = ["no-recursion-limit"] }
+syntax.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
-
-# `pg_query` is `reylo-pg-query`, the Postgres 18 parser: upstream's `pg-18` branch at a pinned
-# commit with the patch in `vendor/` (WebAssembly, and fixes no release carries yet), which
-# `../build.sh --prepare` fetches and applies into `.patched/pg_query` and which publishes as a crate
-# of its own. The engine reads libpg_query's tree from its C nodes (`src/raw.rs`, with bindings and
-# converters `build.rs` generates from the headers that crate's directory holds); `pg_query::parse`,
-# whose prost decoding has its recursion limit lifted here, is only the tests' reference for that tree.

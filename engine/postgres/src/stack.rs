@@ -1,17 +1,15 @@
-//! libpg_query on the engine's stack ([`reylo_engine_core::stack`]), and how deeply a statement it
+//! Postgres's parser on the engine's stack ([`reylo_engine_core::stack`]), and how deeply a statement it
 //! parses may nest for the engine to read it.
 
-pub use crate::raw::Parsed;
+pub use syntax::postgres::ParseResult as Parsed;
 pub use reylo_engine_core::stack::{host, nested, run, MAX_DEPTH, STACK_BYTES};
 
-/// Whether a parse error is the refusal of a tree deeper than [`MAX_DEPTH`] (`crate::raw`), or
-/// of one libpg_query's stack check stopped (which the engine's stack leaves to a host that could not start a
-/// thread for it).
+/// Whether a parse error is the refusal of a tree deeper than [`MAX_DEPTH`].
 pub fn too_deep(error: &str) -> bool {
-    error.contains("nested too deeply") || error.contains("stack depth limit exceeded")
+    error.contains("nested too deeply")
 }
 
-/// Parse `sql` with libpg_query, on the engine's stack. Every parse of the engine and of a host
+/// Parse `sql`, on the engine's stack. Every parse of the engine and of a host
 /// that reads the tree itself comes through here: the reading of the tree is the deepest recursion
 /// of an analysis, and a caller that is not on the engine's stack (a helper on a tokio worker) gets the
 /// room for it all the same. The tree comes back to the caller, whose own walks over it take far
@@ -20,11 +18,11 @@ pub fn too_deep(error: &str) -> bool {
 /// An analysis reads one statement, and each probe of it, many times over, and a host replays it
 /// round after round, so the trees of the last statements parsed are kept by their text: a copy
 /// of one costs a fraction of the parse.
-pub fn parse(sql: &str) -> pg_query::Result<Parsed> {
+pub fn parse(sql: &str) -> syntax::postgres::Result<Parsed> {
     if let Some(tree) = PARSED.with(|kept| kept.borrow().iter().find(|(text, _)| text == sql).map(|(_, tree)| tree.clone())) {
         return Ok(tree);
     }
-    let tree = run(|| crate::raw::parse(sql))?;
+    let tree = run(|| syntax::postgres::parse_at_most(sql, MAX_DEPTH as u32).map(|protobuf| Parsed { protobuf }))?;
     PARSED.with(|kept| {
         let mut kept = kept.borrow_mut();
         if kept.len() >= KEPT {
@@ -60,9 +58,9 @@ thread_local! {
     static PARSED: std::cell::RefCell<Vec<(String, Parsed)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Print a tree back to SQL with libpg_query, on the engine's stack (see [`parse`]).
-pub fn deparse(tree: &pg_query::protobuf::ParseResult) -> pg_query::Result<String> {
-    run(|| crate::raw::deparse(tree))
+/// Print a tree back to SQL with the deparser, on the engine's stack (see [`parse`]).
+pub fn deparse(tree: &syntax::postgres::protobuf::ParseResult) -> syntax::postgres::Result<String> {
+    run(|| syntax::postgres::deparse(tree, Default::default()))
 }
 
 /// The deepest statement of each shape that parses under [`MAX_DEPTH`].
@@ -98,7 +96,7 @@ mod tests {
     #[test]
     fn a_statement_past_the_bound_is_refused_where_its_tree_is_read() {
         let error = parse(&nested("sum", 497)).err().map(|e| e.to_string()).unwrap_or_default();
-        assert!(error.contains(crate::raw::TOO_DEEP), "{error}");
+        assert!(error.contains("parse tree is nested too deeply to read"), "{error}");
         assert!(too_deep(&error));
         assert!(!too_deep("syntax error at or near \"selec\""));
     }

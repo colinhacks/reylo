@@ -39,7 +39,7 @@
 //! is a boolean, and `reylo_html` is text. Postgres already describes every type, so there the
 //! rules only ever settle nullability.
 //!
-//! SQLite has no parse tree of its own to offer, so both dialects are read with libpg_query, the
+//! SQLite has no parse tree of its own to offer, so both dialects are read with Postgres's grammar, the
 //! parser `jsonshape` already reads SQLite statements with. What it cannot parse, and what parses
 //! as something the rules do not recognise, proves nothing.
 //!
@@ -53,7 +53,7 @@ use crate::levels::{Columns, Level, Withs};
 use crate::pgtypes::oid;
 use crate::resolution::{Kind, Operand, Shared};
 use crate::returning::Rows;
-use pg_query::protobuf::{self, node::Node as NodeEnum, Node, ParseResult, RawStmt, SelectStmt};
+use syntax::postgres::protobuf::{self, node::Node as NodeEnum, Node, ParseResult, RawStmt, SelectStmt};
 use std::collections::{HashMap, HashSet};
 
 /// The operators whose Postgres built-ins return a value for every pair of non-null operands (or
@@ -251,7 +251,7 @@ pub fn postgres_function_names() -> Vec<&'static str> {
     }
     names
 }
-/// SQLite's cast targets with a type of their own, by the name libpg_query gives them
+/// SQLite's cast targets with a type of their own, by the name Postgres's parser gives them
 /// (`INTEGER` parses as `int4`, `REAL` as `float4`). A cast to anything else still carries its
 /// argument's nullability on SQLite, but not a type: `CAST(x AS NUMERIC)` may be either class.
 const SQLITE_CASTS: &[(&str, u32)] = &[
@@ -263,7 +263,7 @@ const SQLITE_CASTS: &[(&str, u32)] = &[
     ("text", oid::TEXT),
     ("varchar", oid::VARCHAR),
 ];
-/// Postgres's built-in cast targets by the name libpg_query gives them, so a cast names its type
+/// Postgres's built-in cast targets by the name Postgres's parser gives them, so a cast names its type
 /// for a rule that reads one ([`Expr::Guarded`]). A target outside the list proves its argument's
 /// nullability as before and names no type.
 const POSTGRES_CASTS: &[(&str, u32)] = &[
@@ -645,7 +645,7 @@ impl Trust {
 }
 
 /// Read one rewritten statement's expression columns. SQLite's `?n` placeholders are read as
-/// `$n`, which is how libpg_query spells one; nothing runs against the database here.
+/// `$n`, which is how Postgres spells one; nothing runs against the database here.
 pub fn plan(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> Plan {
     crate::stack::run(|| plan_here(sql, dialect, trust, columns))
 }

@@ -16,7 +16,7 @@
 //! source does not match (`WHEN NOT MATCHED BY SOURCE`) returns rows with no source row at all.
 
 use crate::levels::{Columns, Level, Withs};
-use pg_query::protobuf::{self, node::Node as NodeEnum, CmdType, ColumnRef, MergeMatchKind, Node, ReturningOptionKind};
+use syntax::postgres::protobuf::{self, node::Node as NodeEnum, CmdType, ColumnRef, MergeMatchKind, Node, ReturningOptionKind};
 use serde_json::Value;
 
 /// One of the two rows, by the name RETURNING reads it by.

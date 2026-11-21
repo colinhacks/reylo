@@ -13,7 +13,7 @@ use crate::db::Db;
 use crate::diff::postgres::quote_ident;
 use crate::diff::Plan;
 use crate::{Dialect, Error};
-use pg_query::protobuf::{node::Node as N, AlterTableType as At, ConstrType, RangeVar};
+use syntax::postgres::protobuf::{node::Node as N, AlterTableType as At, ConstrType, RangeVar};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The plain tables of `db` (not partitioned ones, where neither `not valid` foreign keys nor
@@ -41,13 +41,13 @@ fn named(r: &RangeVar) -> String {
 
 /// The one statement `sql` holds, parsed.
 fn parsed(sql: &str) -> Option<N> {
-    let result = pg_query::parse(sql, 0).ok()?;
+    let result = syntax::postgres::parse(sql, 0).ok()?;
     let [raw] = result.protobuf.stmts.as_slice() else { return None };
     raw.stmt.as_ref()?.node.clone()
 }
 
 /// The columns of a constraint's key, where each is a plain column.
-fn key_columns(keys: &[pg_query::protobuf::Node]) -> Option<Vec<String>> {
+fn key_columns(keys: &[syntax::postgres::protobuf::Node]) -> Option<Vec<String>> {
     keys.iter()
         .map(|k| match &k.node {
             Some(N::String(s)) => Some(quote_ident(&s.sval)),
@@ -69,7 +69,7 @@ fn not_null_check(column: &str) -> String {
 
 /// Whether a boolean option is on: written bare (`concurrently`), or with a value Postgres reads as
 /// true (`true`, `on`, `1`, `yes`), never `false`, `off` or `0`.
-fn option_on(d: &pg_query::protobuf::DefElem) -> bool {
+fn option_on(d: &syntax::postgres::protobuf::DefElem) -> bool {
     match d.arg.as_ref().and_then(|a| a.node.as_ref()) {
         None => true,
         Some(N::Boolean(b)) => b.boolval,
@@ -399,7 +399,7 @@ pub(crate) async fn run_watched(db: &mut Db, m: &Migration) -> Result<Vec<Hazard
             hazards.push(hazard);
         }
     };
-    if let Ok(result) = pg_query::parse(&m.sql, 0) {
+    if let Ok(result) = syntax::postgres::parse(&m.sql, 0) {
         for raw in &result.protobuf.stmts {
             match raw.stmt.as_ref().and_then(|s| s.node.as_ref()) {
                 Some(N::AlterTableStmt(a)) => {
@@ -446,9 +446,9 @@ pub(crate) async fn run_watched(db: &mut Db, m: &Migration) -> Result<Vec<Hazard
                 }
                 Some(N::ReindexStmt(r)) if r.params.iter().any(|p| matches!(&p.node, Some(N::DefElem(d)) if d.defname == "concurrently" && option_on(d))) => {
                     let Some(rel) = &r.relation else { continue };
-                    if is(r.kind, pg_query::protobuf::ReindexObjectType::ReindexObjectIndex) {
+                    if is(r.kind, syntax::postgres::protobuf::ReindexObjectType::ReindexObjectIndex) {
                         made.insert(rel.relname.clone());
-                    } else if is(r.kind, pg_query::protobuf::ReindexObjectType::ReindexObjectTable) {
+                    } else if is(r.kind, syntax::postgres::protobuf::ReindexObjectType::ReindexObjectTable) {
                         reindexed.extend(resolve(&named(rel)));
                     }
                 }
@@ -573,6 +573,20 @@ mod tests {
                 vec!["alter table users add constraint users_email_key unique using index users_email_key".to_string(), "comment on table users is 'x'".to_string()],
             ]
         );
+    }
+
+    #[test]
+    fn reads_an_index_on_a_deeply_nested_expression() {
+        // An unoptimized build's frames, a level each, need more than a test thread's stack.
+        let reads = std::thread::Builder::new().stack_size(64 << 20).spawn(|| {
+            let sum = vec!["n"; 521].join(" + ");
+            let index = format!("create index users_sum on users (({sum}))");
+            let files = lock_safe(&plan(&[index.as_str(), "alter table users add constraint n_pos check (n > 0)"]), &existing(&["users"])).expect("a lock-safe plan");
+            let all = files.concat();
+            assert!(all.iter().any(|s| s.starts_with("create index concurrently users_sum")));
+            assert!(all.iter().any(|s| s.contains("n_pos check (n > 0) not valid")));
+        });
+        reads.unwrap().join().unwrap();
     }
 
     #[test]

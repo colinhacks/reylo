@@ -9,7 +9,7 @@
 //! to them, or keeps every value where one is no value it holds unchanged
 //! ([`reylo_engine_core::literal::narrow`]).
 
-use pg_query::protobuf::{a_const::Val, node::Node as N, Node, SelectStmt, SetOperation};
+use syntax::postgres::protobuf::{a_const::Val, node::Node as N, Node, SelectStmt, SetOperation};
 use reylo_engine_core::literal::Literal;
 
 /// Each result column's literals, in order, where the statement's columns are its targets one

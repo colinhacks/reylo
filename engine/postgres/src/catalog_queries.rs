@@ -6,7 +6,7 @@
 //! objects (`tests/catalog-queries.test.ts`).
 
 use crate::{bodies, cardinality, errors, extension, pgtypes, postgres};
-use pg_query::protobuf::{AExprKind, SubLinkType};
+use syntax::postgres::protobuf::{AExprKind, SubLinkType};
 use serde_json::{Map, Value};
 use reylo_engine_core::structured;
 
@@ -100,7 +100,7 @@ fn objects<'a>(key: &'a str, value: &'a Value, out: &mut Vec<(&'a str, &'a Map<S
 
 /// What `sql` breaks of the rules, one line each.
 fn violations(sql: &str) -> Vec<String> {
-    let parsed = pg_query::parse(sql, 0).unwrap_or_else(|e| panic!("{e}\n{sql}"));
+    let parsed = syntax::postgres::parse(sql, 0).unwrap_or_else(|e| panic!("{e}\n{sql}"));
     let tree = serde_json::to_value(&parsed.protobuf).unwrap();
     let mut all = Vec::new();
     objects("", &tree, &mut all);

@@ -15,17 +15,12 @@
 # so the component opens no connection there.
 #
 # Inputs: rustup's `wasm32-wasip2` target, wasi-sdk 34 (set WASI_SDK_PATH, or unpack it under
-# `.wasi-sdk/`) and jco from the root's install, for the playground's engine only. The `pg_query`
-# crate is the Postgres 18 parser:
-# upstream's `pg-18` branch (pganalyze/pg_query.rs, pull request 79, "Release 18.0.0", not on
-# crates.io yet) at the commit `postgres/vendor/pg_query-source.sh` pins, with the libpg_query commit
-# its submodule names (tag 18.1.0, the grammar of Postgres 18.6), each fetched from GitHub by commit
-# and checked against a SHA-256, and the patch from `postgres/vendor/` applied into
-# `postgres/.patched/pg_query`. SQLite is the 3.53.4 amalgamation fetched into `sqlite/.sqlite/`
-# and checked against a SHA-256, with the hooks of `sqlite/csrc/patch-sqlite.py` applied. tokio-postgres 0.7.18 is fetched from
-# crates.io into `wasip2/.patched/` with the patch beside it, which builds its runtime for wasip2.
+# `.wasi-sdk/`) and jco from the root's install, for the playground's engine only. SQLite is the
+# 3.53.4 amalgamation fetched into `sqlite/.sqlite/` and checked against a SHA-256, with the hooks of
+# `sqlite/csrc/patch-sqlite.py` applied. tokio-postgres 0.7.18 is fetched from crates.io into
+# `wasip2/.patched/` with the patch beside it, which builds its runtime for wasip2.
 # `./build.sh --prepare` stops after that, which is what a native build of the binary needs, and
-# what any cargo command in the workspace needs first (the workspace `[patch]` points at the copy).
+# what any cargo command in the workspace needs first.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -73,11 +68,6 @@ if [ ! -f "$LIBSQL/sqlite3-private.c" ] || [ ! -d "$LIBSQL/sqlean" ]; then
   mv "$LIBSQL/sqlite3-private.c.tmp" "$LIBSQL/sqlite3-private.c"
   rm -rf "$LIBSQL/$LIBSQL_CRATE" "$LIBSQL/$LIBSQL_CRATE.crate"
 fi
-. postgres/vendor/pg_query-source.sh
-PG_QUERY_PATCH="postgres/vendor/pg_query-18.0.0.patch"
-PATCHED=postgres/.patched
-# What the copy was made from: a change of either commit or of the patch makes it again.
-PG_QUERY_SOURCE="$PG_QUERY_COMMIT $LIBPG_QUERY_COMMIT $(sha256 "$PG_QUERY_PATCH")"
 # tokio-postgres reads wasm32 as a browser, which has no sockets, and resolves host names on a
 # thread, which wasip2 has not: the component builds it with the patch beside it.
 TP=wasip2/.patched/tokio-postgres
@@ -93,32 +83,6 @@ if [ "$(cat $TP/.source 2>/dev/null || true)" != "$TP_SOURCE" ]; then
   tar -xzf wasip2/.patched/tokio-postgres.crate -C wasip2/.patched && mv wasip2/.patched/tokio-postgres-0.7.18 "$TP" && rm wasip2/.patched/tokio-postgres.crate
   (cd "$TP" && patch -s -p1 < ../../tokio-postgres-0.7.18.patch)
   echo "$TP_SOURCE" > "$TP/.source"
-fi
-if [ "$(cat $PATCHED/pg_query/.source 2>/dev/null || true)" != "$PG_QUERY_SOURCE" ]; then
-  # Straight from GitHub, not through `cargo fetch`: the workspace's `[patch]` points at the
-  # copy this makes, so cargo resolves nothing until it exists. A commit's archive holds no
-  # submodule, so libpg_query is fetched beside it, at the commit the crate's tree names.
-  rm -rf "$PATCHED" && mkdir -p $PATCHED/fetch
-  fetch() {
-    echo "fetching $1 at $2"
-    curl -fsSL -o "$PATCHED/fetch/$1.tar.gz" "https://codeload.github.com/pganalyze/$1/tar.gz/$2"
-    if [ "$(sha256 "$PATCHED/fetch/$1.tar.gz")" != "$3" ]; then
-      echo "$1 at $2: the archive's SHA-256 is $(sha256 "$PATCHED/fetch/$1.tar.gz"), expected $3" >&2
-      exit 1
-    fi
-    tar -xzf "$PATCHED/fetch/$1.tar.gz" -C $PATCHED/fetch
-  }
-  fetch pg_query.rs "$PG_QUERY_COMMIT" "$PG_QUERY_SHA256"
-  fetch libpg_query "$LIBPG_QUERY_COMMIT" "$LIBPG_QUERY_SHA256"
-  mv "$PATCHED/fetch/pg_query.rs-$PG_QUERY_COMMIT" $PATCHED/pg_query
-  rmdir $PATCHED/pg_query/libpg_query
-  mv "$PATCHED/fetch/libpg_query-$LIBPG_QUERY_COMMIT" $PATCHED/pg_query/libpg_query
-  # What the crate's `build.rs` never reads: libpg_query's tests and tools, and the C++ protobuf
-  # bindings, 30 MB of the 36.
-  (cd $PATCHED/pg_query/libpg_query && rm -rf test tmp benchmark examples srcdata scripts patches protobuf/pg_query.pb.cc protobuf/pg_query.pb.h)
-  rm -rf "$PATCHED/fetch"
-  (cd $PATCHED/pg_query && patch -p1 -N < "../../../$PG_QUERY_PATCH")
-  echo "$PG_QUERY_SOURCE" > $PATCHED/pg_query/.source
 fi
 if [ "${1:-}" = "--prepare" ]; then
   exit 0
@@ -138,7 +102,6 @@ if [ -z "$WASI_SDK_PATH" ] || [ ! -x "$WASI_SDK_PATH/bin/clang" ]; then
 fi
 WASI_SDK_PATH=$(cd "$WASI_SDK_PATH" && pwd)
 SYSROOT="$WASI_SDK_PATH/share/wasi-sysroot"
-STUBS="$(pwd)/postgres/vendor/stubs"
 JCO="$(cd .. && pwd)/node_modules/@bytecodealliance/jco/dist/jco.js"
 [ -f "$JCO" ] || { echo "jco not found: nub install at the repository's root" >&2; exit 1; }
 
@@ -149,21 +112,12 @@ REPO_ROOT=$(cd .. && pwd)
 CARGO_HOME_DIR=$(cd "${CARGO_HOME:-$HOME/.cargo}" 2>/dev/null && pwd || echo "$HOME/.cargo")
 PREFIX_MAPS="-ffile-prefix-map=$REPO_ROOT=/reylo -ffile-prefix-map=$CARGO_HOME_DIR=/cargo -ffile-prefix-map=$WASI_SDK_PATH=/wasi-sdk"
 export CC_wasm32_wasip2="$WASI_SDK_PATH/bin/clang" AR_wasm32_wasip2="$WASI_SDK_PATH/bin/llvm-ar"
-# The C flags for every C crate, ring's among them, which compiles with -nostdlibinc and so cannot
-# take the stubs as an `-include`: the stubs come last on the include path, and what the include
-# defined is defined on the command line. Exceptions are exnref, the exception-handling proposal as
-# it was standardized, since jco and wasmtime refuse the legacy `try`.
-export CFLAGS_wasm32_wasip2="--sysroot=$SYSROOT -idirafter $STUBS -DEHOSTDOWN=9001 -Dsigjmp_buf=jmp_buf -Dsigsetjmp(b,m)=setjmp(b) -Dsiglongjmp(b,v)=longjmp(b,v) -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_GETPID $PREFIX_MAPS"
-export BINDGEN_EXTRA_CLANG_ARGS_wasm32_wasip2="--sysroot=$SYSROOT --target=wasm32-wasip2 -I $STUBS"
-# bindgen reads the C headers through wasi-sdk's own libclang and clang, whose builtin headers
-# (`stddef.h` and the rest) sit beside them and which take the flags above: a system's libclang may
-# come without those headers, a system's older clang refuses the `-mllvm` options bindgen asks it
-# for the include paths with, and for a wasm32 target no compiler of the system's supplies them.
-export LIBCLANG_PATH="$WASI_SDK_PATH/lib" CLANG_PATH="$WASI_SDK_PATH/bin/clang"
-# tokio's wasip2 sockets are behind `tokio_unstable` (tokio 1.51). The shadow stack, where C and the
-# Rust frames that spill keep their locals, is 8 MiB: the analysis of a statement as deep as
+# The C flags for the C crates (ring).
+export CFLAGS_wasm32_wasip2="--sysroot=$SYSROOT $PREFIX_MAPS"
+# tokio's wasip2 sockets are behind `tokio_unstable` (tokio 1.51). The shadow stack, where the Rust
+# frames that spill keep their locals, is 8 MiB: the analysis of a statement as deep as
 # the engine reads (core/src/stack.rs) needs about 0.5 MiB of it.
-export CARGO_TARGET_WASM32_WASIP2_RUSTFLAGS="--cfg tokio_unstable -C link-arg=-L$SYSROOT/lib/wasm32-wasip2 -C link-arg=-lwasi-emulated-signal -C link-arg=-lwasi-emulated-process-clocks -C link-arg=-lwasi-emulated-mman -C link-arg=-lwasi-emulated-getpid -C link-arg=-lsetjmp -C link-arg=-zstack-size=8388608 --remap-path-prefix=$REPO_ROOT=/reylo --remap-path-prefix=$CARGO_HOME_DIR=/cargo"
+export CARGO_TARGET_WASM32_WASIP2_RUSTFLAGS="--cfg tokio_unstable -C link-arg=-L$SYSROOT/lib/wasm32-wasip2 -C link-arg=-zstack-size=8388608 --remap-path-prefix=$REPO_ROOT=/reylo --remap-path-prefix=$CARGO_HOME_DIR=/cargo"
 # The component crate is a workspace of its own, so that its tokio-postgres patch reaches no native
 # build. It is built without LTO: the depth a statement may nest was measured on that code, and
 # LTO's larger frames spend more of the JavaScript engine's stack at the bound.

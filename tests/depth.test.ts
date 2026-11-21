@@ -8,7 +8,7 @@ import { engine, type Dialect, type Engine, type EngineIo } from "../src/engine.
 import { Session } from "../src/analyze.ts";
 
 // How deeply a statement may nest for the engine to read it: the engine reads at most 1,000
-// levels of libpg_query's parse tree (engine/core/src/stack.rs), the same in every host of the engine, and the
+// levels of Postgres's parse tree (engine/core/src/stack.rs), the same in every host of the engine, and the
 // embedded SQLite reads an expression 350 deep, where SQLite's own bound is 1,000. These are the deepest statements of each shape that parse, as engine/core/src/stack.rs's
 // tests have them.
 function nested(shape: string, n: number): string {

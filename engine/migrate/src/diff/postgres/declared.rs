@@ -13,8 +13,8 @@
 
 use super::{bare, parse_column, render_column, AROUND, SEP};
 use crate::diff::{Kind, Schema};
-use pg_query::protobuf::{self, node::Node as N, AlterTableType as At, ConstrType, ObjectType};
-use pg_query::Node;
+use syntax::postgres::protobuf::{self, node::Node as N, AlterTableType as At, ConstrType, ObjectType};
+use syntax::postgres::Node;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// An identifier as Postgres's `quote_ident` writes it: bare when it is lowercase and no keyword
@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) fn quote_ident(name: &str) -> String {
     let bare = name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_')
         && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '$')
-        && !pg_query::scan(name).ok().and_then(|r| r.tokens.first().map(|t| t.keyword_kind)).is_some_and(|k| k > protobuf::KeywordKind::UnreservedKeyword as i32);
+        && !syntax::postgres::scan_tokens(name).ok().and_then(|r| r.tokens.first().map(|t| t.keyword_kind)).is_some_and(|k| k > protobuf::KeywordKind::UnreservedKeyword as i32);
     if bare {
         name.to_string()
     } else {
@@ -46,7 +46,7 @@ fn names(list: &[Node]) -> Vec<String> {
 fn expression(node: &Node) -> Option<String> {
     let target = Node { node: Some(N::ResTarget(Box::new(protobuf::ResTarget { val: Some(Box::new(node.clone())), ..Default::default() }))) };
     let select = Node { node: Some(N::SelectStmt(Box::new(protobuf::SelectStmt { target_list: vec![target], op: protobuf::SetOperation::SetopNone as i32, limit_option: protobuf::LimitOption::Default as i32, ..Default::default() }))) };
-    select.deparse(pg_query::DeparseOptions::default()).ok()?.strip_prefix("SELECT ").map(String::from)
+    select.deparse(syntax::postgres::DeparseOptions::default()).ok()?.strip_prefix("SELECT ").map(String::from)
 }
 
 /// Every node of a kind anywhere in a tree, as JSON, which every node of the parser's serializes to.
@@ -167,7 +167,7 @@ fn source(sql: &str, raw: &protobuf::RawStmt) -> Option<String> {
     let start = raw.stmt_location.max(0) as usize;
     let end = if raw.stmt_len == 0 { sql.len() } else { start + raw.stmt_len as usize };
     let text = sql.get(start..end)?;
-    let tokens = pg_query::scan(text).ok()?.tokens;
+    let tokens = syntax::postgres::scan_tokens(text).ok()?.tokens;
     let code: Vec<&protobuf::ScanToken> = tokens.iter().filter(|t| t.token != protobuf::Token::SqlComment as i32 && t.token != protobuf::Token::CComment as i32).collect();
     let (first, last) = (code.first()?, code.last()?);
     text.get(first.start as usize..last.end as usize).map(String::from)
@@ -523,7 +523,7 @@ impl Reader<'_> {
                     let mut named = i.as_ref().clone();
                     named.idxname = name;
                     named.concurrent = false;
-                    Node { node: Some(N::IndexStmt(Box::new(named))) }.deparse(pg_query::DeparseOptions::default()).ok()
+                    Node { node: Some(N::IndexStmt(Box::new(named))) }.deparse(syntax::postgres::DeparseOptions::default()).ok()
                 } else {
                     text()
                 };
@@ -665,7 +665,7 @@ pub(super) fn read(schema: &Schema, sql: &str, base: &[String]) -> Declared {
     let mut reader = Reader { schema, path: base.to_vec(), base: base.to_vec(), out: Declared::default(), given: BTreeSet::new() };
     reader.keep_existing();
     reader.base = reader.path.clone();
-    if let Ok(parsed) = pg_query::parse(sql, 0) {
+    if let Ok(parsed) = syntax::postgres::parse(sql, 0) {
         for raw in &parsed.protobuf.stmts {
             reader.read(sql, raw);
         }
@@ -840,7 +840,7 @@ mod tests {
 
     #[test]
     fn deparses_an_expression_as_declared() {
-        let parsed = pg_query::parse("create table t (tier varchar(10) check (tier in ('free', 'pro')))", 0).unwrap();
+        let parsed = syntax::postgres::parse("create table t (tier varchar(10) check (tier in ('free', 'pro')))", 0).unwrap();
         let checks = find(&parsed.protobuf, "Constraint");
         assert_eq!(checks.len(), 1);
         let N::CreateStmt(c) = parsed.protobuf.stmts[0].stmt.as_ref().unwrap().node.as_ref().unwrap() else { panic!() };
@@ -885,7 +885,7 @@ mod tests {
     #[test]
     fn keeps_a_statement_without_its_comments() {
         let sql = "-- the users\ncreate view v as select 1; /* after */ -- tail\n create index i on t (x) -- why\n;";
-        let parsed = pg_query::parse(sql, 0).unwrap();
+        let parsed = syntax::postgres::parse(sql, 0).unwrap();
         assert_eq!(source(sql, &parsed.protobuf.stmts[0]).unwrap(), "create view v as select 1");
         assert_eq!(source(sql, &parsed.protobuf.stmts[1]).unwrap(), "create index i on t (x)");
         assert_eq!(id_arguments("function public.f(integer,\"a,b\",numeric)"), ["integer", "\"a,b\"", "numeric"]);

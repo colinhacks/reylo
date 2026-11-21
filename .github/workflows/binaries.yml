@@ -17,6 +17,7 @@ on:
       - engine/cli/**
       - engine/native/**
       - engine/migrate/**
+      - engine/syntax/**
       - rust/reylo-build/**
       - npm/**
       - scripts/build.ts
