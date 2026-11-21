@@ -65,7 +65,13 @@ Flags:
 
 ## `reylo analyze`
 
-Prints what Reylo infers for each statement ([Inference](/inference)).
+Prints what Reylo infers for each statement ([Inference](/inference)):
+
+```sh
+reylo analyze src/queries
+reylo analyze 'src/**/*.sql' --format json
+reylo analyze --sql 'select id, email from users'
+```
 
 ## `reylo generate`
 
@@ -99,6 +105,76 @@ Flags:
   -h, --help               Print this help
 ```
 
+### `init`
+
+Starts your migrations from an existing database:
+
+```sh
+reylo migrate init
+reylo migrate init --schema app
+```
+
+### `new`
+
+Writes the next migration, from your change to `schema.sql`:
+
+```sh
+reylo migrate new add_bio
+reylo migrate new add_bio --drop users.bio
+reylo migrate new add_bio --rename users.name=full_name
+reylo migrate new add_bio --blocking
+```
+
+### `dev`
+
+Takes your development database to your migrations, and writes the lock:
+
+```sh
+reylo migrate dev
+```
+
+### `deploy`
+
+Runs the lock's pending migrations, with no shadow database:
+
+```sh
+reylo migrate deploy
+reylo migrate deploy --dry-run
+```
+
+### `status`
+
+Checks that a database and your files are in step, changing nothing:
+
+```sh
+reylo migrate status
+reylo migrate status --url $PROD_URL
+```
+
+### `lock`
+
+Writes the lock from your database's history:
+
+```sh
+reylo migrate lock
+```
+
+### `history push`
+
+Records your migrations as run on a database that already has their schema:
+
+```sh
+reylo migrate history push --url $PROD_URL
+```
+
+### `history pull`
+
+Writes your migration files from a database's history:
+
+```sh
+reylo migrate history pull --url $PROD_URL
+```
+
 ## `reylo db`
 
 Push `schema.sql` to a development database, reset it, wipe it or read its schema. [Reylo Migrate](/migrate/docs#db-push) covers each command:
@@ -121,6 +197,42 @@ Flags:
   --url <url>              The database, in place of direct_url
   --json                   Print the result as one JSON object
   -h, --help               Print this help
+```
+
+### `push`
+
+Takes your development database to `schema.sql`, with no migration:
+
+```sh
+reylo db push
+reylo db push --watch
+reylo db push --drop users.bio
+reylo db push --force
+```
+
+### `reset`
+
+Rebuilds your development database from your migrations:
+
+```sh
+reylo db reset
+```
+
+### `wipe`
+
+Deletes every row, keeping the schema and the history:
+
+```sh
+reylo db wipe
+```
+
+### `introspect`
+
+Prints your database's schema as SQL:
+
+```sh
+reylo db introspect
+reylo db introspect --schema app
 ```
 
 ## `reylo run`
