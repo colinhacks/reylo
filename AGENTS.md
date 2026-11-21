@@ -142,7 +142,7 @@ The docs are `site/content/docs/`, one file per page: `index.mdx` is the intro, 
 
 1. Every type and error shown on the page is captured, never typed by hand. After changing a `.sql` block or a page's schema, run `nub run capture` in `site/` with throwaway servers of both kinds: `REYLO_CAPTURE_POSTGRES=postgres://postgres@localhost:<pg port>/reylo_capture REYLO_CAPTURE_MYSQL=mysql://root@127.0.0.1:<mysql port>/reylo_capture` (the database is dropped and made again, so its name must start with `reylo_capture`). It rewrites `site/lib/sql-modules.json` and `site/lib/sql-errors.json`.
 2. `nub run build` in `site/` type-checks and builds the site to `site/build/client`, and fails on a stale capture. `nub run dev --port <port> --strictPort` in `site/` serves it (3311 by default).
-3. The voice is brief and instructive, as in Zod's docs: a sentence or two, then an example, and an example in every section; [Writing conventions](#writing-conventions) has the rest.
+3. Load the `reylo-docs` skill first, [`.agents/skills/reylo-docs/SKILL.md`](./.agents/skills/reylo-docs/SKILL.md): the sentence shape, how a page opens, the rhythm of sentence and example, what never goes in, and the checks before a change lands. The voice is brief and instructive, as in Zod's docs: a sentence or two, then an example.
 
 `site/docs-kit/` is a copy of a design shared with another site: change it at its source and sync it, never in place (`node docs-kit/src/sync.mjs . --check` in `site/` fails on a copy edited in place).
 
