@@ -1,7 +1,7 @@
 /* ── Reylo's homepage (components/home-landing.tsx) ───────────────────────────
    On the Migrate landing's styles (`.ml-*` in app/global.css): its nav, install, windows and foot,
    with what the homepage adds: the star pill and its note, the hero's pair of windows, the docs'
-   inference card and "View schema" outside the docs, and the features. The windows stay dark on
+   inference card outside the docs, with a table's declaration on hover, and the features. The windows stay dark on
    either theme, as an editor is; the cards follow the theme, as the docs' do. */
 
 .rh {
@@ -178,20 +178,40 @@
   background: color-mix(in oklab, var(--color-fd-primary) 14%, transparent);
 }
 
-/* "View schema" under the card's right corner: the docs' (`.schema-query-*` in app/global.css), its
-   popover holding the schema as a code block. */
-.rh-schema-foot {
-  margin: 0.75rem 0.25rem 0 0;
-  line-height: 1.25rem;
+/* A table's name in a statement: a dotted underline, as Twoslash marks what it can show; on hover or
+   focus, its declaration in a popover under it (`TableHover`), on the page's body, following the
+   theme as the cards do. */
+.rh-ref {
+  cursor: help;
+  text-decoration: underline dotted color-mix(in oklab, currentColor 55%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.25em;
+  border-radius: 0.1875rem;
+  outline-offset: 1px;
 }
 
-.rh .schema-query-card .rh-schema {
-  padding: 1rem 1.25rem;
+.rh-ref:hover,
+.rh-ref:focus-visible {
+  text-decoration-color: currentColor;
+}
+
+.rh-decl {
+  position: absolute;
+  z-index: 50;
+  max-width: min(36rem, calc(100vw - 2rem));
+  max-height: min(28rem, 60vh);
+  overflow: auto;
   border: 1px solid var(--color-fd-border);
-  border-radius: 0.875rem;
-  background: var(--color-fd-secondary);
+  border-radius: 0.625rem;
+  background: var(--color-fd-popover, var(--color-fd-card));
+  box-shadow: 0 16px 40px -12px rgb(0 0 0 / 0.45);
+}
+
+.rh-decl .rh-code {
   --rh-code: 0.75rem;
   --rh-lh: 1.25rem;
+  padding: 0.75rem 1rem;
+  overflow: visible;
 }
 
 /* ── Heroes ── */
@@ -287,8 +307,6 @@
 
 /* The card centred, between the names in the left gutter and a right gutter as wide. */
 .rh-ex {
-  /* The "View schema" line under the card, 32px: the list centres on the card above it. */
-  --rh-schema-foot: 2rem;
   display: grid;
   grid-template-columns: 11rem minmax(0, 1fr) 11rem;
   gap: 2.5rem;
@@ -311,9 +329,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
-  /* Centred on the card, not on the card and the "View schema" line under it. */
   align-self: center;
-  margin-bottom: var(--rh-schema-foot, 0px);
 }
 
 .rh-ex-list button {

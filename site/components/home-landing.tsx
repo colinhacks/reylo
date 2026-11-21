@@ -1,4 +1,5 @@
-import { useState, type CSSProperties, type ReactNode } from 'react';
+import { createContext, useContext, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import data from 'virtual:home-examples';
 import { DATABASES, HOSTS } from './host-logos';
 import { FileIcon, GitHubIcon, Mark, starCount, VariadicMark } from './migrate-landing';
@@ -11,15 +12,15 @@ import './home-landing.css';
  * (components/migrate-landing.tsx, the `.ml` styles): a nav whose GitHub pill carries a handwritten
  * "Leave a star!"; a hero split in half, the words on the left and on the right a query and, under
  * it, the main.ts that imports it; the databases and hosts it works with; the Inference section's examples, each in the docs' inference card
- * (components/inference-card.tsx) with its schema behind "View schema", named in a list in the left
- * gutter; the features; and a closing call to action. Every statement and type is the docs' own,
+ * (components/inference-card.tsx), each table's name showing its declaration on hover, named in a list
+ * in the left gutter; the features; and a closing call to action. Every statement and type is the docs' own,
  * captured (lib/home-examples.ts). Nothing moves by itself, and nothing reads the scroll position.
  */
 
 type Dialect = 'postgres' | 'mysql' | 'sqlite';
 
 /** The examples the homepage shows, by the Inference section's anchors, in its order. */
-const SHOWN = ['left-joins', 'computed-columns', 'unique-keys', 'aggregates', 'window-functions', 'unions', 'json', 'json-schema'];
+const SHOWN = ['naming', 'left-joins', 'computed-columns', 'nullable-parameters', 'unique-keys', 'aggregates', 'window-functions', 'subqueries', 'returning-inserts', 'unions', 'json', 'nested-fetching', 'json-schema', 'oneof'];
 const EXAMPLES = SHOWN.map((id) => data.examples.find((e) => e.id === id)).filter((e): e is HomeExample => !!e);
 
 /** Lines a card holds: its statement, its parameters (`void` for none) and its result. */
@@ -32,15 +33,17 @@ const DIALECT_NAMES: Record<Dialect, string> = { postgres: 'Postgres', mysql: 'M
 
 export function HomeLanding({ stars }: { stars?: number }) {
   return (
-    <div className="ml rh">
-      <Nav stars={stars} />
-      <Hero />
-      <Logos />
-      <Examples />
-      <Features />
-      <End />
-      <Foot />
-    </div>
+    <TableHover>
+      <div className="ml rh">
+        <Nav stars={stars} />
+        <Hero />
+        <Logos />
+        <Examples />
+        <Features />
+        <End />
+        <Foot />
+      </div>
+    </TableHover>
   );
 }
 
@@ -153,19 +156,82 @@ function Install({ centered }: { centered?: boolean }) {
 
 /**
  * Highlighted lines, as lib/home-examples.ts tokenized them, each token in its colour by day and by
- * night (`.rh-tok` picks one; a window, dark on either theme, takes the night's).
+ * night (`.rh-tok` picks one; a window, dark on either theme, takes the night's). A table's name,
+ * where `tables` holds its declaration, is underlined, and shows the declaration on hover or focus.
  */
-function Code({ lines }: { lines: Line[] }) {
+function Code({ lines, tables }: { lines: Line[]; tables?: Record<string, Line[]> }) {
+  const hover = useContext(HoverContext);
   return lines.map((line, i) => (
     <span key={i} className="rh-line">
-      {line.map(([text, light, dark], j) => (
-        <span key={j} className="rh-tok" style={{ '--l': light, '--d': dark } as CSSProperties}>
-          {text}
-        </span>
-      ))}
+      {line.map(([text, light, dark, table], j) => {
+        const style = { '--l': light, '--d': dark } as CSSProperties;
+        const declaration = table ? tables?.[table] : undefined;
+        if (!declaration) {
+          return (
+            <span key={j} className="rh-tok" style={style}>
+              {text}
+            </span>
+          );
+        }
+        return (
+          <span
+            key={j}
+            className="rh-tok rh-ref"
+            style={style}
+            tabIndex={0}
+            aria-label={`${text}: show its declaration`}
+            onMouseEnter={(e) => hover.show(e.currentTarget, declaration)}
+            onMouseLeave={hover.hide}
+            onFocus={(e) => hover.show(e.currentTarget, declaration)}
+            onBlur={hover.hide}
+          >
+            {text}
+          </span>
+        );
+      })}
       {'\n'}
     </span>
   ));
+}
+
+/* ── A table's declaration, on hover ────────────────────────────────────── */
+
+const HoverContext = createContext<{ show: (at: HTMLElement, lines: Line[]) => void; hide: () => void }>({ show: () => {}, hide: () => {} });
+
+/**
+ * One popover for the page, as Twoslash shows a type: under the table's name, holding its `create
+ * table`. It sits on the page's body, since the card clips what overflows it; it stays while the
+ * pointer moves from the name into it, so a long declaration can be scrolled.
+ */
+function TableHover({ children }: { children: ReactNode }) {
+  const [shown, setShown] = useState<{ lines: Line[]; left: number; top: number } | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const keep = () => clearTimeout(timer.current);
+  const hide = () => {
+    keep();
+    timer.current = setTimeout(() => setShown(null), 120);
+  };
+  const show = (at: HTMLElement, lines: Line[]) => {
+    keep();
+    const box = at.getBoundingClientRect();
+    // As wide as the popover may be (its max-width), kept a gutter in from the window's right edge.
+    const width = Math.min(576, window.innerWidth - 32);
+    setShown({ lines, left: Math.max(16, Math.min(box.left - 14, window.innerWidth - width - 16)) + window.scrollX, top: box.bottom + 6 + window.scrollY });
+  };
+  return (
+    <HoverContext.Provider value={{ show, hide }}>
+      {children}
+      {shown &&
+        createPortal(
+          <div className="rh rh-decl" role="tooltip" style={{ left: shown.left, top: shown.top }} onMouseEnter={keep} onMouseLeave={hide}>
+            <pre className="rh-code">
+              <Code lines={shown.lines} />
+            </pre>
+          </div>,
+          document.body,
+        )}
+    </HoverContext.Provider>
+  );
 }
 
 /* ── The inference card ─────────────────────────────────────────────────── */
@@ -191,7 +257,7 @@ function Card({ variant, dialects, dialect, onDialect }: { variant: HomeVariant;
           </div>
         )}
         <pre className="rh-code">
-          <Code lines={padded(variant)} />
+          <Code lines={padded(variant)} tables={variant.tables} />
         </pre>
       </div>
       <div className="rh-card-types">
@@ -208,24 +274,6 @@ function Card({ variant, dialects, dialect, onDialect }: { variant: HomeVariant;
           </pre>
         </div>
       </div>
-    </div>
-  );
-}
-
-/** "View schema" under the card's right corner, the schema in a popover on hover, focus or a click: the docs' (components/schema-query.tsx). */
-function ViewSchema({ lines }: { lines: Line[] }) {
-  return (
-    <div className="schema-query-foot rh-schema-foot">
-      <span className="schema-query-link" tabIndex={0}>
-        View schema
-        <span className="schema-query-pop" role="dialog" aria-label="Schema">
-          <span className="schema-query-card not-prose">
-            <pre className="rh-code rh-schema">
-              <Code lines={lines} />
-            </pre>
-          </span>
-        </span>
-      </span>
     </div>
   );
 }
@@ -261,7 +309,6 @@ function Examples() {
             return (
               <div key={e.id} className="rh-ex-card" data-on={i === at || undefined}>
                 <Card variant={variant} dialects={Object.keys(e.variants) as Dialect[]} dialect={d} onDialect={setDialect} />
-                <ViewSchema lines={variant.schema ?? data.schemas[d] ?? []} />
               </div>
             );
           })}
@@ -290,13 +337,13 @@ function Hero() {
       </div>
       <div className="ml-hero-visual rh-import">
         <div className="ml-pair">
-          <div className="ml-win ml-editor" aria-hidden="true">
+          <div className="ml-win ml-editor">
             <div className="ml-bar">
               <FileIcon />
               get_author.sql
             </div>
             <pre className="rh-code">
-              <Code lines={data.intro.sql} />
+              <Code lines={data.intro.sql} tables={data.intro.tables} />
             </pre>
           </div>
           <div className="ml-win ml-under rh-import-ts" aria-hidden="true">
